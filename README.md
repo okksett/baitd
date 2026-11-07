@@ -36,16 +36,16 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 
 | Servicio | Para qué | Dónde conseguirla |
 |---|---|---|
-| Pexels | Clips y fotos de stock (**necesaria**, gratis) | <https://www.pexels.com/api/> |
-| Pixabay | Más clips de stock (opcional, gratis) | <https://pixabay.com/api/docs/> |
+| Pexels | Clips y fotos de stock. **Pexels o Pixabay: al menos una de las dos** (las dos son gratis) | <https://www.pexels.com/api/> |
+| Pixabay | Clips y fotos de stock (alternativa o complemento a Pexels) | <https://pixabay.com/api/docs/> |
 | Gemini | Guion con IA, nivel gratuito | <https://aistudio.google.com/app/apikey> |
 | OpenAI | Guion con IA y voces (de pago) | <https://platform.openai.com/api-keys> |
 | ElevenLabs | Voces de más calidad (de pago) | <https://elevenlabs.io/app/settings/api-keys> |
-| Ollama | Guion con IA local, sin clave | <https://ollama.com> |
+| Ollama | Guion con IA local, sin clave. En **Ajustes** pon la "Dirección de Ollama o servidor compatible" `http://localhost:11434/v1`; en el perfil, sección **Guion** ("IA que escribe el guion"), elige el proveedor "Ollama o compatible" | <https://ollama.com> |
 
 ## El camino gratis
 
-1. Consigue una clave gratuita de **Pexels**.
+1. Consigue una clave gratuita de **Pexels** o **Pixabay**.
 2. Para el guion, usa el nivel gratuito de **Gemini** (o instala **Ollama** y corre un modelo en tu equipo, sin clave).
 3. Para la voz, usa **edge-tts** (por defecto, sin clave).
 4. Música y fuentes ya vienen incluidas.
@@ -62,11 +62,11 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 
 Ajustes, claves, perfiles, cola, caché de clips, música propia y videos viven fuera de la app, en la carpeta de datos del usuario (`platformdirs.user_data_dir("Baitd")`), así que sobreviven a las actualizaciones:
 
-- **Windows:** `C:\Users\<tú>\AppData\Local\Baitd`
+- **Windows:** `%LOCALAPPDATA%\Baitd\Baitd` (platformdirs repite el nombre)
 - **macOS:** `~/Library/Application Support/Baitd`
 - **Linux:** `~/.local/share/Baitd`
 
-El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA`.
+Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` y `cache/`. El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA`.
 
 ---
 
@@ -108,16 +108,16 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 
 | Service | Used for | Get it here |
 |---|---|---|
-| Pexels | Stock clips and photos (**required**, free) | <https://www.pexels.com/api/> |
-| Pixabay | More stock clips (optional, free) | <https://pixabay.com/api/docs/> |
+| Pexels | Stock clips and photos. **Pexels or Pixabay: at least one of the two** (both are free) | <https://www.pexels.com/api/> |
+| Pixabay | Stock clips and photos (alternative or complement to Pexels) | <https://pixabay.com/api/docs/> |
 | Gemini | LLM script, free tier | <https://aistudio.google.com/app/apikey> |
 | OpenAI | LLM script and voices (paid) | <https://platform.openai.com/api-keys> |
 | ElevenLabs | Higher-quality voices (paid) | <https://elevenlabs.io/app/settings/api-keys> |
-| Ollama | Local LLM, no key | <https://ollama.com> |
+| Ollama | Local LLM, no key. In **Settings** set "Ollama or compatible server address" to `http://localhost:11434/v1`; in the profile's **Script** section ("AI that writes the script") pick the "Ollama or compatible" provider | <https://ollama.com> |
 
 ## The free path
 
-1. Get a free **Pexels** key.
+1. Get a free **Pexels** or **Pixabay** key.
 2. For the script, use the **Gemini** free tier (or install **Ollama** and run a model locally, no key).
 3. For the voice, use **edge-tts** (default, no key).
 4. Music and fonts are already bundled.
@@ -134,8 +134,8 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 
 Settings, keys, profiles, queue, clip cache, your own music and videos are stored outside the app, in the user data folder (`platformdirs.user_data_dir("Baitd")`), so they survive updates:
 
-- **Windows:** `C:\Users\<you>\AppData\Local\Baitd`
+- **Windows:** `%LOCALAPPDATA%\Baitd\Baitd` (platformdirs repeats the name)
 - **macOS:** `~/Library/Application Support/Baitd`
 - **Linux:** `~/.local/share/Baitd`
 
-Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable.
+Inside: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` and `cache/`. Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable.

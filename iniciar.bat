@@ -26,7 +26,13 @@ if not exist ".venv\Scripts\python.exe" (
 echo Instalando dependencias ^(la primera vez tarda unos minutos^)...
 ".venv\Scripts\python.exe" -m pip install --quiet -e . || goto :fail
 ".venv\Scripts\python.exe" -m baitd %*
-exit /b %errorlevel%
+set "RC=%errorlevel%"
+if not "%RC%"=="0" (
+  echo.
+  echo Baitd se cerro con un error ^(codigo %RC%^). Revisa el mensaje de arriba.
+  pause
+)
+exit /b %RC%
 
 :fail
 echo.

@@ -64,12 +64,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-browser", action="store_true", help="no abrir el navegador, solo mostrar la URL")
     parser.add_argument("--port", type=int, default=None, help="puerto (por defecto, uno libre)")
     args = parser.parse_args(argv)
+    if args.port is not None and not 1024 <= args.port <= 65535:
+        parser.error("--port debe estar entre 1024 y 65535")
 
     handlers = _setup_logging()
     queue = JobQueue(config.data_dir() / "queue.json")
     global _server
     try:
-        server = build_server(args.port or find_free_port(), queue)
+        port = args.port or find_free_port()
+        try:
+            server = build_server(port, queue)
+        except OSError as e:
+            log.error("No se pudo abrir el puerto %s: %s", port, e)
+            raise SystemExit(
+                f"No se pudo abrir el puerto {port} ({e.strerror or e}) → Cierra la otra ventana de "
+                "Baitd o inicia con --port <otro número>") from e
         with _server_lock:
             _server = server
         url = f"http://{HOST}:{server.effective_port}/"
