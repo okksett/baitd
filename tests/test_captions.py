@@ -1,0 +1,231 @@
+import re
+from pathlib import Path
+
+import pytest
+from fontTools.ttLib import TTFont
+
+from baitd.captions import (
+    FONTS_DIR, PRESETS, caption_baseline_y, chunk_words, hex_to_ass, is_latin, write_ass,
+)
+from baitd.config import default_profile
+from baitd.models import Word
+
+FONTS = Path(__file__).resolve().parents[1] / "src" / "baitd" / "assets" / "fonts"
+TEXT = ("¿Sabías que el estrés crónico daña tu memoria? Respira hondo, camina diez minutos "
+        "y duerme mejor cada noche. Tu cerebro te lo agradecerá muchísimo.")
+
+
+def ws(text, step=0.4):
+    return [Word(t, i * step, i * step + step - 0.05) for i, t in enumerate(text.split())]
+
+
+WORDS = ws(TEXT)
+
+
+def read(path):
+    return path.read_text(encoding="utf-8-sig")
+
+
+def dialogues(path):
+    return [l for l in read(path).splitlines() if l.startswith("Dialogue:")]
+
+
+def fields(line, n=10):
+    return line.removeprefix("Dialogue: ").split(",", n - 1)
+
+
+def secs(t):
+    h, m, s = t.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def styles(path):
+    out = {}
+    for l in read(path).splitlines():
+        if l.startswith("Style:"):
+            f = l.removeprefix("Style: ").split(",")
+            out[f[0]] = f
+    return out
+
+
+def plain(text):
+    return re.sub(r"\{[^}]*\}", "", text)
+
+
+def family_names():
+    names = set()
+    for p in FONTS.glob("*.ttf"):
+        with TTFont(p) as font:
+            names.add(font["name"].getDebugName(1))
+    return names
+
+
+def test_hex_to_ass_is_bgr_with_alpha():
+    assert hex_to_ass("#0046DE") == "&H00DE4600"
+    assert hex_to_ass("#FFD400") == "&H0000D4FF"
+    assert hex_to_ass("ffffff", alpha=0x80) == "&H80FFFFFF"
+
+
+def test_chunk_limits():
+    chunks = chunk_words(WORDS)
+    assert sum(len(c) for c in chunks) == len(WORDS)
+    assert all(1 <= len(c) <= 4 and len(" ".join(w.text for w in c)) <= 22 for c in chunks)
+
+
+def test_chunk_breaks_after_punctuation():
+    assert chunk_words(ws("Hola, mundo bonito"))[0][-1].text == "Hola,"
+    assert chunk_words(ws("¿Qué? Nada más"))[0][-1].text == "¿Qué?"
+
+
+def test_chunk_oversized_word_stays_alone():
+    chunks = chunk_words(ws("anticonstitucionalmente es largo"))
+    assert [w.text for w in chunks[0]] == ["anticonstitucionalmente"]
+
+
+def test_chunk_empty():
+    assert chunk_words([]) == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("¿Sabías que el estrés…?", True), ("Ça va très bien, œuvre", True), ("123 !", True),
+    ("Zażółć gęślą jaźń", True), ("これは日本語です", False), ("Привет мир", False),
+    ("مرحبا", False),
+])
+def test_is_latin(text, expected):
+    assert is_latin(text) is expected
+
+
+def test_ass_header(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(WORDS, PRESETS["caja_azul"], 6, 1080, 1920, out, FONTS)
+    body = read(out)
+    assert "PlayResX: 1080" in body and "PlayResY: 1920" in body
+    assert "WrapStyle: 2" in body and "ScaledBorderAndShadow: yes" in body
+    style = styles(out)["Cap"]
+    assert style[1] == "Montserrat ExtraBold"
+    assert style[-4:-2] == ["90", "90"]  # MarginL, MarginR
+
+
+def test_ass_has_one_event_per_word(tmp_path):
+    write_ass(WORDS, PRESETS["caja_azul"], 6, 1080, 1920, tmp_path / "s.ass", FONTS)
+    assert len(dialogues(tmp_path / "s.ass")) == len(WORDS)
+
+
+def test_ass_timing_matches_words(tmp_path):
+    write_ass(WORDS, PRESETS["caja_azul"], 6, 1080, 1920, tmp_path / "s.ass", FONTS)
+    f = fields(dialogues(tmp_path / "s.ass")[0])
+    assert abs(secs(f[1]) - WORDS[0].start) < 0.01
+    assert secs(f[2]) > secs(f[1])
+
+
+def test_hook_is_bigger(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(WORDS, PRESETS["caja_azul"], 6, 1080, 1920, out, FONTS)
+    d = dialogues(out)
+    assert "\\fscx125" in d[0] and "\\fscy125" in d[0]
+    assert "\\fscx125" not in d[-1]
+
+
+def test_hook_chunks_do_not_mix_with_body(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos tres cuatro cinco seis siete ocho"), PRESETS["caja_azul"], 3, 1080, 1920, out, FONTS)
+    big = ["\\fscx125" in d for d in dialogues(out)]
+    assert big == [True] * 3 + [False] * 5
+
+
+def test_active_word_gets_highlight_colour(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos tres"), PRESETS["amarillo_clasico"], 0, 1080, 1920, out, FONTS)
+    text = [fields(x)[9] for x in dialogues(out)]
+    assert "{\\1c&H00D4FF&}dos{\\1c&HFFFFFF&}" in text[1]
+    assert "{\\1c&H00D4FF&}uno" in text[0] and "00D4FF" not in text[0].split("uno")[1]
+    assert "{\\1c&H00D4FF&}uno" not in text[1]
+
+
+def test_caja_azul_box_is_on_active_word_only(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos tres"), PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
+    text = [fields(x)[9] for x in dialogues(out)]
+    # Opaque-box border style (3) in the highlight colour, hidden on every word but the active one.
+    style = styles(out)["Cap"]
+    assert style[15] == "3" and style[5] == "&H00DE4600"
+    assert all("\\3a&HFF&" in t.split("}")[0] for t in text)
+    assert "{\\3a&H00&}dos{\\3a&HFF&}" in text[1]
+    assert "{\\3a&H00&}uno{\\3a&HFF&}" in text[0] and "{\\3a&H00&}" not in text[1].split("dos")[1]
+    # Plain text is identical in every event, so the layout never shifts.
+    assert plain(text[0]) == plain(text[1]) == plain(text[2]) == "uno dos tres"
+
+
+def test_poster_is_uppercase(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("hola mundo"), PRESETS["poster"], 0, 1080, 1920, out, FONTS)
+    assert plain(fields(dialogues(out)[0])[9]) == "HOLA MUNDO"
+
+
+def test_non_latin_phrase_mode(tmp_path):
+    words = [Word(t, i * 0.3, i * 0.3 + 0.25) for i, t in enumerate(
+        ["これは", "とても", "長い", "日本語の", "文章です。", "次の", "文も", "あります。"])]
+    out = tmp_path / "s.ass"
+    write_ass(words, PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
+    d = dialogues(out)
+    assert 1 <= len(d) < len(words)
+    assert styles(out)[fields(d[0])[3]][1] == "Noto Sans"
+    assert all("\\3a&H00&" not in x and "\\1c" not in x for x in d)
+    assert styles(out)[fields(d[0])[3]][15] == "1"  # no box in phrase mode
+    assert abs(secs(fields(d[0])[1]) - words[0].start) < 0.01
+    assert any(plain(fields(x)[9]).endswith("文章です。") for x in d)  # sentence end closes a phrase
+
+
+def test_every_preset_font_is_a_bundled_family():
+    fams = family_names()
+    assert {p.font for p in PRESETS.values()} <= fams
+    assert "Noto Sans" in fams
+
+
+def test_presets_values():
+    p = PRESETS
+    assert (p["caja_azul"].font, p["caja_azul"].highlight, p["caja_azul"].box) == (
+        "Montserrat ExtraBold", "#0046DE", True)
+    assert (p["amarillo_clasico"].highlight, p["amarillo_clasico"].outline) == ("#FFD400", 6)
+    assert p["minimal_blanco"].font == "Inter SemiBold" and p["minimal_blanco"].size < p["caja_azul"].size
+    assert (p["poster"].font, p["poster"].highlight) == ("Anton", "#0A4CF0")
+    assert all(k == v.preset for k, v in p.items())
+
+
+def test_default_profile_uses_caja_azul_preset():
+    assert default_profile().subtitle == PRESETS["caja_azul"]
+    assert default_profile().subtitle is not PRESETS["caja_azul"]
+
+
+@pytest.mark.parametrize("w,h,position,expected", [
+    (1080, 1920, "bottom", 1306), (1080, 1920, "middle", 960), (1080, 1920, "top", 480),
+    (1920, 1080, "bottom", 918), (1920, 1080, "middle", 540), (1920, 1080, "top", 162),
+])
+def test_caption_baseline(w, h, position, expected):
+    assert caption_baseline_y(position, w, h) == expected
+
+
+def test_event_position_uses_baseline(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos"), PRESETS["minimal_blanco"], 0, 1080, 1920, out, FONTS)
+    m = re.search(r"\\pos\((\d+),(\d+)\)", fields(dialogues(out)[0])[9])
+    assert int(m.group(1)) == 540
+    # \an2 anchors the bottom of the line box, i.e. baseline + descent.
+    assert 1306 < int(m.group(2)) < 1306 + 40
+
+
+def test_long_chunk_is_shrunk_to_fit_safe_width(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("Extraordinariamente increíblemente"), PRESETS["caja_azul"], 2, 1080, 1920, out, FONTS)
+    m = re.search(r"\\fs(\d+)", fields(dialogues(out)[0])[9])
+    assert m and int(m.group(1)) < int(styles(out)["Cap"][2])
+
+
+def test_ass_font_size_is_em_not_libass_cell_height(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno"), PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
+    assert int(styles(out)["Cap"][2]) > 72  # libass Fontsize = winAscent+winDescent, larger than the em
+
+
+def test_fonts_dir_constant_points_at_bundle():
+    assert FONTS_DIR.is_dir() and (FONTS_DIR / "NotoSans-Regular.ttf").is_file()
