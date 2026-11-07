@@ -168,3 +168,32 @@ def test_shutdown_exits_even_with_an_open_browser_connection(tmp_data):
         conn.close()
         if t.is_alive():
             app_main.request_shutdown()
+
+
+def test_request_shutdown_falls_back_when_waitress_internals_missing(monkeypatch):
+    """R33 guard: without waitress's trigger/_map, shutdown still closes the server."""
+    class FakeServer:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    fake = FakeServer()
+    monkeypatch.setattr(app_main, "_server", fake)
+    app_main.request_shutdown()
+    assert fake.closed
+    fake.closed = False
+    app_main._close_everything(fake)  # no _map attribute: must not raise
+    assert fake.closed
+
+
+def test_unwritable_data_dir_exits_with_message(monkeypatch, capsys):
+    def boom(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(app_main.instance.InstanceLock, "acquire", boom)
+    import pytest as _pytest
+    with _pytest.raises(SystemExit) as exc:
+        app_main.main(["--no-browser"])
+    assert exc.value.code == 1
+    assert "→" in capsys.readouterr().out

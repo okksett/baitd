@@ -41,10 +41,17 @@ def _close_everything(server) -> None:
     Closing only the listening socket is not enough: the browser's idle keep-alive connection
     stays in waitress's map and run() keeps looping, so the process (and its instance lock)
     would outlive "Salir"."""
-    for obj in list(server._map.values()):  # waitress keeps its dispatchers in _map
-        if obj is not server and obj is not server.trigger:
-            obj.close()
-    server.close()
+    try:
+        conn_map = getattr(server, "_map", None) or {}  # waitress keeps its dispatchers in _map
+        trigger = getattr(server, "trigger", None)
+        for obj in list(conn_map.values()):
+            if obj is not server and obj is not trigger:
+                try:
+                    obj.close()
+                except Exception:  # one bad connection must not keep the process alive
+                    log.debug("closing a connection failed", exc_info=True)
+    finally:
+        server.close()
 
 
 def request_shutdown() -> None:
@@ -53,9 +60,12 @@ def request_shutdown() -> None:
         server = _server
     if server is None:
         return
+    trigger = getattr(server, "trigger", None)
     try:
-        server.trigger.pull_trigger(lambda: _close_everything(server))  # thread-safe hand-off
-    except OSError:  # the trigger is already closed: the loop is ending anyway
+        if trigger is None:
+            raise AttributeError("waitress server has no trigger")
+        trigger.pull_trigger(lambda: _close_everything(server))  # thread-safe hand-off
+    except (OSError, AttributeError):  # trigger closed or internals changed: plain close
         server.close()
 
 
@@ -133,7 +143,13 @@ def main(argv: list[str] | None = None) -> None:
 
     # one instance per data folder: a second worker would rerun the first one's running job
     lock = instance.InstanceLock(config.data_dir() / instance.LOCK_NAME)
-    if not lock.acquire():
+    try:
+        acquired = lock.acquire()
+    except OSError as e:  # data folder missing/read-only: explain instead of a traceback
+        print(f"No se puede usar la carpeta de datos {lock.path.parent} ({e.strerror or e}) → "
+              "Revisa que exista y que tengas permiso de escritura.")
+        raise SystemExit(1)
+    if not acquired:
         _point_at_running_instance(lock.path, args.no_browser)
         return
     try:

@@ -15,7 +15,7 @@ dependencies = [
     "imageio-ffmpeg>=0.8",
     "platformdirs",
     "fonttools",
-    "waitress",
+    "waitress>=3,<4",
 ]
 
 [project.optional-dependencies]
