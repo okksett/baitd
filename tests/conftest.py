@@ -28,6 +28,11 @@ def media_dir(tmp_path_factory):
                             ("v_land4k.mp4", "3840x2160", 3), ("v_land.mp4", "1280x720", 4)):
         _ff("-f", "lavfi", "-i", f"testsrc2=s={size}:r=30:d={dur}", "-c:v", "libx264",
             "-preset", "ultrafast", "-pix_fmt", "yuv420p", d / name)
+    _ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=3", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709",
+        "-color_trc", "bt709", d / "v_bt709.mp4")
+    _ff("-f", "lavfi", "-i", "testsrc2=s=720x1280:r=24000/1001:d=2", "-c:v", "libx264",
+        "-preset", "ultrafast", "-pix_fmt", "yuvj420p", d / "v_full.mp4")
     _ff("-f", "lavfi", "-i", "testsrc2=s=1600x1200:d=1", "-frames:v", "1", d / "photo.png")
     _ff("-f", "lavfi", "-i", "sine=f=220:d=6", "-ar", "24000", d / "voice.wav")
     _ff("-f", "lavfi", "-i", "sine=f=330:d=3", "-ar", "44100", d / "music.wav")

@@ -1,11 +1,13 @@
+import re
+import subprocess
 import threading
 import time
 
 import pytest
 
-from baitd.ffmpeg import probe
-from baitd.models import JobCancelled, RenderOptions, Shot
-from baitd.render import encoder_args, render_video
+from baitd.ffmpeg import encoder_args, ffmpeg_exe, probe
+from baitd.models import JobCancelled, RenderOptions, Shot, Voiceover, Word
+from baitd.render import render_video
 
 V = RenderOptions(1080, 1920, 30, "libx264")
 H60 = RenderOptions(1920, 1080, 60, "libx264")
@@ -59,20 +61,69 @@ def test_render_with_music(tmp_path, make_media, voice_6s, make_ass, music_file)
     assert abs(probe(out)["duration"] - 6.0) < 0.15
 
 
-def test_render_cancel_kills_ffmpeg(tmp_path, make_media, voice_6s, make_ass):
+def _cancel_when(tmp_path, make_media, voice_6s, make_ass, predicate):
     cancel = threading.Event()
     wd = tmp_path / "wd"
-    calls = []
+    seen = []
 
     def on_progress(f):
-        calls.append(f)
-        cancel.set()
+        seen.append(f)
+        if predicate(f):
+            cancel.set()
 
     with pytest.raises(JobCancelled):
         _render(tmp_path, _shots6(make_media), voice_6s, make_ass, cancel=cancel,
                 on_progress=on_progress, workdir=wd)
-    assert len(calls) == 1
     assert not list(wd.glob("shot_*.mp4")) and not (tmp_path / "out.mp4").exists()
+    return seen
+
+
+def test_render_cancel_during_shots(tmp_path, make_media, voice_6s, make_ass):
+    # first value > 0 arrives from a running shot encode / right after it
+    seen = _cancel_when(tmp_path, make_media, voice_6s, make_ass, lambda f: f > 0)
+    assert max(seen) < 0.6
+
+
+def test_render_cancel_during_final_pass(tmp_path, make_media, voice_6s, make_ass):
+    # progress > 0.6 only comes from the final pass's time= lines, while that ffmpeg runs
+    seen = _cancel_when(tmp_path, make_media, voice_6s, make_ass, lambda f: f > 0.6)
+    assert max(seen) < 1.0
+
+
+def _decoded(path, sel):
+    err = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path), "-map", sel, "-f", "null", "-"],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL).stderr
+    frames = re.findall(r"frame=\s*(\d+)", err)
+    t = re.findall(r"time=(\d+):(\d+):([\d.]+)", err)[-1]
+    return (int(frames[-1]) if frames else 0), int(t[0]) * 3600 + int(t[1]) * 60 + float(t[2]), err
+
+
+def test_render_mixed_color_sources_keep_av_in_sync(tmp_path, media_dir, make_media, make_ass):
+    # bt709-tagged clip + full-range (yuvj420p) 23.976 fps clip + untagged PNG, odd voice length
+    dur = 15.437
+    subprocess.run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=f=220:d={dur}", "-ar", "24000", str(media_dir / "voice_15.wav")], check=True)
+    voice = Voiceover(path=media_dir / "voice_15.wav", duration=dur, words=[Word("hi", 0.1, 0.5)],
+                      scene_bounds=[(0.0, dur)])
+    srcs = [make_media("v_bt709.mp4", w=1280, h=720), make_media("v_full.mp4"),
+            make_media("photo.png", kind="photo", w=1600, h=1200)]
+    cuts = [0.0] + [round(i * dur / 15 + (0.13 if i % 2 else -0.07), 3) for i in range(1, 15)] + [dur]
+    shots = [Shot(srcs[i % 3], cuts[i], cuts[i + 1]) for i in range(15)]
+    out, _ = _render(tmp_path, shots, voice, make_ass)
+    vframes, _, _ = _decoded(out, "0:v")
+    _, atime, _ = _decoded(out, "0:a")
+    info = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(out), "-f", "null", "-"],
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL).stderr
+    assert vframes == round(dur * 30)
+    assert abs(atime - dur) < 0.05
+    assert "Reconfiguring filter graph" not in info
+    assert re.search(r"yuv420p\(tv, bt709", info), info
+
+
+def test_render_falls_back_to_libx264_when_encoder_rejected(tmp_path, make_media, voice_6s, make_ass):
+    opts = RenderOptions(1080, 1920, 30, "h264_does_not_exist")
+    out, _ = _render(tmp_path, _shots6(make_media), voice_6s, make_ass, opts=opts)
+    assert abs(probe(out)["duration"] - 6.0) < 0.15
 
 
 def test_render_missing_media_path(tmp_path, make_media, voice_6s, make_ass):

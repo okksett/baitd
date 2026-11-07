@@ -136,15 +136,32 @@ def has_filter(name: str) -> bool:
 
 _HW_ENCODERS = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox"]
 
+_ENCODER_ARGS = {
+    "libx264": ["-c:v", "libx264", "-crf", "18", "-preset", "medium"],
+    "h264_nvenc": ["-c:v", "h264_nvenc", "-rc", "vbr", "-cq", "19", "-b:v", "0", "-preset", "p5"],
+    "h264_qsv": ["-c:v", "h264_qsv", "-global_quality", "20"],
+    "h264_amf": ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "21"],
+    "h264_videotoolbox": ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+}
+
+
+def encoder_args(encoder: str) -> list[str]:
+    """Video encoder arguments for the final pass (quality ~ CRF 18), always yuv420p.
+
+    An unknown encoder name is passed through as-is (ffmpeg then rejects it).
+    """
+    return [*_ENCODER_ARGS.get(encoder, ["-c:v", encoder]), "-pix_fmt", "yuv420p"]
+
 
 @lru_cache(maxsize=None)
 def pick_encoder() -> str:
-    """First hardware H.264 encoder whose 1-frame test encode works, else libx264."""
+    """First hardware H.264 encoder that accepts the real quality args on a 1080x1920 test
+    encode (a few frames), else libx264."""
     for enc in _HW_ENCODERS:
         try:
             run(
-                ["-f", "lavfi", "-i", "color=c=black:s=256x256:r=30:d=0.1", "-frames:v", "1",
-                 "-pix_fmt", "yuv420p", "-c:v", enc, "-f", "null", "-"]
+                ["-f", "lavfi", "-i", "color=c=black:s=1080x1920:r=30:d=0.5", "-frames:v", "5",
+                 *encoder_args(enc), "-f", "null", "-"]
             )
             return enc
         except Exception:
