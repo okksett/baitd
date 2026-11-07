@@ -147,3 +147,24 @@ def test_selftest_does_not_need_the_lock(tmp_data, monkeypatch, capsys):
     finally:
         held.release()
     assert exc.value.code == 0 and "SELFTEST OK" in capsys.readouterr().out
+
+
+def test_shutdown_exits_even_with_an_open_browser_connection(tmp_data):
+    # The browser keeps an idle keep-alive connection: closing only the listening socket left
+    # run() looping forever (and, with I6, the instance lock held by a process that no longer
+    # answers). request_shutdown must close every connection so main() returns.
+    import http.client
+    t, url = _start_in_thread(app_main.find_free_port())
+    conn = http.client.HTTPConnection("127.0.0.1", int(url.rsplit(":", 1)[1].strip("/")), timeout=5)
+    try:
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 200  # the connection stays open (HTTP/1.1 keep-alive)
+        app_main.request_shutdown()
+        t.join(10)
+        assert not t.is_alive()
+    finally:
+        conn.close()
+        if t.is_alive():
+            app_main.request_shutdown()

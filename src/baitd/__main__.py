@@ -35,11 +35,27 @@ def build_server(port: int, queue: JobQueue):
     return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd")
 
 
+def _close_everything(server) -> None:
+    """Runs in the server's own loop thread: close every open connection, then the server.
+
+    Closing only the listening socket is not enough: the browser's idle keep-alive connection
+    stays in waitress's map and run() keeps looping, so the process (and its instance lock)
+    would outlive "Salir"."""
+    for obj in list(server._map.values()):  # waitress keeps its dispatchers in _map
+        if obj is not server and obj is not server.trigger:
+            obj.close()
+    server.close()
+
+
 def request_shutdown() -> None:
-    """Stop the running server (used by tests and signal handlers)."""
+    """Stop the running server (used by the Salir endpoint and tests); run() then returns."""
     with _server_lock:
         server = _server
-    if server is not None:
+    if server is None:
+        return
+    try:
+        server.trigger.pull_trigger(lambda: _close_everything(server))  # thread-safe hand-off
+    except OSError:  # the trigger is already closed: the loop is ending anyway
         server.close()
 
 
