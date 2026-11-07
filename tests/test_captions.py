@@ -26,8 +26,17 @@ def read(path):
     return path.read_text(encoding="utf-8-sig")
 
 
-def dialogues(path):
+def all_dialogues(path):
     return [l for l in read(path).splitlines() if l.startswith("Dialogue:")]
+
+
+def dialogues(path):
+    """Text-layer events (layer 0): one per (chunk x active word)."""
+    return [l for l in all_dialogues(path) if l.startswith("Dialogue: 0,")]
+
+
+def box_layer(path):
+    return [l for l in all_dialogues(path) if l.startswith("Dialogue: 1,")]
 
 
 def fields(line, n=10):
@@ -101,7 +110,7 @@ def test_ass_header(tmp_path):
     body = read(out)
     assert "PlayResX: 1080" in body and "PlayResY: 1920" in body
     assert "WrapStyle: 2" in body and "ScaledBorderAndShadow: yes" in body
-    style = styles(out)["Cap"]
+    style = styles(out)["Caja_Text"]
     assert style[1] == "Montserrat ExtraBold"
     assert style[-4:-2] == ["90", "90"]  # MarginL, MarginR
 
@@ -118,18 +127,35 @@ def test_ass_timing_matches_words(tmp_path):
     assert secs(f[2]) > secs(f[1])
 
 
+def fs_of(line):
+    m = re.search(r"\\fs(\d+)", fields(line)[9])
+    return int(m.group(1)) if m else None
+
+
 def test_hook_is_bigger(tmp_path):
     out = tmp_path / "s.ass"
-    write_ass(WORDS, PRESETS["caja_azul"], 6, 1080, 1920, out, FONTS)
+    write_ass(ws("uno dos tres cuatro cinco"), PRESETS["caja_azul"], 2, 1080, 1920, out, FONTS)
     d = dialogues(out)
-    assert "\\fscx125" in d[0] and "\\fscy125" in d[0]
-    assert "\\fscx125" not in d[-1]
+    base = int(styles(out)["Caja_Text"][2])
+    assert abs(fs_of(d[0]) / base - 1.25) < 0.02
+    assert fs_of(d[-1]) is None  # body uses the style size
+    assert "fscx" not in "".join(d) and "fscy" not in "".join(d)
+
+
+def test_hook_is_bigger_in_every_preset(tmp_path):
+    for key in PRESETS:
+        out = tmp_path / f"{key}.ass"
+        write_ass(ws("uno dos tres cuatro"), PRESETS[key], 2, 1080, 1920, out, FONTS)
+        d = dialogues(out)
+        name = "Caja_Text" if PRESETS[key].box else "Cap"
+        assert abs(fs_of(d[0]) / int(styles(out)[name][2]) - 1.25) < 0.02, key
+        assert fs_of(d[-1]) is None, key
 
 
 def test_hook_chunks_do_not_mix_with_body(tmp_path):
     out = tmp_path / "s.ass"
     write_ass(ws("uno dos tres cuatro cinco seis siete ocho"), PRESETS["caja_azul"], 3, 1080, 1920, out, FONTS)
-    big = ["\\fscx125" in d for d in dialogues(out)]
+    big = [fs_of(d) is not None for d in dialogues(out)]
     assert big == [True] * 3 + [False] * 5
 
 
@@ -142,18 +168,24 @@ def test_active_word_gets_highlight_colour(tmp_path):
     assert "{\\1c&H00D4FF&}uno" not in text[1]
 
 
-def test_caja_azul_box_is_on_active_word_only(tmp_path):
+def test_caja_azul_uses_two_layers(tmp_path):
     out = tmp_path / "s.ass"
     write_ass(ws("uno dos tres"), PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
-    text = [fields(x)[9] for x in dialogues(out)]
-    # Opaque-box border style (3) in the highlight colour, hidden on every word but the active one.
-    style = styles(out)["Cap"]
-    assert style[15] == "3" and style[5] == "&H00DE4600"
-    assert all("\\3a&HFF&" in t.split("}")[0] for t in text)
-    assert "{\\3a&H00&}dos{\\3a&HFF&}" in text[1]
-    assert "{\\3a&H00&}uno{\\3a&HFF&}" in text[0] and "{\\3a&H00&}" not in text[1].split("dos")[1]
-    # Plain text is identical in every event, so the layout never shifts.
-    assert plain(text[0]) == plain(text[1]) == plain(text[2]) == "uno dos tres"
+    text, box = dialogues(out), box_layer(out)
+    assert len(text) == len(box) == 3
+    st = styles(out)
+    # Layer 0: legible text, dark outline, no box. Layer 1: opaque box in the highlight colour.
+    assert fields(text[0])[3] == "Caja_Text" and st["Caja_Text"][15] == "1" and float(st["Caja_Text"][16]) > 0
+    assert fields(box[0])[3] == "Caja_Box" and st["Caja_Box"][15] == "3" and st["Caja_Box"][5] == "&H00DE4600"
+    for t, b, word in zip(text, box, ["uno", "dos", "tres"]):
+        assert fields(t)[1:3] == fields(b)[1:3]  # same timing
+        assert fields(t)[9].split("}")[0] in fields(b)[9]  # same position/size head
+        # Both layers carry the same plain text, so libass lays the glyphs out identically.
+        assert plain(fields(t)[9]) == plain(fields(b)[9]) == "uno dos tres"
+        # Text layer: no per-word overrides at all. Box layer: everything hidden but the active word.
+        assert "}" not in fields(t)[9].split("}", 1)[1]
+        assert "\\1a&HFF&\\3a&HFF&\\4a&HFF&" in fields(b)[9]
+        assert "{\\1a&H00&\\3a&H00&}" + word + "{\\1a&HFF&\\3a&HFF&}" in fields(b)[9]
 
 
 def test_poster_is_uppercase(tmp_path):
@@ -218,13 +250,13 @@ def test_long_chunk_is_shrunk_to_fit_safe_width(tmp_path):
     out = tmp_path / "s.ass"
     write_ass(ws("Extraordinariamente increíblemente"), PRESETS["caja_azul"], 2, 1080, 1920, out, FONTS)
     m = re.search(r"\\fs(\d+)", fields(dialogues(out)[0])[9])
-    assert m and int(m.group(1)) < int(styles(out)["Cap"][2])
+    assert m and int(m.group(1)) < int(styles(out)["Caja_Text"][2]) * 1.25
 
 
 def test_ass_font_size_is_em_not_libass_cell_height(tmp_path):
     out = tmp_path / "s.ass"
     write_ass(ws("uno"), PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
-    assert int(styles(out)["Cap"][2]) > 72  # libass Fontsize = winAscent+winDescent, larger than the em
+    assert int(styles(out)["Caja_Text"][2]) > 72  # libass Fontsize = winAscent+winDescent, larger than the em
 
 
 def test_fonts_dir_constant_points_at_bundle():

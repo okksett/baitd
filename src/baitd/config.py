@@ -5,12 +5,14 @@ import os
 import re
 import tempfile
 import unicodedata
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from platformdirs import user_data_dir
 
-from .models import Profile, SubtitleStyle
+from .captions import PRESETS
+from .models import Profile
 
 SETTINGS_DEFAULTS: dict = {
     "openai_key": "", "gemini_key": "", "elevenlabs_key": "", "pexels_key": "",
@@ -84,11 +86,7 @@ def default_profile() -> Profile:
         id="default", name="Por defecto", language="es", aspect="9:16", fps=30,
         seconds=45, llm_provider="gemini", llm_model="", tone="",
         tts_provider="edge", voice="es-ES-ElviraNeural", rate=0,
-        subtitle=SubtitleStyle(
-            preset="caja_azul", font="Montserrat ExtraBold", size=72,
-            color="#FFFFFF", highlight="#0046DE", outline=0, box=True,
-            position="bottom",
-        ),
+        subtitle=replace(PRESETS["caja_azul"]),
         music="lofi", music_volume=0.15,
     )
 

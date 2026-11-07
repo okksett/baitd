@@ -35,7 +35,8 @@ _PHRASE_BREAK_AFTER = _BREAK_AFTER + "。！？、，；：…"
 _PHRASE_CHARS = 12
 _SAFE_MARGIN = 90  # MarginL / MarginR, in output pixels
 _HOOK_SCALE = 1.25
-_BOX_PAD = 14  # padding of the active-word box, in output pixels
+_BOX_PAD = 12  # padding of the active-word box, in output pixels
+_CAJA_OUTLINE = 4  # dark outline of the caja_azul text layer, in output pixels
 _SHADOW = 3
 _BASELINE = {  # fraction of the output height where the text baseline sits
     "portrait": {"bottom": 0.68, "middle": 0.50, "top": 0.25},
@@ -183,14 +184,21 @@ def _clean(text: str) -> str:
 
 
 def _style_line(name: str, font: str, face: _Face | None, style: SubtitleStyle, height: int,
-                baseline: int, box: bool) -> str:
+                baseline: int, kind: str = "plain") -> str:
+    """kind: 'plain' (outline/shadow from the preset), 'caja_text' (legible white text with a dark
+    outline, no box) or 'caja_box' (opaque border style = the highlight box)."""
     size = face.ass_size(style.size) if face else style.size
-    # Box look: opaque border style, whose per-glyph border is made visible on the active word only.
-    border_style, outline, outline_color = (3, _BOX_PAD, style.highlight) if box else (1, style.outline, "#000000")
-    shadow = _SHADOW if (not box and style.outline == 0) else 0
+    back = hex_to_ass("#000000", 0x80)
+    if kind == "caja_box":
+        border_style, outline, outline_color, shadow = 3, _BOX_PAD, hex_to_ass(style.highlight), 0
+    elif kind == "caja_text":
+        border_style, outline, outline_color, shadow = 1, _CAJA_OUTLINE, hex_to_ass("#000000", 0x66), 0
+    else:
+        border_style, outline, outline_color = 1, style.outline, hex_to_ass("#000000")
+        shadow = _SHADOW if style.outline == 0 else 0
     return (
         f"Style: {name},{font},{size},{hex_to_ass(style.color)},{hex_to_ass(style.color)},"
-        f"{hex_to_ass(outline_color)},{hex_to_ass('#000000', 0x80)},0,0,0,0,100,100,0,0,{border_style},"
+        f"{outline_color},{back},0,0,0,0,100,100,0,0,{border_style},"
         f"{outline},{shadow},2,{_SAFE_MARGIN},{_SAFE_MARGIN},{max(0, height - baseline)},1")
 
 
@@ -205,7 +213,8 @@ def write_ass(
     upper = style.preset in _UPPERCASE_PRESETS and latin
 
     font_name = style.font if latin else FALLBACK_FONT
-    style_name = "Cap" if latin else "CapFallback"
+    boxed = latin and style.box
+    style_name = "CapFallback" if not latin else "Caja_Text" if boxed else "Cap"
     face = faces.get(font_name)
     avail = width - 2 * _SAFE_MARGIN
 
@@ -217,30 +226,22 @@ def write_ass(
     for group, is_hook in groups:
         chunks = chunk_fn(group)
         for chunk in chunks:
-            scale = _HOOK_SCALE if is_hook else 1.0
             texts = [_clean(w.text.upper() if upper else w.text) for w in chunk]
             joiner = " " if latin else _joiner(chunk)
             line = joiner.join(texts)
-            boxed = latin and style.box
             pad = 2 * _BOX_PAD if boxed else 2 * style.outline
-            em = float(style.size)
+            # The hook is bigger through the font size itself (an \fsc scale would be applied twice
+            # to libass' opaque boxes).
+            em = style.size * (_HOOK_SCALE if is_hook else 1.0)
             if face is not None:
-                need = face.width(line, em) * scale + pad
+                need = face.width(line, em) + pad
                 if need > avail:
                     em = max(1.0, math.floor(em * (avail - pad) / (need - pad)))
-            descent = face.descent / face.upm * em * scale if face else 0.0
+            descent = face.descent / face.upm * em if face else 0.0
             y = round(baseline + descent)
             head = f"\\an2\\pos({width // 2},{y})"
-            if boxed:
-                head += "\\3a&HFF&"
             if face is not None and em != style.size:
                 head += f"\\fs{face.ass_size(em)}"
-            if is_hook:
-                head += f"\\fscx{round(_HOOK_SCALE * 100)}\\fscy{round(_HOOK_SCALE * 100)}"
-                if boxed:
-                    # libass applies the vertical scale (fscy) twice to the opaque box height, so the
-                    # scaled box already overshoots the text: drop its vertical padding.
-                    head += "\\ybord0"
 
             nxt_chunk_start = chunk[-1].end
             if latin:
@@ -251,10 +252,17 @@ def write_ass(
                     else:
                         end = nxt_chunk_start
                     end = max(end, w.start + 0.04)
-                    parts = []
-                    for ti, t in enumerate(texts):
-                        parts.append(_mark(t, style) if ti == wi else t)
-                    events.append(_dialogue(w.start, end, style_name, f"{{{head}}}" + " ".join(parts)))
+                    if boxed:
+                        # Layer 0: every word legible (dark outline). Layer 1: same text, only the
+                        # active word visible, drawn on the highlight box. Same string = same layout.
+                        events.append(_dialogue(w.start, end, "Caja_Text", f"{{{head}}}" + " ".join(texts)))
+                        hidden = "\\1a&HFF&\\3a&HFF&\\4a&HFF&"
+                        parts = [_mark(t, style) if ti == wi else t for ti, t in enumerate(texts)]
+                        events.append(_dialogue(
+                            w.start, end, "Caja_Box", f"{{{head}{hidden}}}" + " ".join(parts), layer=1))
+                    else:
+                        parts = [_mark(t, style) if ti == wi else t for ti, t in enumerate(texts)]
+                        events.append(_dialogue(w.start, end, style_name, f"{{{head}}}" + " ".join(parts)))
             else:
                 end = max(chunk[-1].end, chunk[0].start + 0.04)
                 events.append(_dialogue(chunk[0].start, end, style_name, f"{{{head}}}{line}"))
@@ -266,20 +274,25 @@ def write_ass(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        _style_line("Cap", style.font, faces.get(style.font), style, height, baseline, style.box),
-        _style_line("CapFallback", FALLBACK_FONT, faces.get(FALLBACK_FONT), style, height, baseline, False),
+        *([
+            _style_line("Caja_Text", style.font, faces.get(style.font), style, height, baseline, "caja_text"),
+            _style_line("Caja_Box", style.font, faces.get(style.font), style, height, baseline, "caja_box"),
+        ] if style.box else [
+            _style_line("Cap", style.font, faces.get(style.font), style, height, baseline),
+        ]),
+        _style_line("CapFallback", FALLBACK_FONT, faces.get(FALLBACK_FONT), style, height, baseline),
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     Path(path).write_text("\n".join(header + events) + "\n", encoding="utf-8")
 
 
-def _dialogue(start: float, end: float, style_name: str, text: str) -> str:
-    return f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},{style_name},,0,0,0,,{text}"
+def _dialogue(start: float, end: float, style_name: str, text: str, layer: int = 0) -> str:
+    return f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style_name},,0,0,0,,{text}"
 
 
 def _mark(text: str, style: SubtitleStyle) -> str:
     """Wrap the active word in override tags; the surrounding text is never touched."""
     if style.box:
-        return f"{{\\3a&H00&}}{text}{{\\3a&HFF&}}"
+        return f"{{\\1a&H00&\\3a&H00&}}{text}{{\\1a&HFF&\\3a&HFF&}}"
     return f"{{\\1c{_tag_color(style.highlight)}}}{text}{{\\1c{_tag_color(style.color)}}}"
