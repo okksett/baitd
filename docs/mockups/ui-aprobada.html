@@ -1,0 +1,136 @@
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Instrument+Serif:ital@1&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<h2>Modo oscuro y modo claro</h2>
+<p class="subtitle">El fondo es un degradado de azul a negro, como en tu referencia. Ya no hay coral: el botón principal es blanco en el modo oscuro y azul en el claro. Arriba hay un interruptor para cambiar de modo.</p>
+<style>
+  .ss { --bg:#010511; --panel:rgba(1,5,17,.55); --line:rgba(120,150,230,.28); --azure:#0046DE; --coral:#F2798F; --text:#EEF1F8; --muted:#AEB8D3; --cta:#ffffff; --ctatext:#0033A8; --b1:#cfe0ff;
+        font-family:Inter,system-ui,sans-serif; background:var(--bg); color:var(--text); border-radius:14px; padding:22px 24px; font-size:14px;
+        background-image: radial-gradient(120% 90% at 70% 20%, #0a4cf0 0%, #0636b0 30%, #031a5e 58%, #010511 88%); text-align:left; }
+  .ss .top { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; flex-wrap:wrap; gap:10px; }
+  .ss .pill, .ss .modetog span { white-space:nowrap; }
+  .ss .brand { font-family:Anton,sans-serif; font-size:26px; letter-spacing:.5px; line-height:1; }
+  .ss .brand em { font-family:'Instrument Serif',serif; font-style:italic; font-size:28px; letter-spacing:0; color:var(--b1); margin-left:4px; }
+  .ss .pill { border:1px solid var(--line); border-radius:999px; padding:7px 14px; color:var(--text); background:rgba(255,255,255,.03); }
+  .ss .gear { width:34px; height:34px; border-radius:50%; border:1px solid var(--line); display:grid; place-items:center; }
+  .ss .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(250px,1fr)); gap:26px; }
+  .ss .lbl { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:14px 0 6px; }
+  .ss .lbl:first-child { margin-top:0; }
+  .ss .input { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:11px 13px; }
+  .ss .input.big { font-size:17px; padding:14px; }
+  .ss .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .ss .row .input { white-space:nowrap; padding:9px 11px; }
+  .ss .row > * { flex:1 1 auto; }
+  .ss .acc { border-top:1px solid var(--line); padding:11px 2px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .ss .acc:last-of-type { border-bottom:1px solid var(--line); }
+  .ss .acc span:last-child { color:var(--muted); }
+  .ss .warn { color:var(--warn,#FFC27A); font-size:12px; }
+  .ss .btns { display:flex; gap:10px; margin-top:18px; }
+  .ss .b1 { flex:1; text-align:center; padding:12px; border-radius:999px; border:1px solid var(--line); color:var(--b1); font-weight:600; }
+  .ss .b2 { flex:1.3; text-align:center; padding:12px; border-radius:999px; background:var(--cta); color:var(--ctatext); font-weight:600; letter-spacing:.06em; text-transform:uppercase; font-size:13px; }
+  .ss .phone { width:min(200px,70%); aspect-ratio:9/16; margin:0 auto; border-radius:22px; position:relative; overflow:hidden;
+               background: linear-gradient(170deg,#0d2a7a 0%, #06123a 55%, #010511 100%); border:1px solid var(--line); }
+  .ss .phone .sub { position:absolute; left:0; right:0; bottom:28%; text-align:center; font-family:Anton,sans-serif; font-size:22px; line-height:1.05; text-transform:uppercase; text-shadow:0 3px 8px #000; }
+  .ss .phone .sub b { color:#fff; background:#0046DE; padding:0 6px; border-radius:4px; font-weight:400; }
+  .ss .phone .tag { position:absolute; top:10px; left:10px; font-size:11px; background:rgba(0,0,0,.45); padding:3px 8px; border-radius:999px; }
+  .ss .prog { margin-top:16px; }
+  .ss .bar { height:6px; border-radius:99px; background:var(--line); overflow:hidden; }
+  .ss .bar i { display:block; height:100%; width:62%; background:linear-gradient(90deg,#3d7bff,var(--cta)); }
+  .ss .step { display:flex; justify-content:space-between; color:var(--muted); font-size:13px; margin-top:8px; }
+  .ss .step b { color:var(--text); font-weight:500; }
+  .ss .head { font-family:Anton,sans-serif; font-size:30px; line-height:1; margin-bottom:16px; text-transform:uppercase; }
+  .ss .head em { font-family:'Instrument Serif',serif; text-transform:none; font-size:32px; color:var(--b1); }
+
+  .ss.light { --bg:#F4F7FF; --panel:rgba(255,255,255,.8); --line:#CCD7F2; --text:#06102E; --muted:#4A5675; --cta:#0046DE; --ctatext:#fff; --b1:#0046DE; --warn:#A35A00;
+              background-image: radial-gradient(120% 90% at 70% 15%, #c9d9ff 0%, #e6edff 40%, #F7F9FF 75%); }
+  .ss.light .phone { border-color:#b9c8ee; }
+  .ss.light .bar i { background:linear-gradient(90deg,#0046DE,#010511); }
+  .duo { display:grid; grid-template-columns: repeat(auto-fit,minmax(420px,1fr)); gap:18px; }
+  .ss .modetog { display:flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; font-size:12px; }
+  .ss .modetog span { padding:6px 10px; }
+  .ss .modetog span.on { background:var(--cta); color:var(--ctatext); }
+</style>
+<div class="duo">
+<div class="ss">
+  <div class="top">
+    <div class="brand">BAIT<em>d</em></div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <div class="pill">Datos curiosos ▾</div>
+      <div class="modetog"><span class="on">Oscuro</span><span>Claro</span></div><div class="gear">⚙</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="head">Crea tu <em>short</em></div>
+      <div class="lbl">Tema</div>
+      <div class="input big">Los beneficios de leer</div>
+      <div class="row" style="margin-top:10px">
+        <div class="input">Español ▾</div>
+        <div class="input">9:16 · 1080p ▾</div>
+        <div class="input">30 fps ▾</div>
+      </div>
+      <div class="lbl">Estilo</div>
+      <div class="acc"><span>Voz</span><span>Elvira · gratis <span class="warn">⚠ menos natural</span> ›</span></div>
+      <div class="acc"><span>Subtítulos</span><span>Palabra resaltada · azul ›</span></div>
+      <div class="acc"><span>Música</span><span>Lo-fi · 15% ›</span></div>
+      <div class="btns">
+        <div class="b1">Escribir guion</div>
+        <div class="b2">Crear video →</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="phone">
+        <div class="tag">Vista previa</div>
+        <div class="sub">Leer <b>6 minutos</b><br>baja tu estrés</div>
+      </div>
+      <div class="prog">
+        <div class="bar"><i></i></div>
+        <div class="step"><b>Buscando clips…</b><span>3 de 5</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ss light">
+  <div class="top">
+    <div class="brand">BAIT<em>d</em></div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <div class="pill">Datos curiosos ▾</div>
+      <div class="modetog"><span>Oscuro</span><span class="on">Claro</span></div><div class="gear">⚙</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="head">Crea tu <em>short</em></div>
+      <div class="lbl">Tema</div>
+      <div class="input big">Los beneficios de leer</div>
+      <div class="row" style="margin-top:10px">
+        <div class="input">Español ▾</div>
+        <div class="input">9:16 · 1080p ▾</div>
+        <div class="input">30 fps ▾</div>
+      </div>
+      <div class="lbl">Estilo</div>
+      <div class="acc"><span>Voz</span><span>Elvira · gratis <span class="warn">⚠ menos natural</span> ›</span></div>
+      <div class="acc"><span>Subtítulos</span><span>Palabra resaltada · azul ›</span></div>
+      <div class="acc"><span>Música</span><span>Lo-fi · 15% ›</span></div>
+      <div class="btns">
+        <div class="b1">Escribir guion</div>
+        <div class="b2">Crear video →</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="phone">
+        <div class="tag">Vista previa</div>
+        <div class="sub">Leer <b>6 minutos</b><br>baja tu estrés</div>
+      </div>
+      <div class="prog">
+        <div class="bar"><i></i></div>
+        <div class="step"><b>Buscando clips…</b><span>3 de 5</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
