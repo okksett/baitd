@@ -35,21 +35,29 @@ def find_media(keywords: list[str], need: int, min_seconds: float, out_w: int, o
     taken = set(used)
     result: list[Media] = []
     errors: list[UserError] = []
+    dead: set = set()  # providers whose key was rejected; not queried again in this call
     for fn, (query, o) in stages:
-        if len(result) >= need:
-            break
-        found: list[Media] = []
+        # Pexels first; Pixabay is only asked while the stage is still short of `need`.
         for prov in providers:
+            if len(result) >= need:
+                break
+            if prov in dead:
+                continue
             try:
-                found += getattr(prov, fn)(query, o, settings, out_w=out_w, out_h=out_h)
+                found = getattr(prov, fn)(query, o, settings, out_w=out_w, out_h=out_h)
             except UserError as e:
                 errors.append(e)
-        found = [m for m in found if m.id not in taken and passes_quality(m, out_w, out_h)]
-        found.sort(key=lambda m: score(m, out_w, out_h, min_seconds), reverse=True)
-        for m in found:
-            if len(result) < need and m.id not in taken:
-                taken.add(m.id)
-                result.append(m)
+                if "no es válida" in e.cause:
+                    dead.add(prov)
+                continue
+            found = [m for m in found if m.id not in taken and passes_quality(m, out_w, out_h)]
+            found.sort(key=lambda m: score(m, out_w, out_h, min_seconds), reverse=True)
+            for m in found:
+                if len(result) < need and m.id not in taken:
+                    taken.add(m.id)
+                    result.append(m)
+        if len(result) >= need:
+            break
     if not result:
         if errors:  # e.g. an invalid key is more useful than "nothing found"
             raise errors[0]

@@ -198,3 +198,56 @@ def test_download_error_is_user_error(monkeypatch, tmp_data):
     with pytest.raises(UserError):
         cache.download(media(1080, 1920, id="pexels:v:2"))
     assert not list((tmp_data / "cache").glob("*"))
+
+
+def per_provider(monkeypatch, pex, pix):
+    """pex/pix: callables (query, orient, settings, **kw) -> list; photos return nothing."""
+    monkeypatch.setattr(pexels, "search_videos", pex)
+    monkeypatch.setattr(pixabay, "search_videos", pix)
+    for mod in (pexels, pixabay):
+        monkeypatch.setattr(mod, "search_photos", lambda q, o, s, **kw: [])
+
+
+KEYS = {"pexels_key": "k", "pixabay_key": "k"}
+
+
+def test_pixabay_not_called_when_pexels_fills_need(monkeypatch):
+    pix_calls = []
+    a = media(1080, 1920, id="pexels:v:1")
+    per_provider(monkeypatch, lambda q, o, s, **kw: [a],
+                 lambda q, o, s, **kw: pix_calls.append(q) or [])
+    out = find_media(["book"], 1, 2.0, 1080, 1920, set(), KEYS)
+    assert [m.id for m in out] == ["pexels:v:1"] and pix_calls == []
+
+
+def test_pixabay_fills_remainder_after_pexels(monkeypatch):
+    a = media(1080, 1920, id="pexels:v:1", dur=2.0)
+    b = media(1080, 1920, id="pixabay:v:9", dur=60.0)  # better score, still comes after Pexels
+    per_provider(monkeypatch, lambda q, o, s, **kw: [a], lambda q, o, s, **kw: [b])
+    out = find_media(["book"], 2, 2.0, 1080, 1920, set(), KEYS)
+    assert [m.id for m in out] == ["pexels:v:1", "pixabay:v:9"]
+
+
+def test_auth_failed_provider_is_skipped_later(monkeypatch):
+    pex_calls = []
+
+    def pex(q, o, s, **kw):
+        pex_calls.append(q)
+        raise UserError("La clave de Pexels no es válida", "Revísala en Ajustes")
+
+    b = media(1080, 1920, id="pixabay:v:9")
+    c = media(1080, 1920, id="pixabay:v:10")
+    seq = iter([[b], [c]])
+    per_provider(monkeypatch, pex, lambda q, o, s, **kw: next(seq, []))
+    out = find_media(["book", "page"], 2, 2.0, 1080, 1920, set(), KEYS)
+    assert [m.id for m in out] == ["pixabay:v:9", "pixabay:v:10"]
+    assert len(pex_calls) == 1
+
+
+def test_pixabay_only_key(monkeypatch):
+    pex_calls = []
+    b = media(1080, 1920, id="pixabay:v:9")
+    per_provider(monkeypatch, lambda q, o, s, **kw: pex_calls.append(q) or [],
+                 lambda q, o, s, **kw: [b])
+    out = find_media(["book"], 1, 2.0, 1080, 1920, set(), {"pixabay_key": "k"})
+    assert [m.id for m in out] == ["pixabay:v:9"] and pex_calls == []
