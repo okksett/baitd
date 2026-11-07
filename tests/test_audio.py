@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from baitd import audio
-from baitd.ffmpeg import ffmpeg_exe, run
+from baitd.ffmpeg import ffmpeg_exe, probe, run
 
 DURATION = 6.0
 VOICE_END = 3.0  # the fake voice talks during 0..3 s and is silent afterwards
@@ -27,18 +27,18 @@ def sources(tmp_path_factory):
     # "voice": a tone for 3 s followed by 3 s of silence; "music": 2 s of noise (shorter than
     # the video so that the -stream_loop in music_input_args is really exercised).
     _gen(voice, f"sine=frequency=300:duration={DURATION}", "-af", f"volume=0:enable='gte(t,{VOICE_END})'")
-    _gen(music, "anoisesrc=color=pink:amplitude=0.5:duration=2:sample_rate=44100")
+    _gen(music, "anoisesrc=color=pink:amplitude=0.5:duration=2:sample_rate=44100:seed=1")
     return voice, music
 
 
-def render_mix(tmp_path, sources, volume: float = 0.15, has_music: bool = True):
-    voice, music = sources
+def render_mix(tmp_path, sources, volume: float = 0.15, has_music: bool = True, voice=None):
+    voice, music = (voice or sources[0]), sources[1]
     out = tmp_path / "mix.wav"
     args = ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-i", str(voice)]
     if has_music:
         args += audio.music_input_args(music)
     args += ["-filter_complex", audio.mix_filter(has_music, volume, DURATION), "-map", "[aout]",
-             "-t", str(DURATION), "-ar", "48000", str(out)]
+             "-t", str(DURATION + 2), "-ar", "48000", str(out)]
     run(args)
     return out
 
@@ -127,7 +127,7 @@ def test_mix_filter_with_music_has_required_stages():
     f = audio.mix_filter(True, 0.15, 30)
     for part in ["[1:a]loudnorm=I=-14:TP=-1.5:LRA=11", "[2:a]", "atrim=0:30", "volume=0.15",
                  "sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300",
-                 "amix=inputs=2:normalize=0", "alimiter=limit=0.8:level=disabled", "afade=t=out:st=28.5:d=1.5"]:
+                 "amix=inputs=2:normalize=0", "alimiter=limit=0.75:level=disabled", "afade=t=out:st=28.5:d=1.5"]:
         assert part in f
     assert f.endswith("[aout]")
 
@@ -159,3 +159,23 @@ def test_final_mix_does_not_clip(tmp_path, sources):
 def test_fades_out_at_the_end(tmp_path, sources):
     out = render_mix(tmp_path, sources, volume=1.0)
     assert mean_volume(out, DURATION - 0.3, DURATION) < mean_volume(out, DURATION - 3.0, DURATION - 2.5) - 6
+
+
+@pytest.fixture
+def short_voice(tmp_path):
+    p = tmp_path / "short_voice.wav"  # 3 s of voice only, shorter than the 6 s video
+    _gen(p, f"sine=frequency=300:duration={VOICE_END}")
+    return p
+
+
+def test_short_voice_music_lasts_full_duration_and_fades(tmp_path, sources, short_voice):
+    out = render_mix(tmp_path, sources, volume=1.0, voice=short_voice)
+    assert abs(probe(out)["duration"] - DURATION) <= 0.05
+    assert mean_volume(out, 3.5, 4.3) > -40  # music still audible after the voice ended
+    assert mean_volume(out, DURATION - 0.3, DURATION) < mean_volume(out, 3.5, 4.3) - 6
+
+
+def test_short_voice_without_music_is_padded_to_duration(tmp_path, sources, short_voice):
+    out = render_mix(tmp_path, sources, has_music=False, voice=short_voice)
+    assert abs(probe(out)["duration"] - DURATION) <= 0.05
+    assert mean_volume(out, 3.5, 5.5) < -60  # silent tail

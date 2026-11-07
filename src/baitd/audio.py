@@ -54,11 +54,15 @@ def mix_filter(has_music: bool, volume: float, duration: float) -> str:
 
     Input order the caller must use: input 1 = voice-over, input 2 = music (via music_input_args);
     input 0 is the video. With has_music=False only input 1 is used.
-    The voice is normalised to -14 LUFS and resampled to 48 kHz (loudnorm outputs 192 kHz).
+    The voice is normalised to -14 LUFS, resampled to 48 kHz (loudnorm outputs 192 kHz) and
+    padded/trimmed to `duration`, so the output is always exactly `duration` long.
     The music is trimmed to `duration`, scaled by `volume`, ducked by a sidechain keyed on the
-    voice, mixed, limited (sample ceiling 0.8 keeps true peak <= -1 dBTP even when heavily limited) and faded out over the last 1.5 s.
+    voice, mixed, limited (sample ceiling 0.75 keeps true peak <= -1 dBTP even when heavily limited) and faded out over the last 1.5 s.
     """
-    voice = "[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
+    # pad (or trim) the voice to exactly `duration`: a shorter voice would otherwise end the
+    # sidechain/amix early and cut the music and its fade-out
+    voice = (f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,"
+             f"apad=whole_dur={duration:g},atrim=0:{duration:g}")
     if not has_music:
         return f"{voice}[aout]"
     fade_start = max(0.0, duration - _FADE_OUT)
@@ -66,6 +70,6 @@ def mix_filter(has_music: bool, volume: float, duration: float) -> str:
         f"{voice},asplit=2[v][sc]",
         f"[2:a]aresample=48000,atrim=0:{duration:g},asetpts=PTS-STARTPTS,volume={volume}[m]",
         "[m][sc]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300[md]",
-        "[v][md]amix=inputs=2:normalize=0,alimiter=limit=0.8:level=disabled,"
+        "[v][md]amix=inputs=2:normalize=0,alimiter=limit=0.75:level=disabled,"
         f"afade=t=out:st={fade_start:g}:d={_FADE_OUT}[aout]",
     ])
