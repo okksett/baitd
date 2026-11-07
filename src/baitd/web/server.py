@@ -68,8 +68,8 @@ def _load_i18n() -> dict[str, dict[str, str]]:
 
 def _stored_theme() -> str:
     """The saved theme, or "" when the user never chose one (the page then follows the OS)."""
-    raw = config._read_json(config.data_dir() / "settings.json", {}, dict)
-    return raw.get("theme") if raw.get("theme") in THEMES else ""
+    theme = config.raw_settings().get("theme")
+    return theme if theme in THEMES else ""
 
 
 def _cache_gb(value) -> float:
@@ -226,6 +226,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     def http_error(e: HTTPException):
         messages = {
             404: "No se encontró lo que buscas → Recarga la página",
+            403: "Acceso no permitido → Abre el vídeo desde Baitd",
             405: "Operación no permitida → Recarga la página",
         }
         msg = messages.get(e.code, f"Error {e.code} → Recarga la página e inténtalo de nuevo")
@@ -306,10 +307,11 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     @app.delete("/api/profiles/<profile_id>")
     def delete_profile(profile_id: str):
         profiles = _profiles()
-        if any(p.id == profile_id for p in profiles):
-            if len(profiles) <= 1:
-                raise UserError("No se puede borrar el último perfil", "Crea otro perfil antes de borrar este")
-            config.delete_profile(profile_id)
+        if not any(p.id == profile_id for p in profiles):
+            abort(404)
+        if len(profiles) <= 1:
+            raise UserError("No se puede borrar el último perfil", "Crea otro perfil antes de borrar este")
+        config.delete_profile(profile_id)
         return jsonify(profiles=[p.to_dict() for p in _profiles()])
 
     # --- voices and music ---
@@ -380,6 +382,8 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
 
     @app.get("/api/jobs/<job_id>/video")
     def job_video(job_id: str):
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites
+            abort(403)
         job = _public_job(job_or_404(job_id))
         if not job["has_video"]:
             abort(404)

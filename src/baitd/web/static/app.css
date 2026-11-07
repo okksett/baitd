@@ -218,7 +218,7 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 /* ---------- review ---------- */
 
 .review { margin-top: 26px; }
-.review-head, .queue-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.review-head, .queue-head, .script-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .review h3, .queue h3 { font: 400 20px/1.1 Anton, sans-serif; text-transform: uppercase; letter-spacing: .3px; }
 .script-card { margin-top: 14px; }
 .script-topic { font-size: 15px; }

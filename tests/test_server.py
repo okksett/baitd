@@ -163,6 +163,27 @@ def test_profiles_crud(client):
     assert r.status_code == 200 and [p["id"] for p in r.json["profiles"]] == ["default"]
 
 
+def test_delete_unknown_profile_is_404(client):
+    client.get("/api/profiles")
+    r = client.delete("/api/profiles/nope", json={})
+    assert r.status_code == 404 and "→" in r.json["error"]
+
+
+def test_concurrent_profile_saves_are_not_lost(client):
+    # M9: read-modify-write of profiles.json is serialised (waitress runs several threads)
+    base = client.get("/api/profiles").json["profiles"][0]
+
+    def save(i):
+        config.save_profile(server._parse_profile({**base, "id": f"p{i}", "name": f"P{i}"}))
+
+    threads = [threading.Thread(target=save, args=(i,)) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert {p.id for p in config.list_profiles()} == {"default", *(f"p{i}" for i in range(12))}
+
+
 def test_cannot_delete_last_profile(client):
     client.get("/api/profiles")
     r = client.delete("/api/profiles/default", json={})
@@ -313,6 +334,16 @@ def test_job_video_streams_with_range(client, queue):
     with client.get(f"/api/jobs/{id}/video", headers={"Range": "bytes=0-99"}) as r:
         assert r.status_code == 206 and len(r.data) == 100
     assert client.get("/api/jobs/nope/video").status_code == 404
+
+
+def test_video_route_rejects_cross_site_embedding(client, queue):
+    # M16: a page on another site cannot embed/stream the local video
+    id = finished_job(client, queue)
+    r = client.get(f"/api/jobs/{id}/video", headers={"Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 403 and "→" in r.json["error"]
+    for site in ("same-origin", "none"):
+        with client.get(f"/api/jobs/{id}/video", headers={"Sec-Fetch-Site": site}) as ok:
+            assert ok.status_code == 200
 
 
 def test_open_folder_uses_job_output_only(client, queue, runner, monkeypatch):
@@ -538,3 +569,38 @@ def test_quit_button_in_settings_dialog():
     html = INDEX.read_text("utf-8")
     assert 'id="quit-app"' in html
     assert "api/shutdown" in JS.read_text("utf-8")
+
+
+def test_raw_settings_has_no_defaults(tmp_data):
+    # M8: the stored values only, so the page knows whether a theme was ever chosen
+    assert config.raw_settings() == {}
+    config.save_settings({"ui_lang": "en"})
+    assert config.raw_settings() == {"ui_lang": "en"}  # saving one key does not pin the defaults
+    (tmp_data / "settings.json").write_text('{"theme": "light"}', encoding="utf-8")
+    assert config.raw_settings() == {"theme": "light"}
+
+
+def test_server_does_not_use_private_config_reader():
+    assert "_read_json" not in (WEB / "server.py").read_text("utf-8")
+
+
+def test_review_ui_has_remove_and_no_hook_field():
+    # I4 (R28): no separate hook field; I8: a per-card "Quitar"
+    html, js = INDEX.read_text("utf-8"), JS.read_text("utf-8")
+    assert "script-hook" not in html and "script-hook" not in js and "script.hook" not in js
+    assert 'class="link-btn script-remove" data-i18n="review.remove"' in html
+    assert "state.review.splice(" in js and "state.review = null" in js
+    es, en = json.loads(ES.read_text("utf-8")), json.loads(EN.read_text("utf-8"))
+    assert es["review.remove"] == "Quitar" and en["review.remove"] == "Remove"
+
+
+def test_small_ui_items_are_wired():
+    html, js = INDEX.read_text("utf-8"), JS.read_text("utf-8")
+    assert '<a class="skip" href="#head"' in html and 'id="head" tabindex="-1"' in html  # M16
+    assert 'id="fps-hint"' in html and '$("#fps-hint").hidden = p.fps !== 60' in js  # M7
+    es, en = json.loads(ES.read_text("utf-8")), json.loads(EN.read_text("utf-8"))
+    assert es["fps.hint"] == "60 fps puede tardar más" and en["fps.hint"] == "60 fps may take longer"
+    assert 'id="rate-note"' in html and '$("#f-rate").disabled = noSpeed' in js  # M6
+    assert "if (body.theme === dlg.dataset.themeShown) delete body.theme" in js  # M8
+    assert '$("#profile").disabled = busy' in js and '$("#profile-menu-btn").disabled = busy' in js  # M9
+    assert "const previous = state.savePromise" in js  # M9: saves are chained

@@ -153,18 +153,24 @@
     state.saveTimer = setTimeout(() => { state.saveTimer = null; saveNow(); }, SAVE_DELAY);
   }
 
+  // Saves run one after another (chained on state.savePromise): two in flight could finish out
+  // of order and leave the older profile on disk.
   function saveNow() {
     const snapshot = structuredClone(state.current);
-    state.savePromise = api("POST", "/api/profiles", snapshot)
+    const previous = state.savePromise || Promise.resolve();
+    const p = previous
+      .catch(() => { /* already shown; this save still runs */ })
+      .then(() => api("POST", "/api/profiles", snapshot))
       .then((saved) => {
-        const i = state.profiles.findIndex((p) => p.id === saved.id);
+        const i = state.profiles.findIndex((x) => x.id === saved.id);
         if (i >= 0) state.profiles[i] = saved; else state.profiles.push(saved);
         showError($("#form-error"), null);
         return saved;
       })
       .catch((e) => { showError($("#form-error"), e); throw e; })
-      .finally(() => { state.savePromise = null; });
-    return state.savePromise;
+      .finally(() => { if (state.savePromise === p) state.savePromise = null; });
+    state.savePromise = p;
+    return p;
   }
 
   async function flushSave() {
@@ -371,6 +377,10 @@
     $("#o-rate").textContent = `${p.rate > 0 ? "+" : ""}${p.rate} %`;
     $("#o-volume").textContent = `${Math.round(p.music_volume * 100)} %`;
     $("#voice-warning").hidden = p.tts_provider !== "edge";
+    const noSpeed = p.tts_provider === "elevenlabs"; // its timestamps endpoint has no speed control
+    $("#f-rate").disabled = noSpeed;
+    $("#rate-note").hidden = !noSpeed;
+    $("#fps-hint").hidden = p.fps !== 60;
     $("#phone").dataset.aspect = p.aspect;
     renderSummaries();
     renderSampleSub();
@@ -504,7 +514,10 @@
     state.busy = busy;
     $("#write-script").disabled = busy;
     $("#create").disabled = busy;
-    $$("#review-list .script-retry").forEach((b) => { b.disabled = busy; });
+    $$("#review-list .script-retry, #review-list .script-remove").forEach((b) => { b.disabled = busy; });
+    $("#profile").disabled = busy; // a batch must be submitted under the profile that wrote it
+    $("#profile-menu-btn").disabled = busy;
+    if (busy) closeProfileMenu();
     $(".form").setAttribute("aria-busy", String(busy));
   }
 
@@ -521,7 +534,7 @@
     const ok = state.review.filter((r) => r.script).length;
     $("#review-progress").textContent = state.review.length > 1 ? tr("review.done", { n: ok, total: state.review.length }) : "";
     setBusy(false);
-    const first = $("#review-list .script-hook, #review-list .script-retry:not([hidden])");
+    const first = $("#review-list .scene-text, #review-list .script-retry:not([hidden])");
     if (first) first.focus();
   }
 
@@ -561,15 +574,14 @@
       setBusy(false);
       renderReview();
     });
+    const remove = $(".script-remove", node);
+    remove.disabled = state.busy;
+    remove.setAttribute("aria-label", `${tr("review.remove")}: ${item.topic}`);
+    remove.addEventListener("click", () => removeReviewItem(item));
     const body = $(".script-body", node);
     body.hidden = !item.script;
     if (!item.script) return node;
-    const hookId = `hook-${idx}`;
-    const hook = $(".script-hook", node);
-    hook.id = hookId;
-    $("label", body).htmlFor = hookId;
-    hook.value = item.script.hook;
-    hook.addEventListener("input", () => { item.script.hook = hook.value; });
+    // no separate hook field: the hook is the first sentence of scene 1 (the server re-derives it)
     const scenes = $(".scenes", node);
     item.script.scenes.forEach((scene, n) => {
       const li = $("#tpl-scene").content.firstElementChild.cloneNode(true);
@@ -590,6 +602,24 @@
       scenes.append(li);
     });
     return node;
+  }
+
+  // I8: drop one topic from the batch review; the last one closes the review (batch stays idle)
+  function removeReviewItem(item) {
+    if (!state.review || state.busy) return;
+    const i = state.review.indexOf(item);
+    if (i < 0) return;
+    state.review.splice(i, 1);
+    if (!state.review.length) {
+      state.review = null;
+      $("#review-progress").textContent = "";
+      renderReview();
+      $("#write-script").focus();
+      return;
+    }
+    renderReview();
+    const cards = $$("#review-list .script-remove");
+    (cards[Math.min(i, cards.length - 1)] || $("#create")).focus();
   }
 
   function reviewedScripts() {
@@ -770,6 +800,7 @@
       const s = await api("GET", "/api/settings");
       $$("[data-setting]", dlg).forEach((el) => { el.value = s[el.dataset.setting] || ""; });
       $("#s-theme").value = effectiveTheme();
+      dlg.dataset.themeShown = effectiveTheme();
       $$(".show-btn", dlg).forEach((b) => setShown(b, false));
     } catch (e) {
       showError($("#top-error"), e);
@@ -804,6 +835,8 @@
     const dlg = $("#settings");
     const body = {};
     $$("[data-setting]", dlg).forEach((el) => { body[el.dataset.setting] = el.value; });
+    // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
+    if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
     try {
       await api("POST", "/api/settings", body);
@@ -811,8 +844,10 @@
       showError($("#settings-error"), e);
       return;
     }
-    document.documentElement.dataset.theme = body.theme;
-    renderTheme();
+    if (body.theme) {
+      document.documentElement.dataset.theme = body.theme;
+      renderTheme();
+    }
     if (langChanged) {
       BOOT.lang = body.ui_lang;
       document.documentElement.lang = body.ui_lang;

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unicodedata
 from dataclasses import replace
 from datetime import datetime
@@ -20,6 +21,11 @@ SETTINGS_DEFAULTS: dict = {
     "ui_lang": "es", "theme": "dark",
     "cache_max_gb": 3,  # clip cache cap in GB (ruling R30); not in the UI, editable in settings.json
 }
+
+
+# Serialises read-modify-write of settings.json / profiles.json (waitress serves on several
+# threads); reads take it too, so os.replace never races an open reader on Windows.
+_LOCK = threading.RLock()
 
 
 def data_dir() -> Path:
@@ -72,14 +78,20 @@ def _read_json(path: Path, default, kind: type):
     return data
 
 
+def raw_settings() -> dict:
+    """Only what was saved, without defaults (e.g. no "theme" until the user picks one)."""
+    with _LOCK:
+        return _read_json(data_dir() / "settings.json", {}, dict)
+
+
 def load_settings() -> dict:
-    data = _read_json(data_dir() / "settings.json", {}, dict)
-    return {**SETTINGS_DEFAULTS, **data}
+    return {**SETTINGS_DEFAULTS, **raw_settings()}
 
 
 def save_settings(d: dict) -> None:
-    """Merge d over the stored settings (partial updates keep other keys)."""
-    _write_json(data_dir() / "settings.json", {**load_settings(), **d})
+    """Merge d over the stored settings (partial updates keep other keys; defaults stay implicit)."""
+    with _LOCK:
+        _write_json(data_dir() / "settings.json", {**raw_settings(), **d})
 
 
 def default_profile() -> Profile:
@@ -93,7 +105,8 @@ def default_profile() -> Profile:
 
 
 def list_profiles() -> list[Profile]:
-    raw = _read_json(data_dir() / "profiles.json", [], list)
+    with _LOCK:
+        raw = _read_json(data_dir() / "profiles.json", [], list)
     out = []
     for d in raw:
         try:
@@ -104,17 +117,19 @@ def list_profiles() -> list[Profile]:
 
 
 def save_profile(p: Profile) -> None:
-    current = list_profiles()
-    if any(q.id == p.id for q in current):
-        current = [p if q.id == p.id else q for q in current]
-    else:
-        current.append(p)
-    _write_json(data_dir() / "profiles.json", [q.to_dict() for q in current])
+    with _LOCK:
+        current = list_profiles()
+        if any(q.id == p.id for q in current):
+            current = [p if q.id == p.id else q for q in current]
+        else:
+            current.append(p)
+        _write_json(data_dir() / "profiles.json", [q.to_dict() for q in current])
 
 
 def delete_profile(id: str) -> None:
-    keep = [q.to_dict() for q in list_profiles() if q.id != id]
-    _write_json(data_dir() / "profiles.json", keep)
+    with _LOCK:
+        keep = [q.to_dict() for q in list_profiles() if q.id != id]
+        _write_json(data_dir() / "profiles.json", keep)
 
 
 def slugify(text: str, max_len: int = 40) -> str:

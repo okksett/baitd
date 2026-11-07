@@ -9,7 +9,7 @@
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<a class="skip" href="#topic" data-i18n="skip">{{ t("skip") }}</a>
+<a class="skip" href="#head" data-i18n="skip">{{ t("skip") }}</a>
 <div class="app">
 
 <header class="top">
@@ -39,7 +39,7 @@
 
 <main class="grid">
   <section class="form" aria-labelledby="head">
-    <h2 class="head" id="head"><span data-i18n="head.a">{{ t("head.a") }}</span> <em data-i18n="head.b">{{ t("head.b") }}</em></h2>
+    <h2 class="head" id="head" tabindex="-1"><span data-i18n="head.a">{{ t("head.a") }}</span> <em data-i18n="head.b">{{ t("head.b") }}</em></h2>
 
     <fieldset class="seg">
       <legend class="sr-only" data-i18n="mode.label">{{ t("mode.label") }}</legend>
@@ -86,6 +86,7 @@
         <option value="60" data-i18n="seconds.60">{{ t("seconds.60") }}</option>
       </select>
     </div>
+    <p class="hint" id="fps-hint" data-i18n="fps.hint" hidden>{{ t("fps.hint") }}</p>
     <div id="lang-other-box" class="field" hidden>
       <label class="lbl" for="f-lang-other" data-i18n="lang.other_label">{{ t("lang.other_label") }}</label>
       <input id="f-lang-other" class="input" type="text" maxlength="20" autocomplete="off"
@@ -112,7 +113,8 @@
         <p class="err wide" id="voice-error" role="alert" hidden></p>
         <div class="field wide">
           <label class="lbl" for="f-rate" data-i18n="voice.speed">{{ t("voice.speed") }}</label>
-          <div class="slider"><input id="f-rate" type="range" min="-50" max="50" step="5"><output id="o-rate" for="f-rate"></output></div>
+          <div class="slider"><input id="f-rate" type="range" min="-50" max="50" step="5" aria-describedby="rate-note"><output id="o-rate" for="f-rate"></output></div>
+          <p class="hint" id="rate-note" data-i18n="voice.speed_na" hidden>{{ t("voice.speed_na") }}</p>
         </div>
       </div>
     </details>
@@ -347,12 +349,13 @@
 
 <template id="tpl-script">
   <article class="script-card panel">
-    <h4 class="script-topic"></h4>
+    <div class="script-head">
+      <h4 class="script-topic"></h4>
+      <button type="button" class="link-btn script-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
+    </div>
     <p class="err script-err" role="alert" hidden></p>
     <button type="button" class="pill script-retry" hidden data-i18n="review.retry">{{ t("review.retry") }}</button>
     <div class="script-body">
-      <label class="lbl" data-i18n="review.hook">{{ t("review.hook") }}</label>
-      <input class="input script-hook" type="text">
       <ol class="scenes"></ol>
     </div>
   </article>
