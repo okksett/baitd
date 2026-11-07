@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 from ..models import Word
 
 MIN_MATCH_RATIO = 0.6  # below this share of matched tokens, alignment is replaced by an estimate
-_LOOKAHEAD = 4         # how many timed words a script token may skip over while matching
 
 
 def edge_boundaries_to_words(events: list[dict]) -> list[Word]:
@@ -61,20 +61,6 @@ def _norm(s: str) -> str:
     return "".join(c for c in s if c.isalnum() and not unicodedata.combining(c))
 
 
-def _match_at(tok: str, timed_norm: list[str], j: int) -> int:
-    """Number of timed words (1-3) starting at j whose joined text equals `tok`, else 0."""
-    acc = ""
-    for n in range(1, 4):
-        if j + n > len(timed_norm):
-            break
-        acc += timed_norm[j + n - 1]
-        if acc == tok:
-            return n
-        if not tok.startswith(acc):
-            break
-    return 0
-
-
 def align_to_script(
     tokens: list[str], timed: list[Word], span: tuple[float, float] | None = None
 ) -> list[Word]:
@@ -90,51 +76,47 @@ def align_to_script(
         span = (timed[0].start, timed[-1].end) if timed else (0.0, 0.0)
     fallback = estimate_words(" ".join(tokens), *span)
 
-    timed_norm = [_norm(w.text) for w in timed]
-    matched: list[tuple[float, float] | None] = []
-    j = 0
-    for tok in tokens:
-        key = _norm(tok)
-        hit = None
-        if key:
-            for k in range(j, min(j + _LOOKAHEAD, len(timed))):
-                n = _match_at(key, timed_norm, k)
-                if n:
-                    hit = (k, n)
-                    break
-        if hit:
-            k, n = hit
-            matched.append((timed[k].start, timed[k + n - 1].end))
-            j = k + n
-        else:
-            matched.append(None)
+    # Placeholders (a leading "#" never survives _norm) keep empty-normalized items (lone dashes...) from ever matching.
+    a_seq = [_norm(t) or f"#t{i}" for i, t in enumerate(tokens)]
+    b_seq = [_norm(w.text) or f"#w{i}" for i, w in enumerate(timed)]
+    match_of: dict[int, int] = {}
+    for blk in SequenceMatcher(None, a_seq, b_seq, autojunk=False).get_matching_blocks():
+        for d in range(blk.size):
+            match_of[blk.a + d] = blk.b + d
 
-    if sum(m is not None for m in matched) < MIN_MATCH_RATIO * len(tokens):
+    if len(match_of) < MIN_MATCH_RATIO * len(tokens):
         return fallback
 
     out: list[Word] = []
     i = 0
+    t_pos = 0  # first timed word not yet consumed
     prev_end = span[0]
     while i < len(tokens):
-        m = matched[i]
-        if m is not None:
-            out.append(Word(tokens[i], m[0], m[1]))
-            prev_end = m[1]
+        if i in match_of:
+            w = timed[match_of[i]]
+            out.append(Word(tokens[i], w.start, w.end))
+            t_pos = match_of[i] + 1
+            prev_end = w.end
             i += 1
             continue
         k = i
-        while k < len(tokens) and matched[k] is None:
+        while k < len(tokens) and k not in match_of:
             k += 1
-        nxt = matched[k][0] if k < len(tokens) else span[1]
-        out.extend(estimate_words(" ".join(tokens[i:k]), prev_end, max(prev_end, nxt)))
+        q = match_of[k] if k < len(tokens) else len(timed)
+        if q > t_pos:  # spread the run over the timed words nobody claimed
+            lo, hi = timed[t_pos].start, timed[q - 1].end
+        else:  # nothing left to claim: zero-width at the neighbour boundary
+            lo = hi = prev_end if i > 0 else (timed[q].start if q < len(timed) else span[1])
+        out.extend(estimate_words(" ".join(tokens[i:k]), lo, max(lo, hi)))
         i = k
 
-    # Guarantee non-decreasing times even if the provider's own timings overlap.
+    # Non-decreasing starts and ends; each end stays within [its start, next start].
     t = 0.0
-    fixed = []
+    starts = []
     for w in out:
-        s = max(w.start, t)
-        e = max(w.end, s)
-        fixed.append(Word(w.text, s, e))
-        t = s
-    return fixed
+        t = max(w.start, t)
+        starts.append(t)
+    return [
+        Word(w.text, starts[n], max(starts[n], min(w.end, starts[n + 1] if n + 1 < len(out) else w.end)))
+        for n, w in enumerate(out)
+    ]

@@ -80,6 +80,42 @@ def test_align_merges_unmatched_tokens_from_neighbours():
     assert 0.2 <= out[1].start and out[2].end <= 1.2
 
 
+def _timed(text):
+    return [Word(t, i * 0.3, i * 0.3 + 0.25) for i, t in enumerate(text.split())]
+
+
+def test_align_long_expansion_does_not_break_following_tokens():
+    tokens = "Sube un 68% de todos los casos hoy mismo".split()
+    timed = _timed("Sube un sesenta y ocho por ciento de todos los casos hoy mismo")
+    out = align_to_script(tokens, timed)
+    assert [w.text for w in out] == tokens
+    by_text = {w.text: w for w in timed}
+    for w in out[3:]:
+        assert abs(w.start - by_text[w.text].start) < 0.05
+        assert abs(w.end - by_text[w.text].end) < 0.05
+    # "68%" spans the five spoken words
+    assert out[2].start == pytest.approx(timed[2].start) and out[2].end == pytest.approx(timed[6].end)
+
+
+def test_align_contraction_two_tokens_one_timed_word():
+    tokens = ["voy", "a", "la", "casa", "del", "rio"]
+    timed = [Word("voy", 0, .3), Word("a", .3, .4), Word("la", .4, .6), Word("casa", .6, 1.0),
+             Word("delrio", 1.0, 1.6)]
+    out = align_to_script(tokens, timed)
+    assert [w.text for w in out] == tokens
+    assert out[4].start == 1.0 and out[5].end == 1.6 and out[4].end == pytest.approx(out[5].start)
+
+
+def test_align_starts_and_ends_non_decreasing():
+    tokens = "Sube un 68% — de todos los casos hoy".split()
+    timed = _timed("Sube un sesenta y ocho por ciento de todos los casos hoy")
+    out = align_to_script(tokens, timed)
+    assert [w.start for w in out] == sorted(w.start for w in out)
+    assert [w.end for w in out] == sorted(w.end for w in out)
+    assert all(w.end >= w.start for w in out)
+    assert all(out[i].end <= out[i + 1].start + 1e-9 for i in range(len(out) - 1))
+
+
 def test_align_falls_back_to_estimate_when_poor():
     timed = [Word("xx", 0, 1), Word("yy", 1, 2)]
     out = align_to_script(["uno", "dos", "tres", "cuatro"], timed)
