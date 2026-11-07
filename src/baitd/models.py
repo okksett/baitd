@@ -17,6 +17,13 @@ class Scene:
     text: str
     keywords: list[str]  # English, 2-3
 
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Scene:
+        return cls(text=d["text"], keywords=list(d["keywords"]))
+
 
 @dataclass
 class Script:
@@ -26,6 +33,18 @@ class Script:
     description: str
     hashtags: list[str]
     language: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Script:
+        return cls(
+            title=d["title"], hook=d["hook"],
+            scenes=[Scene.from_dict(s) for s in d["scenes"]],
+            description=d["description"], hashtags=list(d["hashtags"]),
+            language=d["language"],
+        )
 
 
 @dataclass
