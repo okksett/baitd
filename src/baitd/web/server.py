@@ -22,7 +22,7 @@ from werkzeug.exceptions import HTTPException
 
 from .. import audio, captions, config, llm, tts
 from ..jobqueue import JobQueue
-from ..models import Profile, Script, UserError
+from ..models import Profile, Script, UserError, first_sentence
 from ..pipeline import STEPS
 
 log = logging.getLogger(__name__)
@@ -143,16 +143,18 @@ def _scripts(data: dict) -> dict[str, Script]:
     if not isinstance(raw, dict):
         raise invalid
     try:
-        scripts = {topic.strip(): Script.from_dict(s) for topic, s in raw.items()}
+        # the hook is not edited on its own (ruling R28): it is re-derived from scene 1 below
+        scripts = {topic.strip(): Script.from_dict({**s, "hook": ""}) for topic, s in raw.items()}
     except (TypeError, ValueError, KeyError, AttributeError):
         raise invalid from None
     for s in scripts.values():
-        texts_ok = all(isinstance(v, str) for v in (s.title, s.hook, s.description, s.language))
+        texts_ok = all(isinstance(v, str) for v in (s.title, s.description, s.language))
         scenes_ok = s.scenes and all(
             isinstance(sc.text, str) and sc.text.strip() and sc.keywords
             and all(isinstance(k, str) and k.strip() for k in sc.keywords) for sc in s.scenes)
         if not (texts_ok and scenes_ok and all(isinstance(h, str) for h in s.hashtags)):
             raise invalid
+        s.hook = first_sentence(s.scenes[0].text)  # what is spoken first is the hook
     return scripts
 
 

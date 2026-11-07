@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 import requests
@@ -60,6 +61,51 @@ def test_prompt_contains_rules():
     p = build_prompt("los beneficios de leer", profile(language="es", seconds=45, tone="tono sorprendido"))
     assert "es" in p and "112" in p and "tono sorprendido" in p and "keywords" in p
     assert "los beneficios de leer" in p and "English" in p
+
+
+def long_hook(hook_field="h"):
+    data = json.loads(VALID)
+    data["hook"] = hook_field
+    data["scenes"][0]["text"] = ("Esta es una frase de gancho demasiado larga que no se dice en tres segundos. "
+                                 "Sigue la escena.")
+    return json.dumps(data)
+
+
+def test_prompt_caps_the_hook_at_8_words():
+    p = build_prompt("leer", profile())
+    assert "at most 8 words" in p and "under 3 seconds" in p
+
+
+def test_parse_script_derives_hook_from_scene_1():
+    data = json.loads(VALID)
+    data["hook"] = "Otra cosa que no se dice"
+    data["scenes"][0]["text"] = "Leer te cambia. Y mucho."
+    assert parse_script(json.dumps(data), "es").hook == "Leer te cambia."
+    del data["hook"]  # the field is optional: scene 1 is the single source of truth (R28)
+    assert parse_script(json.dumps(data), "es").hook == "Leer te cambia."
+
+
+def test_parse_script_rejects_a_long_hook():
+    with pytest.raises(ValueError, match="hook"):
+        parse_script(long_hook(), "es")
+    assert len(parse_script(long_hook(), "es", strict_hook=False).hook.split()) > 10
+
+
+def test_long_hook_triggers_the_repair_retry(monkeypatch):
+    calls = []
+    replies = iter([openai_reply(long_hook()), openai_reply(VALID)])
+    monkeypatch.setattr(requests, "post", lambda url, **kw: calls.append(kw) or next(replies))
+    s = generate_script("leer", profile(llm_provider="openai"), SETTINGS)
+    assert len(calls) == 2 and s.hook == "¿Sabías que leer 6 minutos reduce el estrés?"
+    assert "hook" in calls[1]["json"]["messages"][0]["content"].split("rejected:")[1]
+
+
+def test_still_long_hook_after_retry_is_accepted_with_a_warning(monkeypatch, caplog):
+    monkeypatch.setattr(requests, "post", lambda url, **kw: openai_reply(long_hook()))
+    with caplog.at_level(logging.WARNING, logger="baitd.llm"):
+        s = generate_script("leer", profile(llm_provider="openai"), SETTINGS)
+    assert len(s.hook.split()) > 10 and s.scenes[0].text.startswith(s.hook)
+    assert "gancho" in caplog.text
 
 
 def test_parse_script_with_fences():

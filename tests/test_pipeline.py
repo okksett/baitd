@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import shutil
 import threading
 from datetime import date
@@ -67,7 +68,10 @@ def test_run_job_creates_outputs(tmp_data, fakes, prof):
     assert d.parent == tmp_data / "salidas"
     i = probe(d / "video.mp4")
     assert (i["width"], i["height"]) == (1080, 1920) and abs(i["duration"] - 6.0) < 0.2
-    assert (d / "guion.txt").read_text(encoding="utf-8").split("\n\n")[:2] == ["Leer cambia tu vida", "Leer te cambia."]
+    guion = (d / "guion.txt").read_text(encoding="utf-8")
+    # M10: title then the scenes; the hook is scene 1's first sentence, so it is printed once
+    assert guion == "Leer cambia tu vida\n\nLeer te cambia. Es un hecho.\n\nAbre un libro hoy mismo ya.\n"
+    assert guion.count("Leer te cambia.") == 1
     assert (d / "publicacion.txt").read_text(encoding="utf-8") == (
         "Leer cambia tu vida\n\nBeneficios de leer\n\n#lectura #libros\n")
 
@@ -127,3 +131,19 @@ def test_cancel_cleans_everything(tmp_data, fakes, prof):
     with pytest.raises(JobCancelled):
         pipeline.run_job("tema", prof, {}, SCRIPT, cancel, rec)
     assert list((tmp_data / "salidas").iterdir()) == []
+
+
+def test_job_start_prunes_the_clip_cache(tmp_data, fakes, prof):
+    # I9: the cache is capped (settings cache_max_gb); least-recently-used files go at job start
+    d = tmp_data / "cache"
+    d.mkdir()
+    old = d / "pexels_video_1_1080x1920.mp4"
+    old.write_bytes(b"x" * 64)
+    os.utime(old, (1_000, 1_000))
+    pipeline.run_job("tema", prof, {"cache_max_gb": 1e-9}, SCRIPT, threading.Event(), Rec())
+    assert not old.exists()
+
+
+def test_hook_word_count_is_scene_1_first_sentence():
+    stale = dataclasses.replace(SCRIPT, hook="Un gancho viejo que ya no se dice")
+    assert pipeline._hook_word_count(stale) == 3  # "Leer te cambia."

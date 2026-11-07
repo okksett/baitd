@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
-from ..models import Profile, Scene, Script, UserError
+from ..models import Profile, Scene, Script, UserError, first_sentence
 from . import gemini, openai_compat
 
 __all__ = ["generate_script", "build_prompt", "parse_script"]
 
+log = logging.getLogger(__name__)
+
 DEFAULT_MODELS = {"openai": "gpt-4o-mini", "gemini": "gemini-2.5-flash", "compat": "llama3.1"}
 WORDS_PER_SECOND = 2.5
+HOOK_MAX_WORDS = 8  # asked for in the prompt: under 3 seconds spoken
+HOOK_REJECT_WORDS = 10  # longer hooks are sent back once for repair (ruling R29)
 
 _SCHEMA = (
     '{"title": str, "hook": str, "scenes": [{"text": str, "keywords": [str, str]}], '
@@ -28,6 +33,7 @@ def build_prompt(topic: str, profile: Profile) -> str:
         f"Total length: about {words} words (between {lo} and {hi}) for {profile.seconds} seconds of narration.",
         "Structure: 5 to 9 scenes, each with 1 or 2 short sentences.",
         "The hook is the first sentence of the first scene: a question, a surprising fact or a promise. "
+        f"The hook is at most {HOOK_MAX_WORDS} words (under 3 seconds spoken). "
         "Repeat it exactly in the \"hook\" field.",
         "For each scene give \"keywords\": 2 or 3 concrete, visual search terms in English "
         "(things a camera can film), regardless of the script language.",
@@ -52,7 +58,9 @@ def _nonempty_str(obj: dict, key: str) -> str:
     return v.strip()
 
 
-def parse_script(raw: str, language: str) -> Script:
+def parse_script(raw: str, language: str, strict_hook: bool = True) -> Script:
+    """Validate the LLM reply. The hook is the first sentence of scene 1 (whatever the "hook"
+    field says); with strict_hook a hook over HOOK_REJECT_WORDS words is rejected (ValueError)."""
     text = _strip_fences(raw)
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
@@ -83,8 +91,13 @@ def parse_script(raw: str, language: str) -> Script:
     description = data.get("description", "")
     if not isinstance(description, str):
         raise ValueError("'description' must be a string")
+    hook = first_sentence(scenes[0].text)
+    n = len(hook.split())
+    if strict_hook and n > HOOK_REJECT_WORDS:
+        raise ValueError(f"the hook (the first sentence of the first scene) has {n} words; "
+                         f"it must have at most {HOOK_MAX_WORDS}")
     return Script(
-        title=_nonempty_str(data, "title"), hook=_nonempty_str(data, "hook"), scenes=scenes,
+        title=_nonempty_str(data, "title"), hook=hook, scenes=scenes,
         description=description.strip(), hashtags=[t.strip() for t in tags if t.strip()],
         language=language,
     )
@@ -103,10 +116,14 @@ def generate_script(topic: str, profile: Profile, settings: dict) -> Script:
 
     prompt = build_prompt(topic, profile)
     try:
-        return parse_script(complete(prompt), profile.language)
+        script = parse_script(complete(prompt), profile.language)
     except ValueError as first:
         retry = f"{prompt}\n\nReturn only valid JSON matching the schema. Your previous reply was rejected: {first}"
         try:
-            return parse_script(complete(retry), profile.language)
+            script = parse_script(complete(retry), profile.language, strict_hook=False)
         except ValueError:
             raise UserError("La IA no devolvió un guion válido", "Inténtalo de nuevo o cambia de modelo") from None
+    n = len(script.hook.split())
+    if n > HOOK_REJECT_WORDS:  # a long hook is worse than none, but a failed batch is worse still
+        log.warning("El gancho sigue siendo largo tras reintentar (%d palabras); se acepta", n)
+    return script

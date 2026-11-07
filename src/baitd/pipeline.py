@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 from dataclasses import dataclass
@@ -9,10 +10,13 @@ from typing import Callable
 
 from . import audio, captions, ffmpeg, llm, timeline, tts
 from .config import data_dir, slugify
-from .models import JobCancelled, Media, Profile, ProgressFn, RenderOptions, Script, UserError
+from .models import (JobCancelled, Media, Profile, ProgressFn, RenderOptions, Script, UserError,
+                     first_sentence)
 from .render import render_video
 from .stock import cache
 from .stock.select import find_media
+
+log = logging.getLogger(__name__)
 
 STEPS = ("script", "voice", "clips", "edit", "captions", "render")
 _TOTAL = len(STEPS)
@@ -45,18 +49,13 @@ def _create_output_dir(settings: dict, topic: str) -> Path:
 
 
 def _hook_word_count(script: Script) -> int:
-    first = script.scenes[0].text.strip() if script.scenes else ""
-    hook = script.hook.strip()
-    if hook and first.startswith(hook):
-        return len(hook.split())
-    for i, ch in enumerate(first):
-        if ch in ".?!…":
-            return len(first[: i + 1].split())
-    return len(first.split())
+    """Words of the hook = the first sentence of scene 1 (ruling R28), which is what is spoken."""
+    return len(first_sentence(script.scenes[0].text).split()) if script.scenes else 0
 
 
 def _write_texts(folder: Path, script: Script) -> None:
-    paragraphs = [script.title, script.hook] + [s.text for s in script.scenes]
+    # the hook is scene 1's first sentence, so it is not repeated as its own paragraph
+    paragraphs = [script.title] + [s.text for s in script.scenes]
     (folder / "guion.txt").write_text("\n\n".join(paragraphs) + "\n", encoding="utf-8")
     tags = " ".join(t if t.startswith("#") else f"#{t}" for t in script.hashtags)
     (folder / "publicacion.txt").write_text(
@@ -66,6 +65,10 @@ def _write_texts(folder: Path, script: Script) -> None:
 def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
             cancel: threading.Event, progress: ProgressFn, providers: Providers | None = None) -> Path:
     """Run the six steps; returns the output folder. Failed or cancelled jobs leave nothing behind."""
+    try:
+        cache.prune(cache.max_bytes(settings))  # LRU cap on the clip cache (ruling R30)
+    except OSError:
+        log.warning("No se pudo limpiar la caché de clips", exc_info=True)
     folder = _create_output_dir(settings, topic)
     try:
         workdir = folder / ".work"

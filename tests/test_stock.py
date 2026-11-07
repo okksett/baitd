@@ -1,5 +1,9 @@
+import os
+
 import pytest
 import requests
+
+from baitd import config
 
 from baitd.models import Media, UserError
 from baitd.stock import cache, pexels, pixabay
@@ -188,9 +192,56 @@ def test_download_uses_cache(monkeypatch, tmp_data):
     m = media(1080, 1920, id="pexels:v:1")
     m.url = "http://cdn/x.mp4?token=1"
     p = cache.download(m)
-    assert p.read_bytes() == b"abcdef" and p.parent == tmp_data / "cache" and p.name == "pexels_video_1.mp4"
+    assert p.read_bytes() == b"abcdef" and p.parent == tmp_data / "cache" and p.name == "pexels_video_1_1080x1920.mp4"
     assert not list(p.parent.glob("*.part"))
     assert cache.download(m) == p and n["c"] == 1 and m.path == p
+
+
+def test_cache_path_depends_on_rendition(tmp_data):
+    # I2: the same clip in two renditions (9:16 vs 16:9 picks) must not share a cache file
+    small, big = media(1080, 1920, id="pexels:v:7"), media(2160, 3840, id="pexels:v:7")
+    assert cache.cache_path(small) != cache.cache_path(big)
+    assert "1080x1920" in cache.cache_path(small).name and "2160x3840" in cache.cache_path(big).name
+
+
+def test_cache_hit_touches_the_file(monkeypatch, tmp_data):
+    monkeypatch.setattr(requests, "get", lambda url, **kw: Resp())
+    m = media(1080, 1920, id="pexels:v:3")
+    p = cache.download(m)
+    os.utime(p, (1_000_000, 1_000_000))
+    assert cache.download(m) == p
+    assert p.stat().st_mtime > 1_000_000 + 1000  # recently used again
+
+
+def _cached(name, size, mtime):
+    d = config.data_dir() / "cache"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / name
+    f.write_bytes(b"x" * size)
+    os.utime(f, (mtime, mtime))
+    return f
+
+
+def test_prune_evicts_least_recently_used(tmp_data):
+    old = _cached("pexels_video_1_1080x1920.mp4", 400, 1_000)
+    mid = _cached("pexels_video_2_1080x1920.mp4", 400, 2_000)
+    new = _cached("pexels_video_3_1080x1920.mp4", 400, 3_000)
+    cache.prune(1000)  # 1200 bytes stored, cap 1000: only the oldest has to go
+    assert not old.exists() and mid.exists() and new.exists()
+    cache.prune(400)
+    assert not mid.exists() and new.exists()
+
+
+def test_prune_without_cache_folder_is_a_no_op(tmp_data):
+    cache.prune(10)
+    assert not (tmp_data / "cache").exists()
+
+
+@pytest.mark.parametrize("value, expected", [(None, 3.0), ("", 3.0), ("bad", 3.0), (-1, 3.0), (0, 3.0),
+                                             (1.5, 1.5), ("2", 2.0)])
+def test_cache_cap_from_settings(value, expected):
+    settings = {} if value is None else {"cache_max_gb": value}
+    assert cache.max_bytes(settings) == int(expected * 1024 ** 3)
 
 
 def test_download_error_is_user_error(monkeypatch, tmp_data):

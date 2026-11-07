@@ -8,8 +8,26 @@ from .ffmpeg import JobCancelled
 
 __all__ = [
     "Scene", "Script", "Word", "Voiceover", "Media", "Shot", "SubtitleStyle",
-    "Profile", "RenderOptions", "JobCancelled", "UserError", "ProgressFn",
+    "Profile", "RenderOptions", "JobCancelled", "UserError", "ProgressFn", "first_sentence",
 ]
+
+_SENTENCE_END = ".?!…"
+_CLOSERS = _SENTENCE_END + "\"'»”’)]"
+
+
+def first_sentence(text: str) -> str:
+    """The first sentence of `text`: up to its first . ? ! or … (plus closing marks), or all of it.
+
+    The hook is always the first sentence of scene 1 (ruling R28), so this is the one definition
+    shared by the LLM parser, the server and the captions."""
+    t = text.strip()
+    for i, ch in enumerate(t):
+        if ch in _SENTENCE_END:
+            j = i + 1
+            while j < len(t) and t[j] in _CLOSERS:
+                j += 1
+            return t[:j]
+    return t
 
 
 @dataclass

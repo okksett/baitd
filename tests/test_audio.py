@@ -175,6 +175,29 @@ def test_short_voice_music_lasts_full_duration_and_fades(tmp_path, sources, shor
     assert mean_volume(out, DURATION - 0.3, DURATION) < mean_volume(out, 3.5, 4.3) - 6
 
 
+@pytest.fixture
+def voice_to_the_end(tmp_path):
+    p = tmp_path / "voice_to_end.wav"  # talks until 0.2 s before the end of the video
+    _gen(p, f"sine=frequency=300:duration={DURATION}", "-af", f"volume=0:enable='gte(t,{DURATION - 0.2})'")
+    return p
+
+
+def test_fade_does_not_touch_the_voice(tmp_path, sources, voice_to_the_end):
+    # I1: the end fade belongs to the music only; the closing words keep their level
+    out = render_mix(tmp_path, sources, volume=0.15, voice=voice_to_the_end)
+    band = "bandpass=f=300:width_type=h:w=100"
+    mid = mean_volume(out, 2.0, 3.0, band)
+    last = mean_volume(out, DURATION - 0.5, DURATION - 0.2, band)  # the last 0.5 s, while it still talks
+    assert abs(last - mid) <= 1.0
+
+
+def test_fade_is_on_the_music_branch():
+    f = audio.mix_filter(True, 0.15, 30)
+    music = next(part for part in f.split(";") if part.startswith("[2:a]"))
+    assert "afade=t=out:st=28.5:d=1.5" in music and music.endswith("[m]")
+    assert "afade" not in f.split(";")[-1]  # not after the mix
+
+
 def test_short_voice_without_music_is_padded_to_duration(tmp_path, sources, short_voice):
     out = render_mix(tmp_path, sources, has_music=False, voice=short_voice)
     assert abs(probe(out)["duration"] - DURATION) <= 0.05

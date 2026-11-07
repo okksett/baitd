@@ -18,6 +18,7 @@ SETTINGS_DEFAULTS: dict = {
     "openai_key": "", "gemini_key": "", "elevenlabs_key": "", "pexels_key": "",
     "pixabay_key": "", "compat_base_url": "", "compat_key": "", "output_dir": "",
     "ui_lang": "es", "theme": "dark",
+    "cache_max_gb": 3,  # clip cache cap in GB (ruling R30); not in the UI, editable in settings.json
 }
 
 

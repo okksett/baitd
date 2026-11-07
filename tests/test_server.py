@@ -249,6 +249,19 @@ def test_jobs_pass_reviewed_scripts(client, queue, runner):
     assert scripts["a"].to_dict() == SCRIPT and scripts["b"] is None
 
 
+@pytest.mark.parametrize("topics", [["a"], ["a", "b"]])  # single job and batch
+def test_reviewed_scene_1_edit_changes_hook_and_voiced_text(client, queue, runner, topics):
+    # I4 / R28: there is no separate hook field; the server re-derives it from scene 1
+    edited = {**SCRIPT, "hook": "Hola.",  # stale value from before the edit
+              "scenes": [{"text": "¿Sabías esto? Mundo.", "keywords": ["a", "b"]}]}
+    client.post("/api/jobs", json={"topics": topics, "profile_id": "default", "scripts": {"a": edited}})
+    queue.start()
+    assert wait_for(lambda: len(runner.calls) == len(topics))
+    script = dict(runner.calls)["a"]
+    assert script.hook == "¿Sabías esto?"
+    assert script.scenes[0].text == "¿Sabías esto? Mundo."  # what the TTS voices
+
+
 def test_job_video_streams_with_range(client, queue):
     id = finished_job(client, queue)
     job = client.get("/api/jobs").json["jobs"][-1]
