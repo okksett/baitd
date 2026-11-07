@@ -17,7 +17,7 @@ def request(method: str, url: str, provider: str, model: str = "", **kwargs) -> 
     except requests.ConnectionError:
         raise UserError(f"Sin conexión con {provider}", "Comprueba tu conexión a internet") from None
     except requests.RequestException as e:
-        raise UserError(f"Error de red con {provider}: {e}", "Inténtalo de nuevo") from None
+        raise UserError(f"Error de red con {provider} ({type(e).__name__})", "Inténtalo de nuevo") from None
 
     status = resp.status_code
     if status == 200:
