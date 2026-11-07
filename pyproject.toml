@@ -24,7 +24,8 @@ dev = ["pytest", "pyinstaller"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md"]
+baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md",
+              "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/i18n/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
