@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baitd"
+version = "0.1.0"
+description = "Local app that turns a topic into a short video"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "flask",
+    "requests",
+    "edge-tts>=7.3,<8",
+    "imageio-ffmpeg>=0.8",
+    "platformdirs",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyinstaller"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+pythonpath = ["src"]
+markers = ["network: tests that need internet access"]
