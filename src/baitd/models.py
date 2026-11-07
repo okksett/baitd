@@ -80,7 +80,13 @@ class SubtitleStyle:
 
     @classmethod
     def from_dict(cls, d: dict) -> SubtitleStyle:
-        return cls(**d)
+        if not isinstance(d, dict):
+            raise TypeError("subtitle must be an object")
+        from .config import default_profile
+
+        base = default_profile().subtitle.to_dict()
+        base.update({k: v for k, v in d.items() if k in base})
+        return cls(**base)
 
 
 @dataclass
@@ -106,9 +112,27 @@ class Profile:
 
     @classmethod
     def from_dict(cls, d: dict) -> Profile:
-        d = dict(d)
-        d["subtitle"] = SubtitleStyle.from_dict(d["subtitle"])
-        return cls(**d)
+        """Unknown keys are ignored; missing keys come from default_profile().
+
+        Raises TypeError/ValueError for unusable entries (no id/name, wrong types).
+        """
+        if not isinstance(d, dict):
+            raise TypeError("profile must be an object")
+        from .config import default_profile
+
+        base = default_profile().to_dict()
+        base.update({k: v for k, v in d.items() if k in base})
+        base["subtitle"] = SubtitleStyle.from_dict(d.get("subtitle", base["subtitle"]))
+        for key in ("id", "name"):
+            if not isinstance(d.get(key), str) or not d[key]:
+                raise ValueError(f"profile needs a non-empty {key}")
+        if base["aspect"] not in ("9:16", "16:9"):
+            raise ValueError("bad aspect")
+        if base["fps"] not in (30, 60) or base["seconds"] not in (30, 45, 60):
+            raise ValueError("bad fps/seconds")
+        if not isinstance(base["rate"], int) or not isinstance(base["music_volume"], (int, float)):
+            raise TypeError("bad rate/music_volume")
+        return cls(**base)
 
 
 @dataclass

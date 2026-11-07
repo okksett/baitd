@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
+import tempfile
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 
 from platformdirs import user_data_dir
@@ -26,28 +27,56 @@ def data_dir() -> Path:
 
 
 def _write_json(path: Path, obj) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def _read_json(path: Path, default):
+    # mkstemp creates the file 0600 and with a unique name in the same dir.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _quarantine(path: Path) -> None:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    n = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{n}")
+        n += 1
+    try:
+        os.replace(path, target)
+    except OSError:
+        pass
+
+
+def _read_json(path: Path, default, kind: type):
+    """Read JSON of the expected type; quarantine unreadable/wrong-shaped files."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return default
+    except (ValueError, OSError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        _quarantine(path)
+        return default
+    if not isinstance(data, kind):
+        _quarantine(path)
+        return default
+    return data
 
 
 def load_settings() -> dict:
-    data = _read_json(data_dir() / "settings.json", {})
-    return {**SETTINGS_DEFAULTS, **(data if isinstance(data, dict) else {})}
+    data = _read_json(data_dir() / "settings.json", {}, dict)
+    return {**SETTINGS_DEFAULTS, **data}
 
 
 def save_settings(d: dict) -> None:
-    path = data_dir() / "settings.json"
-    _write_json(path, d)
-    if sys.platform != "win32":
-        os.chmod(path, 0o600)
+    """Merge d over the stored settings (partial updates keep other keys)."""
+    _write_json(data_dir() / "settings.json", {**load_settings(), **d})
 
 
 def default_profile() -> Profile:
@@ -65,8 +94,14 @@ def default_profile() -> Profile:
 
 
 def list_profiles() -> list[Profile]:
-    raw = _read_json(data_dir() / "profiles.json", [])
-    return [Profile.from_dict(d) for d in raw]
+    raw = _read_json(data_dir() / "profiles.json", [], list)
+    out = []
+    for d in raw:
+        try:
+            out.append(Profile.from_dict(d))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
+    return out
 
 
 def save_profile(p: Profile) -> None:
@@ -86,4 +121,4 @@ def delete_profile(id: str) -> None:
 def slugify(text: str, max_len: int = 40) -> str:
     ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
-    return slug[:max_len].strip("-")
+    return slug[:max_len].strip("-") or "video"

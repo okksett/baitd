@@ -69,3 +69,48 @@ def test_user_error_and_reexport():
 def test_settings_file_not_world_readable_on_posix(tmp_data):
     save_settings({"pexels_key": "k"})
     assert os.stat(tmp_data / "settings.json").st_mode & 0o777 == 0o600
+
+
+def _corrupt_files(d, name):
+    return list(d.glob(name + ".corrupt-*"))
+
+
+def test_save_settings_merges_partial(tmp_data):
+    save_settings({"pexels_key": "k"})
+    save_settings({"theme": "light"})
+    s = load_settings()
+    assert s["pexels_key"] == "k" and s["theme"] == "light"
+
+
+@pytest.mark.parametrize("content", [b"{not json", b"\xff\xfe\x00garbage", b"[1, 2]"])
+def test_corrupt_settings_quarantined(tmp_data, content):
+    (tmp_data / "settings.json").write_bytes(content)
+    assert load_settings()["pexels_key"] == ""
+    assert len(_corrupt_files(tmp_data, "settings.json")) == 1
+    assert not (tmp_data / "settings.json").exists()
+    save_settings({"pexels_key": "k"})  # does not destroy the quarantined copy
+    assert _corrupt_files(tmp_data, "settings.json")[0].read_bytes() == content
+
+
+@pytest.mark.parametrize("content", [b"{oops", b"\xff\xfe\x00garbage", b'{"a": 1}'])
+def test_corrupt_profiles_quarantined(tmp_data, content):
+    (tmp_data / "profiles.json").write_bytes(content)
+    assert list_profiles() == []
+    assert len(_corrupt_files(tmp_data, "profiles.json")) == 1
+
+
+def test_bad_profile_entry_skipped_good_kept(tmp_data):
+    import json
+    good = default_profile().to_dict()
+    good.update(id="g", name="Bueno", future_field=1)  # unknown key ignored
+    del good["tone"]  # missing optional filled from defaults
+    bad_missing = {"name": "sin id"}
+    bad_type = {**default_profile().to_dict(), "id": "b", "name": "B", "subtitle": "oops"}
+    (tmp_data / "profiles.json").write_text(
+        json.dumps([bad_missing, good, bad_type, 5]), encoding="utf-8")
+    assert [p.name for p in list_profiles()] == ["Bueno"]
+    assert not _corrupt_files(tmp_data, "profiles.json")
+
+
+def test_slugify_all_emoji_fallback():
+    assert slugify("🔥🔥") == "video"
