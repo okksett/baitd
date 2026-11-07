@@ -786,6 +786,20 @@
     btn.textContent = tr(btn.dataset.i18n);
   }
 
+  async function quitApp() {
+    const yes = await ask({ title: tr("settings.quit"), text: tr("settings.quit_text"), ok: tr("settings.quit") });
+    if (!yes) return;
+    try {
+      await api("POST", "/api/shutdown", {});
+    } catch (e) {
+      showError($("#settings-error"), e);
+      return;
+    }
+    $("#settings").close();
+    document.body.textContent = tr("settings.quit_done");
+    document.body.className = "quit-done";
+  }
+
   async function saveSettings() {
     const dlg = $("#settings");
     const body = {};
@@ -872,6 +886,7 @@
 
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
+    $("#quit-app").addEventListener("click", quitApp);
     $$("#settings [data-close]").forEach((b) => b.addEventListener("click", () => $("#settings").close()));
     $$("#settings .show-btn").forEach((b) => b.addEventListener("click", () => {
       setShown(b, b.getAttribute("aria-pressed") !== "true");

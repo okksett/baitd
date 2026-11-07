@@ -10,9 +10,13 @@ Baitd es una aplicación gratuita y de código abierto (licencia MIT) que convie
 
 ### Opción A: descargar la app (la más fácil)
 
-1. Ve a la página de **Releases** del repositorio y descarga el paquete de tu sistema (Windows, macOS Intel / Apple Silicon o Linux).
+1. Ve a la página de **Releases** del repositorio y descarga el paquete de tu sistema (Windows, macOS Intel / Apple Silicon o Linux). Mientras no haya una Release, cada ejecución de **GitHub Actions** (pestaña *Actions* → workflow *build*) deja los paquetes como *artifacts*: `Baitd-windows-x64.zip`, `Baitd-macos-arm64.zip`, `Baitd-macos-x64.zip` y `Baitd-linux-x64.tar.gz`.
 2. Descomprímelo y abre Baitd con doble clic. Se abre el navegador con la app.
 3. Primer arranque: la app no está firmada, así que tu sistema avisará (ver abajo).
+
+En Windows y Linux se abre también una ventana de consola con la dirección y "Pulsa Ctrl+C para cerrar"; en macOS la app no tiene consola y se cierra con **⚙ Ajustes → Salir de Baitd**.
+
+**Si algo no funciona**, abre la app desde una terminal con `--selftest` (por ejemplo `Baitd.exe --selftest`): genera un vídeo de prueba sin conexión y sin tocar tus datos, y termina con `SELFTEST OK <segundos>` o con la causa del fallo.
 
 **Windows (SmartScreen):** si aparece "Windows protegió su PC", pulsa **Más información → Ejecutar de todas formas**.
 
@@ -82,9 +86,13 @@ Baitd is a free, open-source (MIT) app that turns **a topic** (e.g. "the benefit
 
 ### Option A: download the app (easiest)
 
-1. Open the repository's **Releases** page and download the package for your system (Windows, macOS Intel / Apple Silicon, or Linux).
+1. Open the repository's **Releases** page and download the package for your system (Windows, macOS Intel / Apple Silicon, or Linux). Until there is a Release, every **GitHub Actions** run (*Actions* tab → *build* workflow) leaves the packages as *artifacts*: `Baitd-windows-x64.zip`, `Baitd-macos-arm64.zip`, `Baitd-macos-x64.zip` and `Baitd-linux-x64.tar.gz`.
 2. Unzip it and double-click Baitd. Your browser opens on the app.
 3. First launch: the app is unsigned, so your system will warn you (see below).
+
+On Windows and Linux a console window also opens showing the address and "Pulsa Ctrl+C para cerrar" (press Ctrl+C to quit); on macOS the app has no console and quits from **⚙ Settings → Quit Baitd**.
+
+**Troubleshooting:** run the app from a terminal with `--selftest` (e.g. `Baitd.exe --selftest`): it renders an offline test video without touching your data and ends with `SELFTEST OK <seconds>` or the cause of the failure.
 
 **Windows (SmartScreen):** if you see "Windows protected your PC", click **More info → Run anyway**.
 

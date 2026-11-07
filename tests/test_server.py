@@ -451,3 +451,35 @@ def test_index_uses_saved_language_and_theme(client):
 
 def test_index_theme_unset_on_first_run(client):
     assert 'data-theme=""' in client.get("/").text  # CSS follows prefers-color-scheme
+
+
+# ---- shutdown (macOS .app has no console) ----
+
+def test_shutdown_stops_queue_and_calls_hook(tmp_data, runner):
+    called = threading.Event()
+    q = JobQueue(tmp_data / "queue.json", runner=runner)
+    q.start()
+    a = server.create_app(q, shutdown=called.set)
+    a.test_client_class = LocalClient
+    r = a.test_client().post("/api/shutdown", json={})
+    assert r.status_code == 200 and r.json == {"ok": True}
+    assert called.wait(3)
+    assert q._stopping  # the queue no longer accepts work
+
+
+def test_shutdown_requires_json_and_local_host(tmp_data, runner):
+    called = threading.Event()
+    q = JobQueue(tmp_data / "queue.json", runner=runner)
+    a = server.create_app(q, shutdown=called.set)
+    a.test_client_class = LocalClient
+    c = a.test_client()
+    assert c.post("/api/shutdown", data="x", content_type="text/plain").status_code == 415
+    assert c.post("/api/shutdown", json={}, base_url="http://evil.example:5000").status_code == 403
+    assert c.get("/api/shutdown").status_code == 405
+    assert not called.wait(0.5)
+
+
+def test_quit_button_in_settings_dialog():
+    html = INDEX.read_text("utf-8")
+    assert 'id="quit-app"' in html
+    assert "api/shutdown" in JS.read_text("utf-8")

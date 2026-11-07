@@ -203,6 +203,8 @@ select option, select optgroup { background: var(--panel-solid); color: var(--te
   flex: 1.3; border: 1px solid var(--cta); background: var(--cta); color: var(--ctatext);
   letter-spacing: .06em; text-transform: uppercase; font-size: 13px;
 }
+.quit-row .b1 { width: 100%; }
+body.quit-done { display: grid; place-items: center; min-height: 100vh; padding: 24px; text-align: center; }
 .b1:hover:not(:disabled) { background: rgba(255, 255, 255, .06); }
 .b2:hover:not(:disabled) { filter: brightness(.94); }
 

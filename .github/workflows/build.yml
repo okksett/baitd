@@ -1,0 +1,87 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            exe: dist/Baitd/Baitd.exe
+            artifact: Baitd-windows-x64.zip
+          - os: macos-13
+            exe: dist/Baitd.app/Contents/MacOS/Baitd
+            artifact: Baitd-macos-x64.zip
+          - os: macos-14
+            exe: dist/Baitd.app/Contents/MacOS/Baitd
+            artifact: Baitd-macos-arm64.zip
+          - os: ubuntu-22.04
+            exe: dist/Baitd/Baitd
+            artifact: Baitd-linux-x64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Tests (offline, includes the end-to-end smoke test)
+        run: pytest -m "not network"
+
+      - name: Build the app
+        run: pyinstaller packaging/baitd.spec --noconfirm
+
+      - name: Self-test the frozen app (offline render)
+        run: |
+          out=$("${{ matrix.exe }}" --selftest)
+          echo "$out"
+          echo "$out" | grep -q "^SELFTEST OK"
+
+      - name: Launch the frozen app and request the page
+        run: |
+          "${{ matrix.exe }}" --no-browser --port 18765 > app.log 2>&1 &
+          pid=$!
+          status=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+            --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors \
+            http://127.0.0.1:18765/)
+          echo "GET / -> $status"
+          cat app.log
+          # Clean exit through the app's own endpoint, then make sure nothing is left running.
+          curl --silent --request POST --header "Content-Type: application/json" --data "{}" \
+            http://127.0.0.1:18765/api/shutdown || true
+          sleep 2
+          kill "$pid" 2>/dev/null || true
+          if [ "$RUNNER_OS" = "Windows" ]; then taskkill //F //IM Baitd.exe 2>/dev/null || true; fi
+          test "$status" = "200"
+
+      - name: Package
+        run: |
+          case "$RUNNER_OS" in
+            Windows) powershell -NoProfile -Command "Compress-Archive -Path dist/Baitd -DestinationPath '${{ matrix.artifact }}'" ;;
+            macOS)   ditto -c -k --keepParent dist/Baitd.app "${{ matrix.artifact }}" ;;
+            Linux)   tar -czf "${{ matrix.artifact }}" -C dist Baitd ;;
+          esac
+          ls -l "${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error

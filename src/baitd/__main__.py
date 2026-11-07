@@ -29,7 +29,7 @@ def find_free_port() -> int:
 
 def build_server(port: int, queue: JobQueue):
     """A threaded WSGI server bound to 127.0.0.1 only; already listening when it returns."""
-    return create_server(create_app(queue), host=HOST, port=port, ident="Baitd")
+    return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd")
 
 
 def request_shutdown() -> None:
@@ -59,13 +59,29 @@ def _setup_logging() -> list[logging.Handler]:
     return handlers
 
 
+def _selftest() -> int:
+    from . import selftest  # imported lazily: the normal start does not need it
+    try:
+        seconds = selftest.run_selftest()
+    except selftest.SelftestError as e:
+        print(f"SELFTEST FAILED: {e}", flush=True)
+        return 1
+    print(f"SELFTEST OK {seconds:.1f}", flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="baitd", description="Baitd: de un tema a un video corto.")
     parser.add_argument("--no-browser", action="store_true", help="no abrir el navegador, solo mostrar la URL")
     parser.add_argument("--port", type=int, default=None, help="puerto (por defecto, uno libre)")
+    parser.add_argument("--selftest", action="store_true",
+                        help="comprobar la instalación: genera un vídeo de prueba sin conexión y sale")
     args = parser.parse_args(argv)
     if args.port is not None and not 1024 <= args.port <= 65535:
         parser.error("--port debe estar entre 1024 y 65535")
+
+    if args.selftest:
+        raise SystemExit(_selftest())
 
     handlers = _setup_logging()
     queue = JobQueue(config.data_dir() / "queue.json")

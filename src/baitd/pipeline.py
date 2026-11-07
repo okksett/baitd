@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import threading
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 from . import audio, captions, ffmpeg, llm, timeline, tts
 from .config import data_dir, slugify
@@ -15,6 +17,17 @@ from .stock.select import find_media
 STEPS = ("script", "voice", "clips", "edit", "captions", "render")
 _TOTAL = len(STEPS)
 _DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
+
+
+@dataclass
+class Providers:
+    """Replaceable network-facing steps (the offline self-test injects generated ones).
+
+    A field left as None means the real implementation, looked up when the job runs."""
+    generate_script: Callable | None = None
+    synthesize: Callable | None = None
+    find_media: Callable | None = None
+    download: Callable | None = None
 
 
 def _create_output_dir(settings: dict, topic: str) -> Path:
@@ -51,13 +64,13 @@ def _write_texts(folder: Path, script: Script) -> None:
 
 
 def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
-            cancel: threading.Event, progress: ProgressFn) -> Path:
+            cancel: threading.Event, progress: ProgressFn, providers: Providers | None = None) -> Path:
     """Run the six steps; returns the output folder. Failed or cancelled jobs leave nothing behind."""
     folder = _create_output_dir(settings, topic)
     try:
         workdir = folder / ".work"
         workdir.mkdir()
-        _run(topic, profile, settings, script, cancel, progress, folder, workdir)
+        _run(topic, profile, settings, script, cancel, progress, folder, workdir, providers or Providers())
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -66,7 +79,8 @@ def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
 
 
 def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
-         cancel: threading.Event, progress: ProgressFn, folder: Path, workdir: Path) -> None:
+         cancel: threading.Event, progress: ProgressFn, folder: Path, workdir: Path,
+         providers: Providers) -> None:
     def begin(i: int) -> None:
         if cancel.is_set():
             raise JobCancelled()
@@ -79,11 +93,11 @@ def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
 
     begin(1)
     if script is None:
-        script = llm.generate_script(topic, profile, settings)
+        script = (providers.generate_script or llm.generate_script)(topic, profile, settings)
     end(1)
 
     begin(2)
-    voice = tts.synthesize(script, profile, settings, workdir)
+    voice = (providers.synthesize or tts.synthesize)(script, profile, settings, workdir)
     end(2)
 
     begin(3)
@@ -98,10 +112,10 @@ def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
             raise JobCancelled()
         progress("clips", 3, _TOTAL, 100.0 * n / len(by_scene))
         longest = max(e - s for _, s, e in scene_cuts)
-        found = find_media(script.scenes[idx].keywords, len(scene_cuts), longest, width, height, used, settings)
+        found = (providers.find_media or find_media)(script.scenes[idx].keywords, len(scene_cuts), longest, width, height, used, settings)
         for m in found:
             used.add(m.id)
-            m.path = cache.download(m)
+            m.path = (providers.download or cache.download)(m)
         media_by_scene[idx] = found
     end(3)
 

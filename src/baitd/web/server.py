@@ -15,6 +15,7 @@ import sys
 import threading
 import uuid
 from pathlib import Path
+from typing import Callable
 
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
@@ -160,7 +161,7 @@ def _public_job(job: dict) -> dict:
     return {**job, "has_video": bool(video and job["status"] == "done" and video.is_file())}
 
 
-def create_app(queue: JobQueue) -> Flask:
+def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_DIR / "templates"),
                 static_folder=str(WEB_DIR / "static"), static_url_path="/static")
     app.json.ensure_ascii = False
@@ -372,6 +373,16 @@ def create_app(queue: JobQueue) -> Flask:
             _open_folder(folder)
         except OSError:
             raise UserError("No se pudo abrir la carpeta", f"Ábrela a mano: {folder}") from None
+        return jsonify(ok=True)
+
+    @app.post("/api/shutdown")
+    def post_shutdown():
+        """Quit the app (the macOS .app has no console to press Ctrl+C in)."""
+        def stop() -> None:
+            queue.stop()  # a running job goes back to pending
+            if shutdown is not None:
+                shutdown()
+        threading.Timer(0.3, stop).start()  # after this response has been sent
         return jsonify(ok=True)
 
     return app
