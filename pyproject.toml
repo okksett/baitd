@@ -14,10 +14,11 @@ dependencies = [
     "edge-tts>=7.3,<8",
     "imageio-ffmpeg>=0.8",
     "platformdirs",
+    "fonttools",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyinstaller", "fonttools"]
+dev = ["pytest", "pyinstaller"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

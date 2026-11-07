@@ -261,3 +261,60 @@ def test_ass_font_size_is_em_not_libass_cell_height(tmp_path):
 
 def test_fonts_dir_constant_points_at_bundle():
     assert FONTS_DIR.is_dir() and (FONTS_DIR / "NotoSans-Regular.ttf").is_file()
+
+
+def test_missing_style_font_raises(tmp_path):
+    empty = tmp_path / "fonts"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="Montserrat ExtraBold"):
+        write_ass(ws("uno dos"), PRESETS["caja_azul"], 0, 1080, 1920, tmp_path / "s.ass", empty)
+
+
+def test_missing_fallback_font_raises(tmp_path):
+    only = tmp_path / "fonts"
+    only.mkdir()
+    (only / "Anton-Regular.ttf").write_bytes((FONTS / "Anton-Regular.ttf").read_bytes())
+    with pytest.raises(ValueError, match="Noto Sans"):
+        write_ass(ws("uno dos"), PRESETS["poster"], 0, 1080, 1920, tmp_path / "s.ass", only)
+
+
+def test_hook_still_enlarged_without_metrics(tmp_path, monkeypatch):
+    from baitd import captions
+    monkeypatch.setattr(captions, "_faces_in", lambda _d: {"Montserrat ExtraBold": None, "Noto Sans": None})
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos tres"), PRESETS["caja_azul"], 1, 1080, 1920, out, FONTS)
+    d = dialogues(out)
+    assert fs_of(d[0]) == round(72 * 1.25) and fs_of(d[1]) is None
+
+
+@pytest.mark.parametrize("gap,held", [(0.3, True), (0.6, False)])
+def test_event_timing_with_pauses(tmp_path, gap, held):
+    out = tmp_path / "s.ass"
+    words = [Word("uno", 0.0, 0.2), Word("dos", 0.2 + gap, 0.2 + gap + 0.2),
+             Word("tres", 0.4 + 2 * gap, 0.6 + 2 * gap)]
+    write_ass(words, PRESETS["amarillo_clasico"], 0, 1080, 1920, out, FONTS)
+    ev = [(secs(fields(l)[1]), secs(fields(l)[2])) for l in dialogues(out)]
+    for (start, end), w in zip(ev, words):
+        assert abs(start - w.start) < 0.01
+    for (_, end), (nxt_start, _) in zip(ev, ev[1:]):
+        assert end <= nxt_start + 0.005
+    assert (abs(ev[0][1] - words[1].start) < 0.01) is held  # held through short pauses (no blink)
+    if not held:
+        assert abs(ev[0][1] - words[0].end) < 0.01
+
+
+def test_minimal_blanco_is_legible_on_white():
+    assert PRESETS["minimal_blanco"].outline == 2
+
+
+def test_minimal_style_has_outline_and_shadow(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos"), PRESETS["minimal_blanco"], 0, 1080, 1920, out, FONTS)
+    st = styles(out)["Cap"]
+    assert float(st[16]) == 2 and float(st[17]) > 0  # Outline, Shadow
+
+
+def test_caja_text_outline_is_nearly_opaque(tmp_path):
+    out = tmp_path / "s.ass"
+    write_ass(ws("uno dos"), PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
+    assert styles(out)["Caja_Text"][5] == "&H33000000"

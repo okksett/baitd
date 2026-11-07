@@ -23,7 +23,7 @@ PRESETS: dict[str, SubtitleStyle] = {
         highlight="#FFD400", outline=6, box=False, position="bottom"),
     "minimal_blanco": SubtitleStyle(
         preset="minimal_blanco", font="Inter SemiBold", size=56, color="#FFFFFF",
-        highlight="#FFE27A", outline=0, box=False, position="bottom"),
+        highlight="#FFE27A", outline=2, box=False, position="bottom"),
     "poster": SubtitleStyle(
         preset="poster", font="Anton", size=96, color="#FFFFFF",
         highlight="#0A4CF0", outline=4, box=False, position="bottom"),
@@ -192,10 +192,10 @@ def _style_line(name: str, font: str, face: _Face | None, style: SubtitleStyle, 
     if kind == "caja_box":
         border_style, outline, outline_color, shadow = 3, _BOX_PAD, hex_to_ass(style.highlight), 0
     elif kind == "caja_text":
-        border_style, outline, outline_color, shadow = 1, _CAJA_OUTLINE, hex_to_ass("#000000", 0x66), 0
+        border_style, outline, outline_color, shadow = 1, _CAJA_OUTLINE, hex_to_ass("#000000", 0x33), 0
     else:
         border_style, outline, outline_color = 1, style.outline, hex_to_ass("#000000")
-        shadow = _SHADOW if style.outline == 0 else 0
+        shadow = _SHADOW if style.outline < 3 else 0  # thin outlines get a soft shadow too
     return (
         f"Style: {name},{font},{size},{hex_to_ass(style.color)},{hex_to_ass(style.color)},"
         f"{outline_color},{back},0,0,0,0,100,100,0,0,{border_style},"
@@ -210,6 +210,9 @@ def write_ass(
     baseline = caption_baseline_y(style.position, width, height)
     latin = is_latin(" ".join(w.text for w in words))
     faces = _faces_in(Path(fonts_dir).resolve())
+    for family in (style.font, FALLBACK_FONT):
+        if family not in faces:
+            raise ValueError(f"Font family {family!r} is not in the font bundle {fonts_dir}")
     upper = style.preset in _UPPERCASE_PRESETS and latin
 
     font_name = style.font if latin else FALLBACK_FONT
@@ -233,15 +236,15 @@ def write_ass(
             # The hook is bigger through the font size itself (an \fsc scale would be applied twice
             # to libass' opaque boxes).
             em = style.size * (_HOOK_SCALE if is_hook else 1.0)
-            if face is not None:
+            if face is not None:  # always true for the bundle; keeps hook size even without metrics
                 need = face.width(line, em) + pad
                 if need > avail:
                     em = max(1.0, math.floor(em * (avail - pad) / (need - pad)))
             descent = face.descent / face.upm * em if face else 0.0
             y = round(baseline + descent)
             head = f"\\an2\\pos({width // 2},{y})"
-            if face is not None and em != style.size:
-                head += f"\\fs{face.ass_size(em)}"
+            if em != style.size:
+                head += f"\\fs{face.ass_size(em) if face is not None else round(em)}"
 
             nxt_chunk_start = chunk[-1].end
             if latin:
