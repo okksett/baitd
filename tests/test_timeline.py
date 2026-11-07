@@ -115,3 +115,15 @@ def test_assign_media_borrows_from_nearest_scene_when_exhausted():
 def test_assign_media_raises_when_not_enough():
     with pytest.raises(ValueError, match="not enough media"):
         assign_media([(0, 0, 3.0), (0, 3.0, 6.0)], _media({0: 1}))
+
+
+def test_short_remainder_after_hook_merges_into_next_scene():
+    bounds = [(0.0, 4.1), (4.1, 12.0)]
+    words = [Word(f"w{i}", i * 0.4, i * 0.4 + 0.4) for i in range(30)]
+    words[5] = Word("hook.", 2.0, 2.4)
+    cuts = plan_cuts(bounds, words)
+    assert cuts[0][2] == pytest.approx(2.4)
+    assert cuts[0][0] == 0 and cuts[1][0] == 0 and cuts[1][1] == pytest.approx(2.4)
+    assert all(2.0 - 1e-9 <= e - s <= 4.0 + 1e-9 for _, s, e in cuts[1:-1])
+    assert 2.0 - 1e-9 <= cuts[-1][2] - cuts[-1][1] <= 4.0 + 1e-9
+    assert all(a[2] == b[1] for a, b in zip(cuts, cuts[1:])) and cuts[-1][2] == pytest.approx(12.0)

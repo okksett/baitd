@@ -70,7 +70,10 @@ def plan_cuts(
     segments = _merge_short_scenes(scene_bounds, min_len)
     shots: list[list] = []  # [scene_idx, start, end, protected]
 
-    for si, (idx, seg_start, seg_end) in enumerate(segments):
+    si = -1
+    while si + 1 < len(segments):
+        si += 1
+        idx, seg_start, seg_end = segments[si]
         pos = seg_start
         last_segment = si == len(segments) - 1
 
@@ -81,6 +84,11 @@ def plan_cuts(
             cut = min(cut, seg_end)
             shots.append([idx, pos, cut, True])
             pos = cut
+            if 0 < seg_end - pos < min_len - _EPS and not last_segment:
+                # R15: short remainder after the hook joins the next scene's first shot
+                _, _, nxt_end = segments[si + 1]
+                segments[si + 1] = (idx, pos, nxt_end)
+                continue
 
         while seg_end - pos > max_len + _EPS:
             lo = pos + min_len
