@@ -294,3 +294,13 @@ def test_edge_real_synthesis(tmp_path):
     assert len(vo.words) == 11
     assert all(w.end > w.start for w in vo.words)
     assert len(vo.scene_bounds) == 2
+
+
+def test_elevenlabs_unknown_voice_says_voz(tmp_path, monkeypatch):
+    # M6: a 404 there is about the voice id, not a model
+    monkeypatch.setattr(requests, "post", lambda url, **kw: FakeResp(status=404))
+    with pytest.raises(UserError) as e:
+        tts.synthesize(script("hola"), profile(tts_provider="elevenlabs", voice="VID"),
+                       {"elevenlabs_key": "k"}, tmp_path)
+    assert e.value.cause == "La voz 'VID' no existe en ElevenLabs"
+    assert e.value.fix == "Cambia la voz en el perfil"

@@ -90,7 +90,19 @@ def test_pick_track_none():
 
 def test_pick_track_path_is_itself(tmp_path):
     p = tmp_path / "x.mp3"
+    p.write_bytes(b"x")
     assert audio.pick_track(str(p)) == p
+
+
+def test_missing_user_track_falls_back_to_none(tmp_data):
+    # M4: a user track deleted after it was chosen no longer crashes the render
+    assert audio.pick_track(str(tmp_data / "musica" / "borrada.mp3")) is None
+
+
+def test_missing_bundled_track_falls_back_to_its_mood(tmp_data):
+    gone = audio.MUSIC_DIR / "epico" / "ya-no-existe.mp3"
+    t = audio.pick_track(str(gone), rng=random.Random(1))
+    assert t is not None and t.is_file() and t.parent.name == "epico"
 
 
 def test_pick_track_mood_is_deterministic_with_rng(tmp_data):

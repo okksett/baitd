@@ -84,6 +84,27 @@ def _write_texts(folder: Path, script: Script) -> None:
         f"{script.title}\n\n{script.description}\n\n{tags}\n", encoding="utf-8")
 
 
+def _download_or_replace(m: Media, find_one: Callable[[], list[Media]],
+                         download: Callable[[Media], Path], used: set[str]) -> Media:
+    """Download m; if that fails, try one replacement clip before failing the job."""
+    used.add(m.id)
+    try:
+        m.path = download(m)
+        return m
+    except UserError as first:
+        log.warning("No se pudo descargar %s (%s); se busca otro clip", m.id, first.cause)
+        try:
+            spare = find_one()
+        except UserError:
+            spare = []
+        if not spare:
+            raise first from None
+        r = spare[0]
+        used.add(r.id)
+        r.path = download(r)  # a second failure fails the job with its own message
+        return r
+
+
 def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
             cancel: threading.Event, progress: ProgressFn, providers: Providers | None = None,
             *, on_output: Callable[[Path], None] | None = None) -> Path:
@@ -143,11 +164,13 @@ def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
             raise JobCancelled()
         progress("clips", 3, _TOTAL, 100.0 * n / len(by_scene))
         longest = max(e - s for _, s, e in scene_cuts)
-        found = (providers.find_media or find_media)(script.scenes[idx].keywords, len(scene_cuts), longest, width, height, used, settings)
-        for m in found:
-            used.add(m.id)
-            m.path = (providers.download or cache.download)(m)
-        media_by_scene[idx] = found
+        find = providers.find_media or find_media
+        keywords = script.scenes[idx].keywords
+        found = find(keywords, len(scene_cuts), longest, width, height, used, settings)
+        media_by_scene[idx] = [
+            _download_or_replace(m, lambda: find(keywords, 1, longest, width, height, used, settings),
+                                 providers.download or cache.download, used)
+            for m in found]
     end(3)
 
     begin(4)
@@ -166,8 +189,13 @@ def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
 
     begin(6)
     opts = RenderOptions(width, height, profile.fps, ffmpeg.pick_encoder())
-    render_video(shots, voice, ass, audio.pick_track(profile.music), profile.music_volume, opts,
-                 workdir, folder / "video.mp4", cancel,
-                 lambda pct: progress("render", 6, _TOTAL, pct * 100))
+    try:
+        render_video(shots, voice, ass, audio.pick_track(profile.music), profile.music_volume, opts,
+                     workdir, folder / "video.mp4", cancel,
+                     lambda pct: progress("render", 6, _TOTAL, pct * 100))
+    except RuntimeError:  # FFmpeg failed: disk full, unreadable clip... the details go to the log
+        log.exception("Fallo al renderizar %r", topic)
+        raise UserError("No se pudo renderizar el video",
+                        "Comprueba el espacio en disco y vuelve a intentarlo") from None
     _write_texts(folder, script)
     end(6)

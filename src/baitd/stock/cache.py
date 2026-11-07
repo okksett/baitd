@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 CHUNK = 1 << 16
 _EXTS = {".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png", ".webp"}
+DOWNLOAD_FIX = "Inténtalo de nuevo; si sigue fallando, prueba otro tema"
 DEFAULT_MAX_GB = 3.0  # ruling R30; settings key cache_max_gb
 
 
@@ -83,8 +84,8 @@ def download(m: Media) -> Path:
     name = m.source.capitalize()
     try:
         resp = request("get", m.url, name, stream=True)
-    except UserError as e:  # the shared mapping talks about keys/models, which do not apply to a CDN file
-        raise UserError(f"No se pudo descargar un clip de {name}", e.fix) from None
+    except UserError:  # the shared mapping talks about keys/models, which do not apply to a CDN file
+        raise UserError(f"No se pudo descargar un clip de {name}", DOWNLOAD_FIX) from None
     try:
         with open(part, "wb") as f:
             for chunk in resp.iter_content(chunk_size=CHUNK):

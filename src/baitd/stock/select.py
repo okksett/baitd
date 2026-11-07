@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..llm._http import AuthError
 from ..models import Media, UserError
 from . import pexels, pixabay
 from .quality import passes_quality
@@ -47,7 +48,7 @@ def find_media(keywords: list[str], need: int, min_seconds: float, out_w: int, o
                 found = getattr(prov, fn)(query, o, settings, out_w=out_w, out_h=out_h)
             except UserError as e:
                 errors.append(e)
-                if "no es válida" in e.cause:
+                if isinstance(e, AuthError):
                     dead.add(prov)
                 continue
             found = [m for m in found if m.id not in taken and passes_quality(m, out_w, out_h)]

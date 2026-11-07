@@ -6,6 +6,7 @@ import requests
 
 from baitd.config import default_profile
 from baitd.llm import build_prompt, generate_script, parse_script
+from baitd.llm._http import AuthError, NotFoundError
 from baitd.models import UserError
 
 VALID = json.dumps({
@@ -261,3 +262,47 @@ def test_unexpected_response_shape(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(200, {"weird": 1}))
     with pytest.raises(UserError):
         generate_script("x", profile(llm_provider="openai"), SETTINGS)
+
+
+# ---- M1 / M5: typed errors and compat wording ----
+
+def test_auth_failures_are_typed(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(401, {}))
+    with pytest.raises(AuthError):
+        generate_script("x", profile(llm_provider="openai"), SETTINGS)
+
+
+def test_compat_wording_uses_del(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(401, {}))
+    with pytest.raises(AuthError) as e:
+        generate_script("x", profile(llm_provider="compat"), SETTINGS)
+    assert e.value.cause == "La clave del servidor compatible no es válida"
+
+
+def test_compat_connection_refused_suggests_ollama(monkeypatch):
+    def boom(*a, **k):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(requests, "post", boom)
+    with pytest.raises(UserError) as e:
+        generate_script("x", profile(llm_provider="compat"), SETTINGS)
+    assert e.value.cause == "Sin conexión con el servidor compatible"
+    assert e.value.fix == "¿Está abierto Ollama / el servidor?"
+
+
+def test_compat_404_suggests_v1(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(404, {}))
+    with pytest.raises(NotFoundError) as e:
+        generate_script("x", profile(llm_provider="compat", llm_model="qwen2"), SETTINGS)
+    assert e.value.cause == "El modelo 'qwen2' no existe en el servidor compatible"
+    assert e.value.fix == "Revisa la URL (¿termina en /v1?) o el modelo"
+
+
+def test_compat_timeout_message_is_capitalised(monkeypatch):
+    def boom(*a, **k):
+        raise requests.Timeout("slow")
+
+    monkeypatch.setattr(requests, "post", boom)
+    with pytest.raises(UserError) as e:
+        generate_script("x", profile(llm_provider="compat"), SETTINGS)
+    assert e.value.cause == "El servidor compatible tardó demasiado en responder"

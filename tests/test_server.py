@@ -172,11 +172,22 @@ def test_cannot_delete_last_profile(client):
 
 @pytest.mark.parametrize("bad", [{"name": ""}, {"rate": 99}, {"music_volume": 2}, {"fps": 24},
                                  {"music": "C:/Windows/notepad.exe"},
-                                 {"subtitle": {"position": "left"}}])
+                                 {"subtitle": {"position": "left"}},
+                                 {"subtitle": {"font": "Comic Sans"}}, {"subtitle": {"font": 3}},
+                                 {"subtitle": {"outline": -1}}, {"subtitle": {"outline": 99}},
+                                 {"subtitle": {"outline": "4"}}, {"subtitle": {"outline": True}},
+                                 {"subtitle": {"box": "yes"}}])
 def test_invalid_profile_rejected(client, bad):
     base = client.get("/api/profiles").json["profiles"][0]
     r = client.post("/api/profiles", json={**base, **bad})
     assert r.status_code == 400 and "→" in r.json["error"]
+
+
+def test_valid_subtitle_overrides_accepted(client):
+    base = client.get("/api/profiles").json["profiles"][0]
+    sub = {**base["subtitle"], "font": "Anton", "outline": 3, "box": False}
+    r = client.post("/api/profiles", json={**base, "subtitle": sub})
+    assert r.status_code == 200 and r.json["subtitle"]["font"] == "Anton"
 
 
 # ---- voices and music ----

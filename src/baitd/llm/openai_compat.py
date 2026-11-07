@@ -22,7 +22,11 @@ def complete(prompt: str, model: str, settings: dict, provider: str = "openai") 
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.8}
     if provider == "openai":
         payload["response_format"] = {"type": "json_object"}
-    data = post_json(f"{base}/chat/completions", headers, payload, label, model)
+    hints = {} if provider == "openai" else {  # a local server (Ollama), not "the internet"
+        "connect_fix": "¿Está abierto Ollama / el servidor?",
+        "not_found_fix": "Revisa la URL (¿termina en /v1?) o el modelo",
+    }
+    data = post_json(f"{base}/chat/completions", headers, payload, label, model, **hints)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

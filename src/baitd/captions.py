@@ -169,6 +169,11 @@ def _faces_in(fonts_dir: Path) -> dict[str, _Face]:
     return out
 
 
+def font_families() -> set[str]:
+    """Family names of the bundled fonts (valid values for SubtitleStyle.font)."""
+    return set(_faces_in(FONTS_DIR))
+
+
 # ---------- ASS ----------
 
 def _ass_time(t: float) -> str:

@@ -36,6 +36,7 @@ MASK = "••••"
 _MUTATING = ("POST", "PUT", "PATCH", "DELETE")
 _LOCAL_HOSTS = ("127.0.0.1", "localhost")
 _POSITIONS = ("bottom", "middle", "top")
+_MAX_OUTLINE = 20  # px; the presets use 0-6
 _LLM_PROVIDERS = tuple(llm.DEFAULT_MODELS)
 _UNEXPECTED = "Error inesperado: {} → Revisa el registro y vuelve a intentarlo"
 
@@ -128,6 +129,9 @@ def _parse_profile(d: dict) -> Profile:
         and s.preset in captions.PRESETS and s.position in _POSITIONS
         and isinstance(s.size, int) and 24 <= s.size <= 200
         and all(isinstance(c, str) and len(c) == 7 and c.startswith("#") for c in (s.color, s.highlight))
+        and isinstance(s.font, str) and s.font in captions.font_families()
+        and type(s.outline) is int and 0 <= s.outline <= _MAX_OUTLINE
+        and isinstance(s.box, bool)
     )
     if not ok:
         raise invalid

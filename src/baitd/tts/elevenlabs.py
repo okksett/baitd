@@ -29,6 +29,7 @@ def synth_scene(text: str, profile: Profile, settings: dict, out: Path) -> list[
     """
     resp = request(
         "post", f"{BASE}/text-to-speech/{profile.voice}/with-timestamps", PROVIDER, profile.voice,
+        noun="la voz",
         headers={"xi-api-key": settings["elevenlabs_key"]},
         json={"text": text, "model_id": MODEL},
     )

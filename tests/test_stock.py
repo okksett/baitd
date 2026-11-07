@@ -5,6 +5,7 @@ import requests
 
 from baitd import config
 
+from baitd.llm._http import AuthError
 from baitd.models import Media, UserError
 from baitd.stock import cache, pexels, pixabay
 from baitd.stock.select import find_media, passes_quality, score
@@ -284,7 +285,7 @@ def test_auth_failed_provider_is_skipped_later(monkeypatch):
 
     def pex(q, o, s, **kw):
         pex_calls.append(q)
-        raise UserError("La clave de Pexels no es válida", "Revísala en Ajustes")
+        raise AuthError("La clave de Pexels no es válida", "Revísala en Ajustes")
 
     b = media(1080, 1920, id="pixabay:v:9")
     c = media(1080, 1920, id="pixabay:v:10")
@@ -302,3 +303,36 @@ def test_pixabay_only_key(monkeypatch):
                  lambda q, o, s, **kw: [b])
     out = find_media(["book"], 1, 2.0, 1080, 1920, set(), {"pixabay_key": "k"})
     assert [m.id for m in out] == ["pixabay:v:9"] and pex_calls == []
+
+
+def test_pixabay_bad_key_400_is_an_auth_error(monkeypatch):
+    # M1: Pixabay answers a bad key with 400 + "Invalid or missing API key"
+    r = Resp(status=400)
+    r.text = "[ERROR 400] Invalid or missing API key (https://pixabay.com/api/docs/)."
+    monkeypatch.setattr(requests, "get", lambda url, **kw: r)
+    with pytest.raises(AuthError) as e:
+        pixabay.search_videos("book", "any", {"pixabay_key": "secret-k"})
+    assert e.value.cause == "La clave de Pixabay no es válida" and "secret-k" not in str(e.value)
+
+
+def test_auth_error_type_marks_provider_dead_whatever_the_text(monkeypatch):
+    pix_calls = []
+
+    def pix(q, o, s, **kw):
+        pix_calls.append(q)
+        raise AuthError("cualquier texto", "Revísala en Ajustes")
+
+    per_provider(monkeypatch, lambda q, o, s, **kw: [], pix)
+    with pytest.raises(AuthError):
+        find_media(["book", "page"], 1, 2.0, 1080, 1920, set(), KEYS)
+    assert len(pix_calls) == 1  # not queried again at every stage
+
+
+def test_download_http_error_has_fixed_fix_text(monkeypatch, tmp_data):
+    # M2: a dead CDN file is not a key or model problem
+    for status in (403, 404):
+        monkeypatch.setattr(requests, "get", lambda url, status=status, **kw: Resp(status=status))
+        with pytest.raises(UserError) as e:
+            cache.download(media(1080, 1920, id=f"pexels:v:{status}"))
+        assert e.value.cause == "No se pudo descargar un clip de Pexels"
+        assert e.value.fix == "Inténtalo de nuevo; si sigue fallando, prueba otro tema"

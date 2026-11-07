@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import os
 import shutil
 import threading
@@ -166,3 +167,47 @@ def test_unusable_output_dir_is_a_user_error(tmp_data, fakes, prof, tmp_path, ki
         pipeline.run_job("tema", prof, {"output_dir": str(target)}, SCRIPT, threading.Event(), Rec())
     assert e.value.cause == f"No se puede usar la carpeta de salida {target}"
     assert e.value.fix == "Elige otra carpeta en Ajustes"
+
+
+def test_failed_download_gets_one_replacement_clip(tmp_data, fakes, prof, monkeypatch, media_dir):
+    # M2: one dead clip URL no longer fails the whole job
+    asked = []
+    real_find = pipeline.find_media
+
+    def find(keywords, need, *rest):
+        asked.append(need)
+        return real_find(keywords, need, *rest)
+
+    def download(m):
+        if m.id == "m1":
+            raise UserError("No se pudo descargar un clip de Pexels", "x")
+        return media_dir / "v_port.mp4"
+
+    monkeypatch.setattr(pipeline, "find_media", find)
+    monkeypatch.setattr(pipeline.cache, "download", download)
+    d = pipeline.run_job("tema", prof, {}, SCRIPT, threading.Event(), Rec())
+    assert (d / "video.mp4").is_file()
+    assert 1 in asked[1:]  # a replacement for the dead clip was asked for
+
+
+def test_replacement_download_failing_too_fails_the_job(tmp_data, fakes, prof, monkeypatch):
+    def download(m):
+        raise UserError("No se pudo descargar un clip de Pexels", "Inténtalo de nuevo")
+
+    monkeypatch.setattr(pipeline.cache, "download", download)
+    with pytest.raises(UserError, match="descargar"):
+        pipeline.run_job("tema", prof, {}, SCRIPT, threading.Event(), Rec())
+    assert list((tmp_data / "salidas").iterdir()) == []
+
+
+def test_render_failure_is_a_user_error_and_logged(tmp_data, fakes, prof, monkeypatch, caplog):
+    # M4: e.g. a full disk; the original stays in the log
+    def boom(*a, **k):
+        raise RuntimeError("ffmpeg failed: No space left on device")
+
+    monkeypatch.setattr(pipeline, "render_video", boom)
+    with caplog.at_level(logging.ERROR, logger="baitd.pipeline"):
+        with pytest.raises(UserError) as e:
+            pipeline.run_job("tema", prof, {}, SCRIPT, threading.Event(), Rec())
+    assert str(e.value) == "No se pudo renderizar el video → Comprueba el espacio en disco y vuelve a intentarlo"
+    assert "No space left on device" in caplog.text

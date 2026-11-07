@@ -1,10 +1,13 @@
 """Music library (bundled CC0 tracks + user folder) and the FFmpeg audio-mix filter."""
 from __future__ import annotations
 
+import logging
 import random
 from pathlib import Path
 
 from .config import data_dir
+
+log = logging.getLogger(__name__)
 
 MUSIC_DIR = Path(__file__).resolve().parent / "assets" / "music"
 MOODS = ("lofi", "epico", "tranquilo", "energico")
@@ -35,13 +38,21 @@ def list_music() -> list[dict]:
 
 
 def pick_track(choice: str, rng: random.Random | None = None) -> Path | None:
-    """Profile `music` value -> file: "none" -> None, a mood -> random bundled track, else a path."""
+    """Profile `music` value -> file: "none" -> None, a mood -> random bundled track, else a path.
+
+    A chosen file that no longer exists falls back to another track of its bundled mood, or to
+    no music for a user track, instead of failing the render."""
     if not choice or choice == "none":
         return None
     if choice in MOODS:
         candidates = [t["path"] for t in list_music() if t["mood"] == choice]
         return (rng or random).choice(candidates) if candidates else None
-    return Path(choice)
+    path = Path(choice)
+    if path.is_file():
+        return path
+    mood = path.parent.name if path.parent.resolve() == (MUSIC_DIR / path.parent.name).resolve() else ""
+    log.warning("La música elegida ya no existe (%s); se usa %s", path.name, mood or "ninguna")
+    return pick_track(mood, rng) if mood in MOODS else None
 
 
 def music_input_args(path: Path) -> list[str]:
