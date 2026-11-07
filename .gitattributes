@@ -3,3 +3,5 @@
 *.mp3 binary
 *.mp4 binary
 *.ttf binary
+*.sh text eol=lf
+*.bat text eol=crlf

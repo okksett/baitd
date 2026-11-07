@@ -15,10 +15,14 @@ dependencies = [
     "imageio-ffmpeg>=0.8",
     "platformdirs",
     "fonttools",
+    "waitress",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pyinstaller"]
+
+[project.scripts]
+baitd = "baitd.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
