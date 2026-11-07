@@ -147,3 +147,22 @@ def test_job_start_prunes_the_clip_cache(tmp_data, fakes, prof):
 def test_hook_word_count_is_scene_1_first_sentence():
     stale = dataclasses.replace(SCRIPT, hook="Un gancho viejo que ya no se dice")
     assert pipeline._hook_word_count(stale) == 3  # "Leer te cambia."
+
+
+def test_on_output_is_told_the_folder_right_away(tmp_data, fakes, prof):
+    seen = []
+    d = pipeline.run_job("tema", prof, {}, SCRIPT, threading.Event(), Rec(),
+                         on_output=lambda f: seen.append((f, (f / ".work").is_dir())))
+    assert seen == [(d, True)]
+
+
+@pytest.mark.parametrize("kind", ["file_in_the_way", "bad_parent"])
+def test_unusable_output_dir_is_a_user_error(tmp_data, fakes, prof, tmp_path, kind):
+    # I7: a typo / removed drive / read-only folder gives "cause -> fix", not "Error inesperado"
+    blocker = tmp_path / "no-es-carpeta.txt"
+    blocker.write_text("x")
+    target = blocker if kind == "file_in_the_way" else blocker / "videos"
+    with pytest.raises(UserError) as e:
+        pipeline.run_job("tema", prof, {"output_dir": str(target)}, SCRIPT, threading.Event(), Rec())
+    assert e.value.cause == f"No se puede usar la carpeta de salida {target}"
+    assert e.value.fix == "Elige otra carpeta en Ajustes"

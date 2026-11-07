@@ -7,11 +7,12 @@ import logging.handlers
 import signal
 import socket
 import threading
+import time
 import webbrowser
 
 from waitress import create_server
 
-from . import config
+from . import config, instance
 from .jobqueue import JobQueue
 from .web.server import create_app
 
@@ -19,6 +20,8 @@ HOST = "127.0.0.1"
 log = logging.getLogger("baitd")
 _server = None
 _server_lock = threading.Lock()
+_OTHER_WAIT = 5.0  # seconds a second start waits for the first instance to answer
+_STOP_SIGNALS = ("SIGTERM", "SIGBREAK", "SIGHUP")
 
 
 def find_free_port() -> int:
@@ -42,6 +45,35 @@ def request_shutdown() -> None:
 
 def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
+
+
+def _install_stop_signals() -> list[str]:
+    """SIGTERM, SIGBREAK (Windows: the console window's ✕ / CTRL_CLOSE_EVENT) and SIGHUP (POSIX:
+    the terminal closed) all take the Ctrl+C path, so the queue stops, FFmpeg is killed and the
+    partial output is removed. Main thread only."""
+    installed = []
+    for name in _STOP_SIGNALS:
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _raise_interrupt)
+            installed.append(name)
+    return installed
+
+
+def _point_at_running_instance(lock_path, no_browser: bool) -> None:
+    """Another Baitd holds the lock: send the user there, or explain why we can't."""
+    deadline = time.monotonic() + _OTHER_WAIT
+    while True:
+        url = instance.read_url(lock_path)  # "" while the first one is still starting
+        if url and instance.answers(url):
+            break
+        if time.monotonic() >= deadline:
+            raise SystemExit(
+                "Baitd ya está abierto en otra ventana, pero no responde → Cierra esa ventana "
+                "(o el proceso Baitd en el administrador de tareas) y vuelve a abrir la app")
+        time.sleep(0.25)
+    print(f"Baitd ya está abierto en {url}", flush=True)
+    if not no_browser:
+        webbrowser.open(url)
 
 
 def _setup_logging() -> list[logging.Handler]:
@@ -83,6 +115,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.selftest:
         raise SystemExit(_selftest())
 
+    # one instance per data folder: a second worker would rerun the first one's running job
+    lock = instance.InstanceLock(config.data_dir() / instance.LOCK_NAME)
+    if not lock.acquire():
+        _point_at_running_instance(lock.path, args.no_browser)
+        return
+    try:
+        _serve(args, lock)
+    finally:
+        lock.release()
+
+
+def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     handlers = _setup_logging()
     queue = JobQueue(config.data_dir() / "queue.json")
     global _server
@@ -98,9 +142,9 @@ def main(argv: list[str] | None = None) -> None:
         with _server_lock:
             _server = server
         url = f"http://{HOST}:{server.effective_port}/"
+        lock.write_url(url)
         if threading.current_thread() is threading.main_thread():
-            # SIGTERM -> same clean path as Ctrl+C (raises KeyboardInterrupt in run()).
-            signal.signal(signal.SIGTERM, _raise_interrupt)
+            _install_stop_signals()  # same clean path as Ctrl+C (KeyboardInterrupt in run())
         queue.start()
         log.info("Servidor en %s", url)
         print(url, flush=True)

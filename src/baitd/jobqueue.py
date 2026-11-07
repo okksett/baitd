@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 import uuid
 from datetime import datetime
@@ -48,9 +49,19 @@ class JobQueue:
                 self._items.append(item)
         running = [i for i in self._items if i["status"] == "running"]
         for i in running:
+            self._remove_partial(i)
             self._reset_pending(i)
         if running:
             self._save()
+
+    @staticmethod
+    def _remove_partial(item: dict) -> None:
+        """A job left `running` died with the app (e.g. its console was closed): its output
+        folder still has the pipeline's .work/ folder, so it is removed before the job reruns."""
+        out = item.get("output")
+        if out and (Path(out) / ".work").is_dir():
+            log.info("Borrando la salida a medias de %r: %s", item["topic"], out)
+            shutil.rmtree(out, ignore_errors=True)
 
     @staticmethod
     def _normalize(d) -> dict | None:
@@ -185,15 +196,16 @@ class JobQueue:
             script = Script.from_dict(item["script"]) if item["script"] else None
             settings = config.load_settings()
             path = self._runner(item["topic"], profile, settings, script, cancel,
-                                lambda *a: self._progress(id, *a))
+                                lambda *a: self._progress(id, *a),
+                                on_output=lambda folder: self._record_output(id, folder))
             outcome = {"status": "done", "output": str(path), "percent": 100.0}
         except JobCancelled:
-            outcome = {"status": "cancelled"}
+            outcome = {"status": "cancelled", "output": ""}  # the pipeline removed the folder
         except UserError as e:
-            outcome = {"status": "error", "error": str(e)}
+            outcome = {"status": "error", "error": str(e), "output": ""}
         except Exception as e:
             log.exception("Fallo inesperado en el trabajo %s (%r)", id, item["topic"])
-            outcome = {"status": "error", "error": _UNEXPECTED.format(type(e).__name__)}
+            outcome = {"status": "error", "error": _UNEXPECTED.format(type(e).__name__), "output": ""}
         with self._lock:
             self._cancels.pop(id, None)
             if self._stopping and outcome["status"] == "cancelled":
@@ -201,6 +213,14 @@ class JobQueue:
             else:
                 item.update(outcome)
             self._save()
+
+    def _record_output(self, id: str, folder: Path) -> None:
+        """Persist the job's folder as soon as it exists, so a hard kill can be cleaned up."""
+        with self._lock:
+            item = self._find(id)
+            if item is not None and item["status"] == "running":
+                item["output"] = str(folder)
+                self._save()
 
     def _progress(self, id: str, step: str, index: int, total: int, pct: float) -> None:
         overall = round(((index - 1) + max(0.0, min(100.0, pct)) / 100) / (total or 6) * 100, 1)

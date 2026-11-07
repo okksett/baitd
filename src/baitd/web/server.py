@@ -23,7 +23,7 @@ from werkzeug.exceptions import HTTPException
 from .. import audio, captions, config, llm, tts
 from ..jobqueue import JobQueue
 from ..models import Profile, Script, UserError, first_sentence
-from ..pipeline import STEPS
+from ..pipeline import STEPS, check_output_dir
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +69,17 @@ def _stored_theme() -> str:
     """The saved theme, or "" when the user never chose one (the page then follows the OS)."""
     raw = config._read_json(config.data_dir() / "settings.json", {}, dict)
     return raw.get("theme") if raw.get("theme") in THEMES else ""
+
+
+def _cache_gb(value) -> float:
+    """The clip-cache cap in GB: a positive number (or numeric string)."""
+    try:
+        gb = float(value) if isinstance(value, (int, float, str)) and not isinstance(value, bool) else 0.0
+    except ValueError:
+        gb = 0.0
+    if not 0 < gb < float("inf"):
+        raise UserError("Tamaño de caché no válido", "Indica un número de GB mayor que 0")
+    return gb
 
 
 def _body() -> dict:
@@ -256,6 +267,9 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         for key, value in data.items():
             if key not in config.SETTINGS_DEFAULTS:
                 continue
+            if key == "cache_max_gb":
+                update[key] = _cache_gb(value)
+                continue
             if not isinstance(value, str):
                 raise UserError(f"Valor no válido para '{key}'", "Revisa los ajustes")
             value = value.strip()
@@ -266,6 +280,8 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
             raise UserError("Idioma de la interfaz no válido", "Elige español o inglés")
         if "theme" in update and update["theme"] not in THEMES:
             raise UserError("Tema no válido", "Elige oscuro o claro")
+        if update.get("output_dir"):  # "" = the default folder in the data dir
+            check_output_dir(Path(update["output_dir"]))
         config.save_settings(update)
         with voice_lock:
             voice_cache.clear()  # a new key can change which voices are available

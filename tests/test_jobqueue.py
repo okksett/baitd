@@ -45,7 +45,7 @@ def test_runs_sequentially(tmp_path):
     lock = threading.Lock()
     state = {"now": 0, "max": 0, "order": []}
 
-    def runner(topic, profile, settings, script, cancel, progress):
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
         with lock:
             state["now"] += 1
             state["max"] = max(state["max"], state["now"])
@@ -66,7 +66,7 @@ def test_runs_sequentially(tmp_path):
 
 
 def test_batch_continues_after_failure(tmp_path):
-    def runner(topic, profile, settings, script, cancel, progress):
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
         if topic == "b":
             raise UserError("Falta la clave de Pexels", "Ajustes")
         return tmp_path / topic
@@ -81,7 +81,7 @@ def test_batch_continues_after_failure(tmp_path):
 
 
 def test_unexpected_error_is_sanitised_and_logged(tmp_path, caplog):
-    def runner(*a):
+    def runner(*a, **k):
         raise RuntimeError("secret /path/trace")
 
     q = make_queue(tmp_path, runner)
@@ -99,7 +99,7 @@ def test_unexpected_error_is_sanitised_and_logged(tmp_path, caplog):
 def test_cancel_pending_and_running(tmp_path):
     started = threading.Event()
 
-    def runner(topic, profile, settings, script, cancel, progress):
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
         started.set()
         cancel.wait(WAIT)
         raise JobCancelled()
@@ -120,13 +120,13 @@ def test_cancel_pending_and_running(tmp_path):
 
 def test_queue_restores_running_as_pending(tmp_path):
     path = tmp_path / "queue.json"
-    q = JobQueue(path, runner=lambda *a: tmp_path)
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
     ids = q.add(["a", "b"], config.default_profile())
     data = json.loads(path.read_text(encoding="utf-8"))
     data[0].update(status="running", step="voice", step_index=3, percent=40.0)
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    q2 = JobQueue(path, runner=lambda *a: tmp_path)
+    q2 = JobQueue(path, runner=lambda *a, **k: tmp_path)
     assert [i["id"] for i in q2.list()] == ids
     assert statuses(q2) == ["pending", "pending"]
     assert q2.list()[0]["percent"] == 0.0
@@ -136,7 +136,7 @@ def test_queue_restores_running_as_pending(tmp_path):
 def test_corrupt_queue_is_quarantined(tmp_path):
     path = tmp_path / "queue.json"
     path.write_text("{not json", encoding="utf-8")
-    q = JobQueue(path, runner=lambda *a: tmp_path)
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
     assert q.list() == []
     assert list(tmp_path.glob("queue.json.corrupt-*"))
     q.add(["a"], config.default_profile())
@@ -148,7 +148,7 @@ def test_snapshot_script_settings_and_progress(tmp_path):
     at_step = threading.Event()
     proceed = threading.Event()
 
-    def runner(topic, profile, settings, script, cancel, progress):
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
         seen.update(profile=profile, settings=settings, script=script)
         progress("voice", 3, 6, 50)
         at_step.set()
@@ -178,7 +178,7 @@ def test_snapshot_script_settings_and_progress(tmp_path):
 def test_stop_returns_running_job_to_pending(tmp_path):
     started = threading.Event()
 
-    def runner(topic, profile, settings, script, cancel, progress):
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
         started.set()
         cancel.wait(WAIT)
         raise JobCancelled()
@@ -194,7 +194,7 @@ def test_stop_returns_running_job_to_pending(tmp_path):
 
 
 def test_remove_and_clear_finished(tmp_path):
-    def runner(topic, *a):
+    def runner(topic, *a, **k):
         if topic == "b":
             raise UserError("x", "y")
         return tmp_path
@@ -212,3 +212,66 @@ def test_remove_and_clear_finished(tmp_path):
     q.clear_finished()
     assert q.list() == []
     assert json.loads((tmp_path / "queue.json").read_text(encoding="utf-8")) == []
+
+
+def test_running_job_records_its_output_folder(tmp_path):
+    # I5: the folder is on the item (and in queue.json) as soon as the pipeline creates it
+    recorded = threading.Event()
+    proceed = threading.Event()
+    folder = tmp_path / "salida-a"
+
+    def runner(topic, profile, settings, script, cancel, progress, on_output=None):
+        folder.mkdir()
+        on_output(folder)
+        recorded.set()
+        proceed.wait(WAIT)
+        return folder
+
+    path = tmp_path / "queue.json"
+    q = JobQueue(path, runner=runner)
+    q.add(["a"], config.default_profile())
+    q.start()
+    assert recorded.wait(WAIT)
+    assert q.list()[0]["output"] == str(folder)
+    assert json.loads(path.read_text(encoding="utf-8"))[0]["output"] == str(folder)
+    proceed.set()
+    assert wait_for(lambda: statuses(q) == ["done"])
+    q.stop()
+
+
+def test_failed_job_does_not_keep_the_removed_folder(tmp_path):
+    def runner(topic, profile, settings, script, cancel, progress, on_output=None):
+        on_output(tmp_path / "gone")
+        raise UserError("x", "y")
+
+    q = make_queue(tmp_path, runner)
+    q.add(["a"], config.default_profile())
+    q.start()
+    assert wait_for(lambda: statuses(q) == ["error"])
+    q.stop()
+    assert q.list()[0]["output"] == ""
+
+
+def test_load_removes_partial_folder_of_a_killed_job(tmp_path):
+    # I5: the app died mid-render (console closed): the half-made folder is removed on restart
+    path = tmp_path / "queue.json"
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
+    q.add(["a", "b"], config.default_profile())
+    partial = tmp_path / "salidas" / "2026-11-07_a"
+    (partial / ".work").mkdir(parents=True)
+    (partial / ".work" / "shot_000.mp4").write_bytes(b"x")
+    (partial / "video.mp4").write_bytes(b"half")
+    finished = tmp_path / "salidas" / "2026-11-07_b"  # no .work: a finished video, never deleted
+    finished.mkdir()
+    (finished / "video.mp4").write_bytes(b"ok")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data[0].update(status="running", output=str(partial))
+    data[1].update(status="running", output=str(finished))
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    q2 = JobQueue(path, runner=lambda *a, **k: tmp_path)
+    assert not partial.exists()
+    assert (finished / "video.mp4").exists()
+    assert statuses(q2) == ["pending", "pending"]
+    assert [i["output"] for i in q2.list()] == ["", ""]
+    assert [i["output"] for i in json.loads(path.read_text(encoding="utf-8"))] == ["", ""]

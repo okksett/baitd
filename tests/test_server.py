@@ -49,7 +49,7 @@ class FakeRunner:
         self.calls = []
         self.lock = threading.Lock()
 
-    def __call__(self, topic, profile, settings, script, cancel, progress):
+    def __call__(self, topic, profile, settings, script, cancel, progress, on_output=None):
         with self.lock:
             self.calls.append((topic, script))
             folder = self.root / f"out-{len(self.calls)}"
@@ -99,13 +99,44 @@ def test_settings_masks_keys(client):
     assert "abcdef" not in r.text
 
 
-def test_masked_value_not_overwritten(client):
+def test_masked_value_not_overwritten(client, tmp_path):
     client.post("/api/settings", json={"pexels_key": "abcdef1234"})
     masked = client.get("/api/settings").json["pexels_key"]
-    r = client.post("/api/settings", json={"pexels_key": masked, "output_dir": "C:/videos"})
+    videos = str(tmp_path / "videos")
+    r = client.post("/api/settings", json={"pexels_key": masked, "output_dir": videos})
     assert r.status_code == 200
     assert config.load_settings()["pexels_key"] == "abcdef1234"
-    assert config.load_settings()["output_dir"] == "C:/videos"
+    assert config.load_settings()["output_dir"] == videos
+
+
+def test_output_dir_is_created_and_probed(client, tmp_path):
+    target = tmp_path / "nueva" / "carpeta"
+    r = client.post("/api/settings", json={"output_dir": str(target)})
+    assert r.status_code == 200 and target.is_dir()
+    assert list(target.iterdir()) == []  # the probe file was removed
+    assert client.post("/api/settings", json={"output_dir": ""}).status_code == 200  # back to default
+
+
+def test_unusable_output_dir_rejected(client, tmp_path):
+    # I7: same UserError as the pipeline, as a 400 in the app's {"error": "cause → fix"} format
+    blocker = tmp_path / "archivo.txt"
+    blocker.write_text("x")
+    bad = blocker / "videos"
+    r = client.post("/api/settings", json={"output_dir": str(bad), "theme": "light"})
+    assert r.status_code == 400
+    assert r.json["error"] == f"No se puede usar la carpeta de salida {bad} → Elige otra carpeta en Ajustes"
+    assert config.load_settings()["output_dir"] == "" and config.load_settings()["theme"] == "dark"
+
+
+@pytest.mark.parametrize("value, ok", [(5, True), (0.5, True), ("2", True), (0, False), (-1, False),
+                                       ("x", False), (True, False)])
+def test_cache_cap_setting(client, value, ok):
+    r = client.post("/api/settings", json={"cache_max_gb": value})
+    assert (r.status_code == 200) is ok
+    if ok:
+        assert config.load_settings()["cache_max_gb"] == float(value)
+    else:
+        assert "→" in r.json["error"] and config.load_settings()["cache_max_gb"] == 3
 
 
 def test_settings_validation(client):

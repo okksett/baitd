@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import date
@@ -34,9 +36,27 @@ class Providers:
     download: Callable | None = None
 
 
+def output_dir_error(path: Path) -> UserError:
+    return UserError(f"No se puede usar la carpeta de salida {path}", "Elige otra carpeta en Ajustes")
+
+
+def check_output_dir(path: Path) -> None:
+    """Create `path` if needed and prove it is writable (probe file); UserError otherwise."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(dir=path, prefix=".baitd-", suffix=".probe")
+        os.close(fd)
+        os.unlink(probe)
+    except OSError:
+        raise output_dir_error(path) from None
+
+
 def _create_output_dir(settings: dict, topic: str) -> Path:
     base = Path(settings["output_dir"]) if settings.get("output_dir") else data_dir() / "salidas"
-    base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:  # a typo, a removed drive, an offline synced folder, a file in the way...
+        raise output_dir_error(base) from None
     stem = f"{date.today().isoformat()}_{slugify(topic)}"
     n = 1
     while True:
@@ -46,6 +66,8 @@ def _create_output_dir(settings: dict, topic: str) -> Path:
             return folder
         except FileExistsError:
             n += 1
+        except OSError:  # e.g. a read-only folder
+            raise output_dir_error(base) from None
 
 
 def _hook_word_count(script: Script) -> int:
@@ -63,8 +85,12 @@ def _write_texts(folder: Path, script: Script) -> None:
 
 
 def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
-            cancel: threading.Event, progress: ProgressFn, providers: Providers | None = None) -> Path:
-    """Run the six steps; returns the output folder. Failed or cancelled jobs leave nothing behind."""
+            cancel: threading.Event, progress: ProgressFn, providers: Providers | None = None,
+            *, on_output: Callable[[Path], None] | None = None) -> Path:
+    """Run the six steps; returns the output folder. Failed or cancelled jobs leave nothing behind.
+
+    `on_output` is told the output folder as soon as it is created (the queue records it, so a
+    folder left by a hard kill can be removed on the next start)."""
     try:
         cache.prune(cache.max_bytes(settings))  # LRU cap on the clip cache (ruling R30)
     except OSError:
@@ -73,6 +99,8 @@ def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
     try:
         workdir = folder / ".work"
         workdir.mkdir()
+        if on_output is not None:
+            on_output(folder)
         _run(topic, profile, settings, script, cancel, progress, folder, workdir, providers or Providers())
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
