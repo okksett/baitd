@@ -58,17 +58,22 @@ jobs:
         run: |
           "${{ matrix.exe }}" --no-browser --port 18765 > app.log 2>&1 &
           pid=$!
+          # Always print the log and clean up, even when curl fails under bash -e.
+          cleanup() {
+            echo "--- app.log ---"
+            cat app.log || true
+            # Clean exit through the app's own endpoint, then make sure nothing is left running.
+            curl --silent --request POST --header "Content-Type: application/json" --data "{}" \
+              http://127.0.0.1:18765/api/shutdown || true
+            sleep 2
+            kill "$pid" 2>/dev/null || true
+            if [ "$RUNNER_OS" = "Windows" ]; then taskkill //F //IM Baitd.exe 2>/dev/null || true; fi
+          }
+          trap cleanup EXIT
           status=$(curl --silent --output /dev/null --write-out "%{http_code}" \
             --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors \
-            http://127.0.0.1:18765/)
+            http://127.0.0.1:18765/ || true)
           echo "GET / -> $status"
-          cat app.log
-          # Clean exit through the app's own endpoint, then make sure nothing is left running.
-          curl --silent --request POST --header "Content-Type: application/json" --data "{}" \
-            http://127.0.0.1:18765/api/shutdown || true
-          sleep 2
-          kill "$pid" 2>/dev/null || true
-          if [ "$RUNNER_OS" = "Windows" ]; then taskkill //F //IM Baitd.exe 2>/dev/null || true; fi
           test "$status" = "200"
 
       - name: Package

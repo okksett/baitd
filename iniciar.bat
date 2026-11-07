@@ -23,8 +23,14 @@ if not exist ".venv\Scripts\python.exe" (
   echo Creando el entorno ^(.venv^)...
   %PY% -m venv .venv || goto :fail
 )
+rem Install only for a new .venv or a changed pyproject.toml, so an installed app also starts offline.
+set "STAMP=.venv\.instalado"
+".venv\Scripts\python.exe" -c "import os, sys; s = sys.argv[1]; sys.exit(0 if os.path.exists(s) and os.path.getmtime(s) >= os.path.getmtime('pyproject.toml') else 1)" "%STAMP%" && goto :run
 echo Instalando dependencias ^(la primera vez tarda unos minutos^)...
 ".venv\Scripts\python.exe" -m pip install --quiet -e . || goto :fail
+type nul > "%STAMP%"
+
+:run
 ".venv\Scripts\python.exe" -m baitd %*
 set "RC=%errorlevel%"
 if not "%RC%"=="0" (

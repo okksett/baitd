@@ -12,7 +12,7 @@ Author names come from each file's ID3 tag.
 
 | Mood | File | Title | Author | Source page | Licence | Fetched |
 |------|------|-------|--------|-------------|---------|---------|
-| lofi | lofi/meditating-beat.mp3 | Meditating Beat | Kevin MacLeod | https://freepd.com/electronic.php | CC0 | 2026-11-07 |
+| lofi | lofi/meditating-beat.mp3 | Meditating Beat | Kevin MacLeod | https://freepd.com/electronic.php | CC0 (as stated by FreePD) | 2026-11-07 |
 | epico | epico/black-knight.mp3 | Black Knight | Rafael Krux (CinematicWaves.com) | https://freepd.com/epic.php | CC0 (as stated by FreePD) | 2026-11-07 |
 | tranquilo | tranquilo/wisdom-in-the-sun.mp3 | Wisdom in the Sun | Kevin MacLeod | https://freepd.com/misc.php | CC0 (ID3: "Dedicated to the Public Domain Feb 28, 2014") | 2026-11-07 |
 | energico | energico/funshine.mp3 | Funshine | Kevin MacLeod | https://freepd.com/upbeat.php | CC0 (ID3: "Available from freepd.com. CC0 license.") | 2026-11-07 |

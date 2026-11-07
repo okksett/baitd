@@ -54,7 +54,7 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 3. Para la voz, usa **edge-tts** (por defecto, sin clave).
 4. Música y fuentes ya vienen incluidas.
 
-> **Aviso sobre edge-tts:** usa el servicio de voces de Microsoft Edge, que **no es oficial** y podría dejar de funcionar en cualquier momento. Si falla, cambia a otra voz (OpenAI, ElevenLabs) en Ajustes.
+> **Aviso sobre edge-tts:** usa el servicio de voces de Microsoft Edge, que **no es oficial** y podría dejar de funcionar en cualquier momento. Si falla, cambia de proveedor de voz (OpenAI, ElevenLabs) en la sección **Voz** del perfil; sus claves se pegan en **Ajustes**.
 
 ## Licencias de lo incluido
 
@@ -71,6 +71,8 @@ Ajustes, claves, perfiles, cola, caché de clips, música propia y videos viven 
 - **Linux:** `~/.local/share/Baitd`
 
 Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` y `cache/`. El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA`.
+
+**Caché de clips:** los clips descargados se guardan en `cache/` para no bajarlos dos veces. La caché tiene un límite de **3 GB**: al empezar cada vídeo se borran los clips usados hace más tiempo. Para cambiar el límite, edita `"cache_max_gb"` en `settings.json` (por ejemplo `"cache_max_gb": 5`) con la app cerrada. Puedes borrar la carpeta `cache/` cuando quieras.
 
 ---
 
@@ -130,7 +132,7 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 3. For the voice, use **edge-tts** (default, no key).
 4. Music and fonts are already bundled.
 
-> **edge-tts warning:** it uses Microsoft Edge's voice service, which is **unofficial** and may stop working at any time. If it fails, switch to another voice provider (OpenAI, ElevenLabs) in Settings.
+> **edge-tts warning:** it uses Microsoft Edge's voice service, which is **unofficial** and may stop working at any time. If it fails, switch to another voice provider (OpenAI, ElevenLabs) in the profile's **Voice** ("Voz") section; their keys go in **Settings**.
 
 ## Bundled licences
 
@@ -147,3 +149,5 @@ Settings, keys, profiles, queue, clip cache, your own music and videos are store
 - **Linux:** `~/.local/share/Baitd`
 
 Inside: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` and `cache/`. Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable.
+
+**Clip cache:** downloaded clips are kept in `cache/` so they are not fetched twice. The cache is capped at **3 GB**: when each video starts, the least recently used clips are deleted. To change the cap, edit `"cache_max_gb"` in `settings.json` (e.g. `"cache_max_gb": 5`) while the app is closed. You can delete the `cache/` folder at any time.

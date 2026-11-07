@@ -23,6 +23,11 @@ if [ ! -x .venv/bin/python ]; then
   echo "Creando el entorno (.venv)..."
   "$PY" -m venv .venv
 fi
-echo "Instalando dependencias (la primera vez tarda unos minutos)..."
-.venv/bin/python -m pip install --quiet -e .
+# Install only for a new .venv or a changed pyproject.toml, so an installed app also starts offline.
+STAMP=.venv/.instalado
+if [ ! -f "$STAMP" ] || [ pyproject.toml -nt "$STAMP" ]; then
+  echo "Instalando dependencias (la primera vez tarda unos minutos)..."
+  .venv/bin/python -m pip install --quiet -e .
+  touch "$STAMP"
+fi
 exec .venv/bin/python -m baitd "$@"
