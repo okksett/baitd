@@ -20,7 +20,7 @@ jobs:
           - os: windows-latest
             exe: dist/Baitd/Baitd.exe
             artifact: Baitd-windows-x64.zip
-          - os: macos-13
+          - os: macos-15-intel
             exe: dist/Baitd.app/Contents/MacOS/Baitd
             artifact: Baitd-macos-x64.zip
           - os: macos-14
