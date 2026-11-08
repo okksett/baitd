@@ -176,3 +176,37 @@ def test_remap_keys_follows_cuts_and_keeps_jumps():
     assert not any(0.0 < t < 2.0 and x == 100 and t != 2.0 for t, x in out)  # key at 4.0 dropped
     assert out[-1] == (4.0, 400) and (3.0, 100) in out and (3.0, 400) in out  # jump kept
     assert remap_keys([(0.0, 50), (5.0, 50)], segs, 0.0) == [(0.0, 50)]
+
+
+def _mp3_with_cover(tmp_path) -> Path:
+    from conftest import _ff
+    cover, mp3 = tmp_path / "cover.png", tmp_path / "song.mp3"
+    _ff("-f", "lavfi", "-i", "color=c=red:s=600x600", "-frames:v", "1", cover)
+    _ff("-f", "lavfi", "-i", "sine=f=440:d=4", "-i", cover, "-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame",
+        "-c:v", "mjpeg", "-disposition:v", "attached_pic", "-id3v2_version", "3", mp3)
+    return mp3
+
+
+def test_audio_with_cover_art_is_an_audiogram(tmp_data, tmp_path):
+    from baitd.clip import sources
+    sid, target = sources.new_upload("cancion.mp3")
+    target.write_bytes(_mp3_with_cover(tmp_path).read_bytes())
+    src = sources.finish_upload(sid, target, "cancion.mp3")
+    assert src.has_video is False and (src.width, src.height) == (0, 0)  # the cover is not the video
+    out = render_clip(src, _moment(0.0, 3.0), [_w("hola", 0.5, 1.0)], None, _profile(), OPTS,
+                      tmp_path / "work", tmp_path / "a.mp4", threading.Event(), lambda f: None)
+    info = ffmpeg.probe(out)
+    assert (info["width"], info["height"]) == (1080, 1920)
+
+
+def test_render_without_video_stream_is_a_user_error(make_wav, tmp_path, monkeypatch):
+    from baitd.clip import render as clip_render
+    from baitd.models import UserError
+    monkeypatch.setattr(clip_render, "probe", lambda p: {"duration": 1.0, "width": None, "height": None, "fps": None})
+    src = _src(make_wav(seconds=4), w=0, h=0, fps=0.0, has_video=False)
+    out = tmp_path / "a.mp4"
+    with pytest.raises(UserError) as e:
+        render_clip(src, _moment(0.0, 3.0), [], None, _profile(), OPTS, tmp_path / "work", out,
+                    threading.Event(), lambda f: None)
+    assert "→" in str(e.value)
+    assert not out.exists()

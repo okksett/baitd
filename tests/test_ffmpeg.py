@@ -55,3 +55,13 @@ def test_pick_encoder_returns_working():
     enc = pick_encoder()
     assert enc in {"h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"}
     assert pick_encoder() == enc
+
+
+def test_probe_ignores_cover_art(tmp_path):
+    cover, mp3 = tmp_path / "c.png", tmp_path / "s.mp3"
+    run(["-f", "lavfi", "-i", "color=c=red:s=600x600", "-frames:v", "1", str(cover)])
+    run(["-f", "lavfi", "-i", "sine=f=440:d=2", "-i", str(cover), "-map", "0:a", "-map", "1:v",
+         "-c:a", "libmp3lame", "-c:v", "mjpeg", "-disposition:v", "attached_pic", str(mp3)])
+    info = probe(mp3)
+    assert (info["width"], info["height"], info["fps"]) == (None, None, None)
+    assert abs(info["duration"] - 2.0) < 0.2

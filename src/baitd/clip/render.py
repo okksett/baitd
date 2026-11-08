@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Callable
 
 from .. import audio, captions
-from ..ffmpeg import JobCancelled, encoder_args, run
-from ..models import Profile, RenderOptions, Word
+from ..ffmpeg import JobCancelled, encoder_args, probe, run
+from ..models import Profile, RenderOptions, UserError, Word
 from ..render import _COLOR, _rel, _time_of
 from .framing import CropPlan, crop_filter
 from .models import Moment, SourceInfo
@@ -193,6 +193,8 @@ def render_clip(src: SourceInfo, m: Moment, words: list[Word], plan: CropPlan | 
                 raise
             out_path.unlink(missing_ok=True)
             final("libx264")  # the hardware encoder rejected its args: one retry in software
+        if not probe(out_path)["width"]:  # never hand the user a clip without picture
+            raise UserError("El clip salió sin imagen", "Prueba con otro archivo de video o audio")
         progress(1.0)
         return out_path
     except BaseException:
