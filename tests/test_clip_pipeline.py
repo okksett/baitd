@@ -398,6 +398,7 @@ def _fake_source(sid):
     d = sources.sources_dir() / sid
     d.mkdir(parents=True)
     (d / "source.mp4").write_bytes(b"x")
+    (d / "meta.json").write_text("{}", encoding="utf-8")  # a finished source; a partial upload has none
     return d
 
 
@@ -411,6 +412,8 @@ def _sweep_fixture(tmp_data):
     s = {k: _fake_source(k * 12) for k in "abcdef"}  # a: listed analysis, b: pending job, c: pending export's
     partial = sources.sources_dir() / ("9" * 12)  # an upload cut by a crash: no meta.json
     partial.mkdir()
+    (partial / "source.mp4").write_bytes(b"half")
+    (partial / "upload.json").write_text('{"name": "a.mp4", "size": 10, "file": "source.mp4"}', encoding="utf-8")
     an = {"listed": _fake_analysis("1" * 12, "a" * 12), "export": _fake_analysis("2" * 12, "c" * 12),
           "orphan": _fake_analysis("3" * 12, "d" * 12), "of_removed": _fake_analysis("4" * 12, "e" * 12)}
     path = tmp_data / "queue.json"
@@ -436,7 +439,8 @@ def test_startup_sweep_keeps_sources_when_asked(tmp_data):
     q, s, an, partial = _sweep_fixture(tmp_data)
     q.sweep_clip_data(keep_sources=True)
     assert not an["orphan"].exists()  # analyses no item lists cannot be reached: they go anyway
-    assert all(d.exists() for d in s.values()) and partial.exists()
+    assert all(d.exists() for d in s.values())
+    assert not partial.exists()  # an upload never finished before this start is not a source: it goes anyway
 
 
 def _analyze_done_queue(tmp_data, *extra):

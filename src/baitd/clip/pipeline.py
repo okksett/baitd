@@ -380,15 +380,19 @@ def release_analysis(analysis_id, settings: dict, busy: Busy | None) -> None:
 def sweep(analysis_ids: set[str], source_ids: set[str], keep_sources: bool) -> None:
     """Startup clean-up of what a crash or a removed queue item left behind: every analysis not in
     `analysis_ids` goes, then (unless sources are kept) every source folder that neither `source_ids` nor a
-    remaining analysis needs, partial uploads and downloads included."""
+    remaining analysis needs. Partial uploads and downloads (no meta.json: never finished before this start)
+    go even when sources are kept, since they are not sources yet."""
     for f in analyses_dir().glob("*.json"):
         if _valid_id(f.stem) and f.stem not in analysis_ids:
             delete_analysis(f.stem)
-    if keep_sources:
-        return
     needed = set(source_ids) | {_source_of(f) for f in analyses_dir().glob("*.json")}
     for d in sources.sources_dir().iterdir():
-        if sources.valid_id(d.name) and d.name not in needed:
+        if not sources.valid_id(d.name) or d.name in needed:
+            continue
+        if not (d / "meta.json").is_file():
+            log.info("Borrando la subida o descarga sin terminar %s", d.name)
+            sources.delete_source(d.name)
+        elif not keep_sources:
             log.info("Borrando el video sin usar %s", d.name)
             sources.delete_source(d.name)
 

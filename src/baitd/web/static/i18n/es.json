@@ -282,5 +282,6 @@
   "err.clip_count": "Número de clips no válido → Elige entre 1 y 20",
   "err.clip_len": "Duración no válida → Usa entre 10 y 180 s, con el mínimo menor o igual que el máximo",
   "err.upload": "La subida falló → Vuelve a subir el archivo",
+  "err.upload_type": "Ese tipo de archivo no se puede subir → Usa MP4, MOV, MKV, WEBM, MP3 o WAV",
   "err.analysis_gone": "Ese análisis ya no existe → Vuelve a buscar momentos"
 }

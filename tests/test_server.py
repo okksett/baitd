@@ -563,6 +563,10 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert 'id="s-keep_sources"' in html and 'id="ytdlp-update"' in html
     js = JS.read_text("utf-8")
     assert "new XMLHttpRequest()" in js and ".abort()" in js and '"X-Baitd-Upload", "1"' in js
+    # chunked uploads (F3): 64 MiB PUTs in order, the extension checked first, abort deletes the partial upload
+    up = js[js.index("// ---------- clipping: source"):js.index("function bindDrop")]
+    assert "64 * 1024 * 1024" in up and 'xhr.open("PUT"' in up and "BOOT.upload_exts" in up
+    assert 'api("DELETE", `/api/uploads/' in up and "/finish`" in up
     assert "/api/clips" in js and "/export" in js and "/api/ytdlp/update" in js
 
 

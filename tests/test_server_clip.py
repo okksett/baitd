@@ -1,3 +1,4 @@
+import io
 import json
 import shutil
 import threading
@@ -25,10 +26,6 @@ def profile_id(client):
     return client.get("/api/profiles").get_json()["profiles"][0]["id"]
 
 
-def _upload(client, path, name="clip.mp4", headers=UP):
-    return client.post(f"/api/uploads?name={name}", data=path.read_bytes(), headers=headers)
-
-
 def _source(make_mp4, seconds=60):
     sid, path = sources.new_upload("a.mp4")
     shutil.copy(make_mp4(seconds=seconds, w=320, h=180, fps=15), path)
@@ -45,58 +42,178 @@ def _analysis(src, aid="abcdef012345", moments=None):
     return aid
 
 
-def test_upload_requires_octet_stream_and_header(client, make_mp4):
-    data = make_mp4(seconds=2, w=320, h=180, fps=15).read_bytes()
-    r = client.post("/api/uploads?name=a.mp4", data={"f": (__import__("io").BytesIO(data), "a.mp4")})
-    assert r.status_code == 415 and "→" in r.get_json()["error"]
-    assert client.post("/api/uploads?name=a.mp4", json={"a": 1}).status_code == 415
-    assert client.post("/api/uploads?name=a.mp4", data=data,
-                       headers={"Content-Type": "application/octet-stream"}).status_code == 415
-    assert client.post("/api/uploads?name=a.mp4", data=data, headers={**UP, "X-Baitd-Upload": "0"}).status_code == 415
-    # the exemption is only for the upload route
-    assert client.post("/api/settings", data=b"x", headers=UP).status_code == 415
+class _Untouchable(io.RawIOBase):
+    """A request body that records whether anything read it (the guard must answer before that)."""
+    def __init__(self):
+        self.read_called = False
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        self.read_called = True
+        return 0
+
+    def seekable(self):  # the test client only asks where the stream starts
+        return True
+
+    def seek(self, pos, whence=0):
+        return 0
+
+
+def _begin(client, name="clip.mp4", size=10):
+    return client.post("/api/uploads", json={"name": name, "size": size})
+
+
+def _put(client, uid, offset, data, headers=UP):
+    return client.put(f"/api/uploads/{uid}?offset={offset}", data=data, headers=headers)
+
+
+def _upload(client, path, name="clip.mp4", chunk=None):
+    """The browser's protocol: begin (JSON), PUT the bytes in order, then finish (JSON)."""
+    data = path.read_bytes()
+    r = _begin(client, name, len(data))
+    assert r.status_code == 200, r.get_json()
+    uid = r.get_json()["upload_id"]
+    chunk = chunk or len(data)
+    for off in range(0, len(data), chunk):
+        r = _put(client, uid, off, data[off:off + chunk])
+        assert r.status_code == 200 and r.get_json() == {"offset": min(len(data), off + chunk)}, r.get_json()
+    return client.post(f"/api/uploads/{uid}/finish", json={})
+
+
+def _stored(uid):
+    return next(p for p in (sources.sources_dir() / uid).iterdir() if p.name.startswith("source."))
+
+
+def test_upload_guard_rejects_before_reading_the_body(client):
+    uid = _begin(client).get_json()["upload_id"]
+    for method, url in (("POST", "/api/uploads"), ("PUT", f"/api/uploads/{uid}?offset=0")):
+        body = _Untouchable()  # a cross-site "simple" request: text/plain, no custom header
+        r = client.open(url, method=method, input_stream=body, headers={"Content-Type": "text/plain"},
+                        environ_overrides={"CONTENT_LENGTH": "5"})
+        assert r.status_code == 415 and "→" in r.get_json()["error"]
+        assert not body.read_called
+    assert _stored(uid).stat().st_size == 0
+
+
+def test_upload_exemption_is_exactly_the_chunk_put(client):
+    uid = _begin(client).get_json()["upload_id"]
+    refused = [
+        client.post("/api/uploads", data=b"x", headers=UP),  # begin is JSON now
+        client.post(f"/api/uploads/{uid}/finish", data=b"x", headers=UP),
+        client.delete(f"/api/uploads/{uid}", data=b"x", headers=UP),
+        client.put(f"/api/uploads/{uid}/finish", data=b"x", headers=UP),
+        client.put(f"/api/uploads/{uid.upper()}?offset=0", data=b"x", headers=UP),
+        client.put(f"/api/uploads/{uid}0?offset=0", data=b"x", headers=UP),
+        client.put("/api/settings", data=b"x", headers=UP),
+        client.post("/api/settings", data=b"x", headers=UP),
+        _put(client, uid, 0, b"x", headers={"Content-Type": "application/octet-stream"}),
+        _put(client, uid, 0, b"x", headers={**UP, "X-Baitd-Upload": "0"}),
+        _put(client, uid, 0, b"x", headers={"Content-Type": "text/plain", "X-Baitd-Upload": "1"}),
+        client.put(f"/api/uploads/{uid}?offset=0", json={"a": 1}),
+        client.put(f"/api/uploads/{uid}?offset=0", data={"f": (io.BytesIO(b"x"), "a.mp4")}),
+    ]
+    assert [r.status_code for r in refused] == [415] * len(refused)
+    assert _stored(uid).stat().st_size == 0
+    assert _put(client, uid, 0, b"x").status_code == 200
+
+
+def test_upload_rejects_foreign_host(client):
+    evil = "http://evil.example:5000"
+    assert client.post("/api/uploads", json={"name": "a.mp4", "size": 1}, base_url=evil).status_code == 403
     assert not any(sources.sources_dir().iterdir())
+    uid = _begin(client).get_json()["upload_id"]
+    assert client.put(f"/api/uploads/{uid}?offset=0", data=b"x", headers=UP, base_url=evil).status_code == 403
+    assert _stored(uid).stat().st_size == 0
 
 
-def test_upload_rejects_foreign_host(client, make_mp4):
-    r = client.post("/api/uploads?name=a.mp4", data=b"x", headers=UP, base_url="http://evil.example:5000")
-    assert r.status_code == 403
-    assert not any(sources.sources_dir().iterdir())
-
-
-def test_upload_streams_and_probes(client, make_mp4):
+def test_upload_in_chunks_probes_and_registers(client, make_mp4):
     path = make_mp4(seconds=3, w=320, h=180, fps=15)
-    r = _upload(client, path, name="C:\\mis videos\\../Mi video 日本.mp4")
+    r = _upload(client, path, name="C:\\mis videos\\../Mi video 日本.mp4", chunk=path.stat().st_size // 3 + 1)
     assert r.status_code == 200, r.get_json()
     body = r.get_json()
     assert set(body) == {"source_id", "title", "duration", "has_video"}
     assert body["title"] == "Mi video 日本" and body["has_video"] is True and 2.5 < body["duration"] < 3.5
     src = sources.load_source(body["source_id"])
     assert src.path.read_bytes() == path.read_bytes() and src.path.parent.parent == sources.sources_dir()
+    assert sorted(p.name for p in src.path.parent.iterdir()) == ["meta.json", "source.mp4"]  # no upload state left
+    # a registered source is no longer an upload: no more chunks, no second finish, no abort through this route
+    uid = body["source_id"]
+    assert _put(client, uid, src.path.stat().st_size, b"x").status_code == 404
+    assert client.post(f"/api/uploads/{uid}/finish", json={}).status_code == 404
+    assert client.delete(f"/api/uploads/{uid}", json={}).status_code == 404
+    assert sources.load_source(uid).path.read_bytes() == path.read_bytes()
 
 
-def test_upload_failures_leave_nothing(client, make_mp4):
-    assert _upload(client, make_mp4(seconds=2, w=320, h=180, fps=15), name="a.exe").status_code == 400
-    r = client.post("/api/uploads?name=a.mp4", data=b"not a video", headers=UP)
+def test_upload_offset_must_match_what_was_received(client):
+    uid = _begin(client, size=10).get_json()["upload_id"]
+    assert _put(client, uid, 0, b"12345").get_json() == {"offset": 5}
+    for off in (0, 3, 7):
+        r = _put(client, uid, off, b"abc")
+        assert r.status_code == 409 and r.get_json()["offset"] == 5 and "→" in r.get_json()["error"]
+    for off in ("", "x", "-1", "5.0"):
+        r = client.put(f"/api/uploads/{uid}?offset={off}", data=b"abc", headers=UP)
+        assert r.status_code in (400, 409) and "→" in r.get_json()["error"]
+    r = client.post(f"/api/uploads/{uid}/finish", json={})  # not all bytes yet
+    assert r.status_code == 409 and r.get_json()["offset"] == 5
+    r = _put(client, uid, 5, b"678901")  # more than the declared size
     assert r.status_code == 400 and "→" in r.get_json()["error"]
-    assert not any(sources.sources_dir().iterdir())
+    assert _stored(uid).read_bytes() == b"12345"
+    assert _put(client, uid, 5, b"67890").get_json() == {"offset": 10}
 
 
-def test_upload_no_space(client, monkeypatch, make_mp4):
+def test_upload_rejected_before_any_byte_is_stored(client, monkeypatch):
+    bad = [{"name": "a.exe", "size": 10}, {"name": "video", "size": 10}, {"name": "", "size": 10},
+           {"name": 5, "size": 10}, {"name": "a" * 300 + ".mp4", "size": 10}, {"size": 10},
+           {"name": "a.mp4", "size": 0}, {"name": "a.mp4", "size": -1}, {"name": "a.mp4", "size": True},
+           {"name": "a.mp4", "size": "10"}, {"name": "a.mp4", "size": 1.5}, {"name": "a.mp4"},
+           {"name": "a.mp4", "size": server._UPLOAD_MAX + 1}]
+    for body in bad:
+        r = client.post("/api/uploads", json=body)
+        assert r.status_code == 400 and "→" in r.get_json()["error"], body
+    assert "grande" in client.post("/api/uploads", json=bad[-1]).get_json()["error"]
     monkeypatch.setattr(sources, "free_bytes", lambda p: 10)
-    r = _upload(client, make_mp4(seconds=2, w=320, h=180, fps=15))
+    r = _begin(client, size=1000)
     assert r.status_code == 400 and "espacio" in r.get_json()["error"]
     assert not any(sources.sources_dir().iterdir())
 
 
-def test_upload_missing_content_length_and_too_big(client, make_mp4):
-    big = server._UPLOAD_MAX + 1
-    r = client.post("/api/uploads?name=a.mp4", data=b"", headers=UP, environ_overrides={"CONTENT_LENGTH": str(big)})
-    assert r.status_code == 400 and "grande" in r.get_json()["error"]
-    r = client.post("/api/uploads?name=a.mp4", headers=UP, environ_overrides={"wsgi.input_terminated": True},
-                    input_stream=__import__("io").BytesIO(b"abc"))
+def test_upload_chunk_limits(client):
+    uid = _begin(client, size=server.UPLOAD_CHUNK_MAX * 2).get_json()["upload_id"]
+    r = client.put(f"/api/uploads/{uid}?offset=0", data=b"", headers=UP,
+                   environ_overrides={"CONTENT_LENGTH": str(server.UPLOAD_CHUNK_MAX + 1)})
+    assert r.status_code == 400 and "→" in r.get_json()["error"]
+    r = client.put(f"/api/uploads/{uid}?offset=0", headers={**UP, "Transfer-Encoding": "chunked"},
+                   input_stream=io.BytesIO(b"abc"))  # no Content-Length
+    assert r.status_code == 400 and "→" in r.get_json()["error"]
+    assert _put(client, uid, 0, b"").status_code == 400  # an empty chunk
+    r = client.put(f"/api/uploads/{uid}?offset=0", headers=UP, input_stream=io.BytesIO(b"ab"),
+                   environ_overrides={"CONTENT_LENGTH": "5"})  # the connection drops mid-chunk
+    assert r.status_code == 400 and "→" in r.get_json()["error"]
+    assert _stored(uid).stat().st_size == 0  # a cut chunk is not kept
+    assert _put(client, "0" * 12, 0, b"x").status_code == 404  # unknown upload
+
+
+def test_upload_finish_failure_leaves_nothing(client):
+    uid = _begin(client, size=11).get_json()["upload_id"]
+    _put(client, uid, 0, b"not a video")
+    r = client.post(f"/api/uploads/{uid}/finish", json={})
     assert r.status_code == 400 and "→" in r.get_json()["error"]
     assert not any(sources.sources_dir().iterdir())
+
+
+def test_upload_abort_removes_the_partial_file(client):
+    uid = _begin(client, size=10).get_json()["upload_id"]
+    _put(client, uid, 0, b"12345")
+    assert client.delete(f"/api/uploads/{uid}", data=b"{}", headers=UP).status_code == 415  # JSON only
+    r = client.delete(f"/api/uploads/{uid}", json={})
+    assert r.status_code == 200 and r.get_json() == {"ok": True}
+    assert not any(sources.sources_dir().iterdir())
+    assert _put(client, uid, 5, b"67890").status_code == 404
+    assert client.delete(f"/api/uploads/{uid}", json={}).status_code == 404
+    for bad in ("ABCDEF012345", "0123456789a", "..%2Fx"):
+        assert client.delete(f"/api/uploads/{bad}", json={}).status_code == 404
 
 
 def test_clips_auto_and_review_create_jobs(client, profile_id, queue, make_mp4):
@@ -293,3 +410,9 @@ def test_review_ui_strings():
     assert 'class="m-text"' in html and "text.textContent = m.text" in js and "innerHTML" not in js
     assert 'id="clip-keep-note"' in html and "clip-keep-note" in js
     assert "reviewEdited(open)" in js and 'tr("clip.switch_confirm")' in js
+
+
+def test_page_boot_data_carries_the_upload_extensions(client):
+    html = client.get("/").get_data(as_text=True)
+    boot = json.loads(html.split('id="boot">', 1)[1].split("</script>", 1)[0])
+    assert boot["upload_exts"] == list(sources.UPLOAD_EXTS)  # the browser checks the extension before it starts

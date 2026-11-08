@@ -22,6 +22,7 @@ UPLOAD_EXTS = ("mp4", "mov", "mkv", "webm", "m4v", "avi", "mp3", "wav", "m4a", "
 FORMAT = "bv*[height<=2160]+ba/b[height<=2160]/b"
 _DEFAULT_BYTES_PER_S = 2_000_000
 _ID = re.compile(r"[0-9a-f]{12}")
+_PARTIAL = "upload.json"  # in a source folder while a chunked upload is still arriving
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _URL = re.compile(r"https?://\S+")
 
@@ -178,16 +179,62 @@ def _channel_credit(info: dict) -> str:
 
 # ---- uploads ----
 
-def new_upload(filename: str) -> tuple[str, Path]:
-    """Reserve a source folder for an upload; returns (id, target path). Only a safe extension from
-    UPLOAD_EXTS is kept from the filename."""
+def upload_ext(filename: str) -> str:
+    """The file's extension when UPLOAD_EXTS allows it; anything else is rejected before a byte is stored."""
     ext = Path(filename.replace("\\", "/")).suffix.lower().lstrip(".").strip()
     if ext not in UPLOAD_EXTS:
         raise _invalid_media()
+    return ext
+
+
+def new_upload(filename: str) -> tuple[str, Path]:
+    """Reserve a source folder for an upload; returns (id, target path). Only a safe extension from
+    UPLOAD_EXTS is kept from the filename."""
+    ext = upload_ext(filename)
     source_id = _new_id()
     folder = _folder(source_id)
     folder.mkdir(parents=True, exist_ok=True)
     return source_id, folder / f"source.{ext}"
+
+
+def begin_upload(filename: str, size: int) -> str:
+    """Reserve a source folder for a chunked upload: an empty target file plus upload.json (the original name
+    and declared size). Until finish_upload writes meta.json the folder is not a source; the startup sweep
+    removes any left behind."""
+    source_id, path = new_upload(filename)
+    try:
+        path.touch()
+        (path.parent / _PARTIAL).write_text(json.dumps({"name": filename, "size": size, "file": path.name},
+                                                       ensure_ascii=False), encoding="utf-8")
+    except BaseException:
+        delete_source(source_id)
+        raise
+    return source_id
+
+
+def pending_upload(upload_id) -> tuple[Path, int, str] | None:
+    """(target file, declared size, original name) of an unfinished chunked upload, else None."""
+    if not valid_id(upload_id):
+        return None
+    folder = _folder(upload_id)
+    try:
+        d = json.loads((folder / _PARTIAL).read_text(encoding="utf-8"))
+        path, size, name = folder / Path(d["file"]).name, d["size"], d["name"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if type(size) is not int or not isinstance(name, str) or not path.is_file():
+        return None
+    return path, size, name
+
+
+def complete_upload(upload_id: str) -> SourceInfo:
+    """All bytes are in: probe and register the source (finish_upload). Removes the folder on failure."""
+    pending = pending_upload(upload_id)
+    if pending is None:
+        raise _invalid_media()
+    path, _size, name = pending
+    (path.parent / _PARTIAL).unlink()
+    return finish_upload(upload_id, path, name)
 
 
 def finish_upload(source_id: str, path: Path, filename: str) -> SourceInfo:

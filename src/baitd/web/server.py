@@ -2,8 +2,9 @@
 
 Security (ruling R22): the server holds API keys, so every request must carry the Host
 `127.0.0.1:<port>` or `localhost:<port>` of the socket it arrived on (DNS-rebinding
-protection), every POST/DELETE must be `application/json` (no CSRF via simple form posts),
-and no CORS headers are ever sent.
+protection), every POST/PUT/DELETE must be `application/json` (no CSRF via simple form posts),
+and no CORS headers are ever sent. The one exemption: `PUT /api/uploads/<12 hex>`, one chunk of an
+upload, as `application/octet-stream` with the header `X-Baitd-Upload: 1`.
 """
 from __future__ import annotations
 
@@ -45,7 +46,9 @@ _POSITIONS = ("bottom", "middle", "top")
 _MAX_OUTLINE = 20  # px; the presets use 0-6
 _LLM_PROVIDERS = tuple(llm.DEFAULT_MODELS)
 _UPLOAD_PATH = "/api/uploads"
-_UPLOAD_MAX = 40 * 1024**3  # long-video uploads; the global MAX_CONTENT_LENGTH stays untouched
+_UPLOAD_CHUNK_PATH = re.compile(r"/api/uploads/[0-9a-f]{12}")  # PUT: one chunk of a chunked upload
+_UPLOAD_MAX = 40 * 1024**3  # a whole long-video upload, declared when it begins
+UPLOAD_CHUNK_MAX = 256 * 1024**2  # one PUT (the browser sends 64 MiB); waitress's body cap sits just above
 _CHUNK = 1024 * 1024
 _ID = re.compile(r"[0-9a-f]{12}")
 _UNEXPECTED = "Error inesperado: {} → Revisa el registro y vuelve a intentarlo"
@@ -187,10 +190,16 @@ def _scripts(data: dict) -> dict[str, Script]:
     return scripts
 
 
-def _is_upload(req) -> bool:
-    """The one mutating request that is not JSON: raw bytes, which a cross-site page cannot send."""
-    return (req.method == "POST" and req.path == _UPLOAD_PATH and req.mimetype == "application/octet-stream"
-            and req.headers.get("X-Baitd-Upload") == "1")
+def _is_upload_chunk(req) -> bool:
+    """The one mutating request that is not JSON: a chunk of raw bytes, which a cross-site page cannot send
+    (octet-stream and the custom header both need a CORS preflight, which this server never answers)."""
+    return (req.method == "PUT" and bool(_UPLOAD_CHUNK_PATH.fullmatch(req.path))
+            and req.mimetype == "application/octet-stream" and req.headers.get("X-Baitd-Upload") == "1")
+
+
+def _truncate(path: Path, size: int) -> None:
+    with open(path, "r+b") as f:
+        f.truncate(size)
 
 
 def _bad_times() -> UserError:
@@ -262,11 +271,11 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         allowed = {f"{h}:{port}" for h in _LOCAL_HOSTS}
         if request.headers.get("Host", "").lower() not in allowed:
             return jsonify(error="Dirección no permitida → Abre Baitd desde la dirección que muestra la app"), 403
-        if request.method == "POST" and request.path == _UPLOAD_PATH:
-            if not _is_upload(request):  # the upload route takes raw bytes only, with its header
-                return jsonify(error="La petición debe ser JSON → Recarga la página e inténtalo de nuevo"), 415
-        elif request.method in _MUTATING and request.mimetype != "application/json":
+        # answered before anything reads the body; the chunk PUT is the only exemption from JSON
+        if request.method in _MUTATING and request.mimetype != "application/json" and not _is_upload_chunk(request):
             return jsonify(error="La petición debe ser JSON → Recarga la página e inténtalo de nuevo"), 415
+        if request.method == "PUT" and _UPLOAD_CHUNK_PATH.fullmatch(request.path) and not _is_upload_chunk(request):
+            return jsonify(error="La subida debe ser binaria → Recarga la página e inténtalo de nuevo"), 415
         return None
 
     @app.after_request
@@ -313,7 +322,8 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
             return strings.get(key) or i18n["es"].get(key) or key
 
         boot = {"lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
-                "presets": {k: v.to_dict() for k, v in captions.PRESETS.items()}}
+                "presets": {k: v.to_dict() for k, v in captions.PRESETS.items()},
+                "upload_exts": list(clip_sources.UPLOAD_EXTS)}
         return render_template("index.html", t=t, lang=lang, theme=_stored_theme(), boot=boot)
 
     @app.get("/fonts/<path:name>")
@@ -472,36 +482,111 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
 
     # --- clipping ---
 
+    # Chunked uploads (F3): begin (JSON) -> PUT raw chunks in order -> finish (JSON), or DELETE to abort.
+    # One lock per upload keeps a chunk, the finish and an abort of the same upload from interleaving.
+    upload_locks: dict[str, threading.Lock] = {}
+    upload_locks_guard = threading.Lock()
+
+    def upload_lock(upload_id: str) -> threading.Lock:
+        with upload_locks_guard:
+            return upload_locks.setdefault(upload_id, threading.Lock())
+
+    def forget_upload(upload_id: str) -> None:
+        with upload_locks_guard:
+            upload_locks.pop(upload_id, None)
+
+    def pending_upload_or_404(upload_id: str) -> tuple[Path, int, str]:
+        pending = clip_sources.pending_upload(upload_id)
+        if pending is None:
+            abort(404)
+        return pending
+
+    def offset_conflict(cause: str, received: int):
+        return jsonify(error=str(UserError(cause, "Vuelve a subir el archivo")), offset=received), 409
+
     @app.post(_UPLOAD_PATH)
-    def post_upload():
-        name = request.args.get("name", "")  # only a display title and an extension: never a path
-        length = request.content_length
-        if length is None:
+    def begin_upload():
+        """Everything is checked here, before a byte is stored: the name, its extension, the size, the disk."""
+        data = _body()
+        name, size = data.get("name"), data.get("size")  # the name is only a display title and an extension
+        if not isinstance(name, str) or not name.strip() or len(name) > 255:
+            raise UserError("El nombre del archivo no es válido", "Cambia el nombre del archivo y vuelve a subirlo")
+        clip_sources.upload_ext(name)
+        if type(size) is not int or size < 0:
             raise UserError("La subida no indica su tamaño", "Vuelve a subir el archivo desde Baitd")
-        if length > _UPLOAD_MAX:
+        if size == 0:
+            raise UserError("El archivo está vacío", "Elige otro archivo")
+        if size > _UPLOAD_MAX:
             raise UserError("El archivo es demasiado grande (máximo 40 GB)", "Recorta el video o usa uno más corto")
-        if length * 1.1 > clip_sources.free_bytes(clip_sources.sources_dir()):
-            raise UserError(f"No hay espacio suficiente para subir el archivo (~{length * 1.1 / 1e9:.1f} GB)",
+        if size * 1.1 > clip_sources.free_bytes(clip_sources.sources_dir()):
+            raise UserError(f"No hay espacio suficiente para subir el archivo (~{size * 1.1 / 1e9:.1f} GB)",
                             "Libera espacio en el disco")
-        source_id, path = clip_sources.new_upload(name)
-        try:
-            received = 0
-            with open(path, "wb") as f:
-                while True:
-                    chunk = request.stream.read(_CHUNK)
-                    if not chunk:
-                        break
-                    received += len(chunk)
-                    if received > length:
-                        break
-                    f.write(chunk)
-            if received != length:
-                raise UserError("La subida se interrumpió", "Vuelve a subir el archivo")
-            src = clip_sources.finish_upload(source_id, path, name)  # probes; removes the folder on failure
-        except BaseException:
-            clip_sources.delete_source(source_id)  # a broken upload leaves no partial file
-            raise
+        return jsonify(upload_id=clip_sources.begin_upload(name, size))
+
+    @app.put("/api/uploads/<upload_id>")
+    def put_upload_chunk(upload_id: str):
+        """Append one chunk; `offset` must equal the bytes received so far (else 409 with that number)."""
+        if not clip_sources.valid_id(upload_id):
+            abort(404)
+        with upload_lock(upload_id):
+            path, size, _name = pending_upload_or_404(upload_id)
+            received = path.stat().st_size
+            offset = request.args.get("offset", "")
+            if not re.fullmatch(r"[0-9]{1,15}", offset):
+                raise UserError("La subida no indica dónde sigue", "Vuelve a subir el archivo desde Baitd")
+            if int(offset) != received:
+                return offset_conflict("La subida no sigue donde se quedó", received)
+            length = request.content_length
+            if not length:  # missing (chunked transfer) or an empty chunk
+                raise UserError("La subida no indica su tamaño", "Vuelve a subir el archivo desde Baitd")
+            if length > UPLOAD_CHUNK_MAX:
+                raise UserError("Un trozo de la subida es demasiado grande", "Recarga la página y vuelve a subirlo")
+            if received + length > size:
+                raise UserError("La subida es más grande de lo indicado", "Vuelve a subir el archivo")
+            got = 0
+            try:
+                with open(path, "ab") as f:
+                    while got < length:
+                        chunk = request.stream.read(min(_CHUNK, length - got))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                if got != length:
+                    raise UserError("La subida se interrumpió", "Vuelve a subir el archivo")
+            except BaseException as e:
+                _truncate(path, received)  # a cut chunk is not kept: the next try starts at the same offset
+                if isinstance(e, OSError):
+                    raise UserError("No se pudo guardar la subida", "Libera espacio en el disco") from None
+                raise
+        return jsonify(offset=received + got)
+
+    @app.post("/api/uploads/<upload_id>/finish")
+    def finish_upload(upload_id: str):
+        """All bytes are in: probe and register the source (same answer as the old one-shot upload)."""
+        _body()
+        if not clip_sources.valid_id(upload_id):
+            abort(404)
+        with upload_lock(upload_id):
+            path, size, _name = pending_upload_or_404(upload_id)
+            received = path.stat().st_size
+            if received != size:
+                return offset_conflict("La subida aún no está completa", received)
+            src = clip_sources.complete_upload(upload_id)  # probes; removes the folder on failure
+        forget_upload(upload_id)
         return jsonify(source_id=src.id, title=src.title, duration=src.duration, has_video=src.has_video)
+
+    @app.delete("/api/uploads/<upload_id>")
+    def abort_upload(upload_id: str):
+        """Cancel an unfinished upload: its partial file goes. A finished one is a source (DELETE /api/sources)."""
+        _body()
+        if not clip_sources.valid_id(upload_id):
+            abort(404)
+        with upload_lock(upload_id):  # waits for a chunk still being written
+            pending_upload_or_404(upload_id)
+            clip_sources.delete_source(upload_id)
+        forget_upload(upload_id)
+        return jsonify(ok=True)
 
     @app.post("/api/clips")
     def post_clips():

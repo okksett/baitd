@@ -39,7 +39,7 @@
     tab: "short",
     clip: {
       source: null, // uploaded file: {source_id, title, duration, has_video, unused}
-      xhr: null, // upload in flight
+      upload: null, // upload in flight: {id, xhr, cancelled}
       watch: new Set(), // clip_analyze jobs started from this page: their review opens when done
       review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
       settingsBad: false, // a typed clip number is out of range (shown in #clip-error, not applied)
@@ -896,47 +896,99 @@
     });
   }
 
-  // Raw bytes over XMLHttpRequest (fetch has no upload progress); the server streams them to disk.
-  function startUpload(file) {
-    if (!file || state.busy || state.clip.xhr) return;
+  // The server takes at most 256 MiB per PUT; smaller chunks keep a retry cheap.
+  const UPLOAD_CHUNK = 64 * 1024 * 1024;
+
+  function uploadExtOk(name) {
+    const m = /\.([^./\\]+)$/.exec(name || "");
+    return Boolean(m) && BOOT.upload_exts.includes(m[1].trim().toLowerCase());
+  }
+
+  // One chunk as raw bytes over XMLHttpRequest (fetch has no upload progress). Resolves with the server's
+  // {offset}; an abort rejects with err.aborted set.
+  function putChunk(up, offset, blob, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      up.xhr = xhr;
+      xhr.open("PUT", `/api/uploads/${encodeURIComponent(up.id)}?offset=${offset}`);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("X-Baitd-Upload", "1");
+      xhr.responseType = "json";
+      xhr.upload.addEventListener("progress", (e) => onProgress(e.loaded));
+      xhr.addEventListener("load", () => {
+        up.xhr = null;
+        const data = xhr.response;
+        if (xhr.status >= 200 && xhr.status < 300 && data && Number.isInteger(data.offset)) resolve(data);
+        else reject(new Error((data && data.error) || tr("err.upload")));
+      });
+      xhr.addEventListener("error", () => { up.xhr = null; reject(new Error(tr("err.network"))); });
+      xhr.addEventListener("abort", () => {
+        up.xhr = null;
+        const err = new Error(tr("clip.upload_cancelled"));
+        err.aborted = true;
+        reject(err);
+      });
+      xhr.send(blob);
+    });
+  }
+
+  // Chunked upload: begin (name, size: the server checks both before storing anything), 64 MiB PUTs in
+  // order, then finish (probe). Cancel aborts the chunk in flight and deletes the partial upload.
+  async function startUpload(file) {
+    if (!file || state.busy || state.clip.upload) return;
     showError($("#clip-error"), null);
     $("#clip-status").textContent = "";
+    if (!uploadExtOk(file.name)) {
+      showError($("#clip-error"), new Error(tr("err.upload_type")));
+      return;
+    }
     dropSource();
-    const xhr = new XMLHttpRequest();
-    state.clip.xhr = xhr;
-    xhr.open("POST", `/api/uploads?name=${encodeURIComponent(file.name)}`);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
-    xhr.setRequestHeader("X-Baitd-Upload", "1");
-    xhr.responseType = "json";
-    xhr.upload.addEventListener("progress", (e) => {
-      if (e.lengthComputable) setUploadPct((e.loaded / e.total) * 100);
-    });
-    const finish = () => {
-      state.clip.xhr = null;
-      $("#upload-box").hidden = true;
-      setBusy(false);
-    };
-    xhr.addEventListener("load", () => {
-      finish();
-      const data = xhr.response;
-      if (xhr.status >= 200 && xhr.status < 300 && data && data.source_id) setSource({ ...data, unused: true });
-      else showError($("#clip-error"), new Error((data && data.error) || tr("err.upload")));
-    });
-    xhr.addEventListener("error", () => {
-      finish();
-      showError($("#clip-error"), new Error(tr("err.network")));
-    });
-    xhr.addEventListener("abort", () => {
-      finish();
-      $("#clip-status").textContent = tr("clip.upload_cancelled");
-      $("#c-file-btn").focus();
-    });
+    const up = { id: "", xhr: null, cancelled: false };
+    state.clip.upload = up;
     $("#upload-name").textContent = file.name;
     setUploadPct(0);
     $("#upload-box").hidden = false;
     setBusy(true);
-    xhr.send(file);
     $("#upload-cancel").focus();
+    const cancelled = () => { const err = new Error(tr("clip.upload_cancelled")); err.aborted = true; return err; };
+    try {
+      up.id = (await api("POST", "/api/uploads", { name: file.name, size: file.size })).upload_id;
+      let offset = 0;
+      while (offset < file.size) {
+        if (up.cancelled) throw cancelled();
+        const start = offset;
+        const blob = file.slice(start, Math.min(file.size, start + UPLOAD_CHUNK));
+        offset = (await putChunk(up, start, blob, (loaded) => setUploadPct(((start + loaded) / file.size) * 100))).offset;
+      }
+      if (up.cancelled) throw cancelled();
+      setUploadPct(100); // "checking the video" while the server probes it
+      const data = await api("POST", `/api/uploads/${encodeURIComponent(up.id)}/finish`, {});
+      if (up.cancelled) { // too late to abort the probe: the new source goes instead
+        api("DELETE", `/api/sources/${encodeURIComponent(data.source_id)}`, {}).catch(() => {});
+        throw cancelled();
+      }
+      setSource({ ...data, unused: true });
+    } catch (e) {
+      // the partial upload goes on the server (404 when finish already removed it, or it never began)
+      if (up.id) api("DELETE", `/api/uploads/${encodeURIComponent(up.id)}`, {}).catch(() => {});
+      if (up.cancelled || e.aborted) {
+        $("#clip-status").textContent = tr("clip.upload_cancelled");
+        $("#c-file-btn").focus();
+      } else {
+        showError($("#clip-error"), e);
+      }
+    } finally {
+      state.clip.upload = null;
+      $("#upload-box").hidden = true;
+      setBusy(false);
+    }
+  }
+
+  function cancelUpload() {
+    const up = state.clip.upload;
+    if (!up) return;
+    up.cancelled = true;
+    if (up.xhr) up.xhr.abort();
   }
 
   function bindDrop() {
@@ -1568,7 +1620,7 @@
       e.target.value = ""; // the same file can be chosen again
       startUpload(file);
     });
-    $("#upload-cancel").addEventListener("click", () => { if (state.clip.xhr) state.clip.xhr.abort(); });
+    $("#upload-cancel").addEventListener("click", cancelUpload);
     $("#c-source-remove").addEventListener("click", () => { dropSource(); $("#c-url").focus(); });
     bindDrop();
     $("#c-url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !state.busy) onClipRun("auto"); });
