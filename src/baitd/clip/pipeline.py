@@ -477,7 +477,9 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         except UserError:
             delete_analysis(payload.get("analysis_id"))  # useless without its source
             raise _original_gone() from None
-        opts = ClipProfile.from_dict(analysis["profile"])
+        # the extras follow what the user sees at export time; the rest is what the analysis was made with
+        opts = replace(ClipProfile.from_dict(analysis["profile"]), hook_title=profile.clipping.hook_title,
+                       credit=profile.clipping.credit, music=profile.clipping.music)
         transcript = _transcript_from_dict(analysis["transcript"])
         raw = payload.get("moments")
         if not isinstance(raw, list) or not 1 <= len(raw) <= _MAX_EXPORT:

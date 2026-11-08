@@ -1223,6 +1223,7 @@
     const profileId = profileById(r.profileId) ? r.profileId : state.current.id;
     setBusy(true);
     try {
+      await flushSave(); // the export takes the hook title, credit and music switches from the saved profile
       await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments });
       state.clip.review = null;
       renderClipReview();

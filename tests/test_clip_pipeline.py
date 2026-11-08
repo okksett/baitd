@@ -481,3 +481,29 @@ def test_removing_a_failed_run_releases_its_unused_upload(tmp_data):
     q = JobQueue(path)
     q.clear_finished()
     assert [p.name for p in sources.sources_dir().iterdir()] == ["c" * 12]
+
+
+def test_export_uses_the_export_time_title_credit_and_music(tmp_data, tmp_path, providers, monkeypatch):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    analysis = pipeline.load_analysis(path.stem)
+    assert (analysis["profile"]["hook_title"], analysis["profile"]["credit"], analysis["profile"]["music"]) == \
+        (True, True, False)
+    seen = []
+
+    def fake_render(src, m, words, plan, profile, ropts, workdir, out, cancel, on_progress):
+        seen.append((profile.clipping, m.credit))
+        out.write_bytes(b"x")
+
+    monkeypatch.setattr(pipeline, "render_clip", fake_render)
+    profile = config.default_profile()
+    profile.clipping.hook_title, profile.clipping.credit, profile.clipping.music = False, False, True
+    profile.clipping.count = 7  # anything else comes from the analysis
+    moments = [analysis["moments"][0], {**analysis["moments"][0], "credit": "Yo"}]
+    item = {**_item("clip_export", {"analysis_id": path.stem, "moments": moments}), "profile": profile.to_dict()}
+    pipeline.run_clip_export(item, _settings(tmp_path, keep_sources=True), threading.Event(), lambda *a: None,
+                             providers)
+    clip, credit = seen[0]
+    assert (clip.hook_title, clip.credit, clip.music) == (False, False, True)
+    assert clip.count == analysis["profile"]["count"] and clip.min_s == analysis["profile"]["min_s"]
+    assert seen[1][1] == "Yo"

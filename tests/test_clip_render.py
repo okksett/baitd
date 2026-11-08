@@ -210,3 +210,19 @@ def test_render_without_video_stream_is_a_user_error(make_wav, tmp_path, monkeyp
                     threading.Event(), lambda f: None)
     assert "→" in str(e.value)
     assert not out.exists()
+
+
+def test_a_card_credit_wins_even_with_the_credit_switch_off(make_mp4_with_speech, tmp_path, monkeypatch):
+    seen = {}
+    real = captions.write_clip_ass
+
+    def spy(words, style, width, height, path, fonts_dir, top_text="", top_until=3.0, credit=""):
+        seen["credit"] = credit
+        return real(words, style, width, height, path, fonts_dir, top_text, top_until, credit)
+
+    monkeypatch.setattr(captions, "write_clip_ass", spy)
+    path, words = make_mp4_with_speech
+    plan = CropPlan("centro", 100, 178, [(0.0, 110)], False)
+    render_clip(_src(path), _moment(credit="Mi crédito"), words, plan, _profile(credit=False), OPTS,
+                tmp_path / "w", tmp_path / "o.mp4", threading.Event(), lambda f: None)
+    assert seen["credit"] == "Mi crédito"
