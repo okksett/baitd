@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
+from .clip.models import ClipProfile
 from .ffmpeg import JobCancelled
 
 __all__ = [
@@ -143,6 +144,7 @@ class Profile:
     subtitle: SubtitleStyle
     music: str  # "none" | "<mood>" | "<file path>"
     music_volume: float  # 0..1
+    clipping: ClipProfile = field(default_factory=ClipProfile)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -160,6 +162,7 @@ class Profile:
         base = default_profile().to_dict()
         base.update({k: v for k, v in d.items() if k in base})
         base["subtitle"] = SubtitleStyle.from_dict(d.get("subtitle", base["subtitle"]))
+        base["clipping"] = ClipProfile.from_dict(d.get("clipping", {}))
         for key in ("id", "name"):
             if not isinstance(d.get(key), str) or not d[key]:
                 raise ValueError(f"profile needs a non-empty {key}")

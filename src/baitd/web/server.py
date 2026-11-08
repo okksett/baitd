@@ -21,6 +21,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import HTTPException
 
 from .. import audio, captions, config, llm, tts
+from ..clip.models import ClipProfile
 from ..jobqueue import JobQueue
 from ..models import Profile, Script, UserError, first_sentence
 from ..pipeline import STEPS, check_output_dir
@@ -114,6 +115,10 @@ def _parse_profile(d: dict) -> Profile:
     invalid = UserError("El perfil tiene valores no válidos", "Revisa los campos del formulario")
     if not d.get("id"):
         d = {**d, "id": uuid.uuid4().hex[:8]}
+    try:
+        ClipProfile.from_dict(d.get("clipping", {}))
+    except ValueError:
+        raise UserError("Ajustes de clipping no válidos", "Revisa número de clips y duración en el perfil") from None
     try:
         p = Profile.from_dict(d)
     except (TypeError, ValueError, KeyError, AttributeError):
