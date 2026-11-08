@@ -252,7 +252,8 @@ class JobQueue:
             else:
                 path = self._clip_runners[kind](dict(item), settings, cancel, progress,
                                                 on_output=lambda folder: self._record_output(id, folder),
-                                                on_title=lambda title: self._record_title(id, title))
+                                                on_title=lambda title: self._record_title(id, title),
+                                                busy=lambda: self._unfinished_refs(id))
                 outcome = {"status": "done", "percent": 100.0, "output": str(path)}
                 if kind == "clip_analyze":  # the analysis file, not a folder: the item frees the queue
                     outcome.update(output="", analysis_id=Path(path).stem)
@@ -270,6 +271,20 @@ class JobQueue:
             else:
                 item.update(outcome)
             self._save()
+
+    def _unfinished_refs(self, exclude: str) -> tuple[set[str], set[str]]:
+        """(source ids, analysis ids) that other pending or running clip items still need."""
+        sources_, analyses = set(), set()
+        with self._lock:
+            for i in self._items:
+                if i["id"] == exclude or i["status"] not in ("pending", "running") or i["kind"] == "short":
+                    continue
+                src = i["payload"].get("source")
+                if isinstance(src, dict) and isinstance(src.get("source_id"), str):
+                    sources_.add(src["source_id"])
+                if isinstance(i["payload"].get("analysis_id"), str):
+                    analyses.add(i["payload"]["analysis_id"])
+        return sources_, analyses
 
     def _record_title(self, id: str, title: str) -> None:
         """A clip job starts with its link or file name as topic; the source's title replaces it."""

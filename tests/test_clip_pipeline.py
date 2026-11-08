@@ -150,6 +150,7 @@ def test_export_missing_source_message(tmp_data, tmp_path, providers):
     with pytest.raises(UserError) as e:
         pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
     assert str(e.value) == gone
+    assert not path.exists()  # an analysis whose source is gone is deleted
     item = _item("clip_export", {"analysis_id": "0" * 12, "moments": analysis["moments"]})
     with pytest.raises(UserError) as e:  # no such analysis
         pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
@@ -191,7 +192,9 @@ def test_export_rejects_bad_payload_moments(tmp_data, tmp_path, providers):
     path = pipeline.run_clip_analyze(_item("clip_analyze"), _settings(tmp_path), threading.Event(),
                                      lambda *a: None, providers)
     m = pipeline.load_analysis(path.stem)["moments"][0]
-    for bad in ([], [{**m, "start": 9.0, "end": 8.0}], [{**m, "end": 5000.0}], [{**m, "start": "x"}], ["nope"]):
+    for bad in ([], [{**m, "start": 9.0, "end": 8.0}], [{**m, "end": 5000.0}], [{**m, "start": "x"}], ["nope"],
+                [{**m, "start": 5.0, "end": 5.01}], [{**m, "start": 0.0, "end": 9.9}],
+                [{**m, "start": 0.0, "end": 180.5}]):
         item = _item("clip_export", {"analysis_id": path.stem, "moments": bad})
         with pytest.raises(UserError):
             pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
@@ -239,6 +242,32 @@ def test_source_deleted_after_export_unless_keep(tmp_data, tmp_path, providers, 
     pipeline.run_clip_export(item, settings, threading.Event(), lambda *a: None, providers)
     assert [p.name for p in sources.sources_dir().iterdir()] == ([analysis["source_id"]] if keep else [])
     assert path.exists() is keep
+
+
+def test_two_exports_of_one_analysis_release_source_after_the_last(tmp_data, tmp_path, providers):
+    config.save_settings(_settings(tmp_path))
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path), threading.Event(),
+                                     lambda *a: None, providers)
+    analysis = pipeline.load_analysis(path.stem)
+    runners = {"clip_export": lambda *a, **k: pipeline.run_clip_export(*a, providers=providers, **k)}
+    q = JobQueue(tmp_path / "queue.json", clip_runners=runners)
+    payload = {"analysis_id": path.stem, "moments": analysis["moments"][:1]}
+    q.add_clip_job("clip_export", payload, config.default_profile())
+    q.add_clip_job("clip_export", payload, config.default_profile())
+    states = []
+
+    def after_first():
+        rows = q.list()
+        if rows[0]["status"] == "done" and not states:
+            states.append((path.exists(), len(list(sources.sources_dir().iterdir()))))
+        return rows[1]["status"] in ("done", "error")
+
+    q.start()
+    assert _wait(after_first, WAIT)
+    q.stop()
+    assert [i["status"] for i in q.list()] == ["done", "done"], [i["error"] for i in q.list()]
+    assert states and states[0][1] == 1  # the source was still there when the first export finished
+    assert not path.exists() and not list(sources.sources_dir().iterdir())
 
 
 def test_bad_overrides_are_the_clipping_error(tmp_data, tmp_path, providers):

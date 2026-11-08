@@ -34,6 +34,7 @@ CLIP_JOB_KINDS = ("clip_auto", "clip_analyze", "clip_export")
 _TOTAL = len(CLIP_STEPS)
 _DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
 _ID = re.compile(r"[0-9a-f]{12}")
+MIN_CLIP_S, MAX_CLIP_S = 10.0, 180.0  # clip length limits
 _MAX_EXPORT = 20  # same cap as the clip count of a run
 
 
@@ -310,9 +311,29 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
     steps.end(5)
 
 
-def _release_source(src: SourceInfo, settings: dict) -> None:
-    """After a successful run the source (and the analyses that need it) go, unless the user keeps sources."""
-    if not settings.get("keep_sources"):
+# What other unfinished queue items still need: (source ids, analysis ids). Supplied by the JobQueue.
+Busy = Callable[[], "tuple[set[str], set[str]]"]
+
+
+def _in_use(source_id: str, busy: Busy | None) -> bool:
+    if busy is None:
+        return False
+    source_ids, analysis_ids = busy()
+    if source_id in source_ids:
+        return True
+    for aid in analysis_ids:
+        try:
+            if json.loads((analyses_dir() / f"{aid}.json").read_text(encoding="utf-8")).get("source_id") == source_id:
+                return True
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+    return False
+
+
+def _release_source(src: SourceInfo, settings: dict, busy: Busy | None = None) -> None:
+    """After a successful run the source (and the analyses that need it) go, unless the user keeps sources
+    or another unfinished queue item still needs the source or one of its analyses."""
+    if not settings.get("keep_sources") and not _in_use(src.id, busy):
         sources.delete_source(src.id)
         _delete_analyses_of(src.id)
 
@@ -329,7 +350,8 @@ def _discard(folder: Path | None, fetched: SourceInfo | None) -> None:
 def run_clip_auto(item: dict, settings: dict, cancel: threading.Event, progress: ProgressFn,
                   providers: ClipProviders | None = None, *,
                   on_output: Callable[[Path], None] | None = None,
-                  on_title: Callable[[str], None] | None = None) -> Path:
+                  on_title: Callable[[str], None] | None = None,
+                  busy: Busy | None = None) -> Path:
     """Link or stored source -> ranked clips in a new output folder (returned). A failed or cancelled run
     leaves no folder and no source this run downloaded."""
     providers = providers or ClipProviders()
@@ -352,14 +374,15 @@ def run_clip_auto(item: dict, settings: dict, cancel: threading.Event, progress:
         _discard(folder, fetched)
         raise
     shutil.rmtree(folder / ".work", ignore_errors=True)
-    _release_source(src, settings)
+    _release_source(src, settings, busy)
     return folder
 
 
 def run_clip_analyze(item: dict, settings: dict, cancel: threading.Event, progress: ProgressFn,
                      providers: ClipProviders | None = None, *,
                      on_output: Callable[[Path], None] | None = None,
-                     on_title: Callable[[str], None] | None = None) -> Path:
+                     on_title: Callable[[str], None] | None = None,
+                  busy: Busy | None = None) -> Path:
     """Source -> transcript and up to 2 x count candidate moments saved as analisis/<id>.json (returned).
     The source stays for the export; it is removed only if this run fails after downloading it."""
     providers = providers or ClipProviders()
@@ -389,7 +412,8 @@ def run_clip_analyze(item: dict, settings: dict, cancel: threading.Event, progre
 def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progress: ProgressFn,
                     providers: ClipProviders | None = None, *,
                     on_output: Callable[[Path], None] | None = None,
-                    on_title: Callable[[str], None] | None = None) -> Path:
+                    on_title: Callable[[str], None] | None = None,
+                  busy: Busy | None = None) -> Path:
     """The moments the user picked (with their edits) from a saved analysis -> clips in a new folder."""
     providers = providers or ClipProviders()
     profile, _ = _resolve(item, with_overrides=False)
@@ -402,6 +426,7 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         try:
             src = sources.load_source(analysis["source_id"])
         except UserError:
+            delete_analysis(payload.get("analysis_id"))  # useless without its source
             raise _original_gone() from None
         opts = ClipProfile.from_dict(analysis["profile"])
         transcript = _transcript_from_dict(analysis["transcript"])
@@ -412,6 +437,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
             moments = [_moment_from_dict(m) for m in raw]
         except ValueError:
             raise _bad_times() from None
+        if any(not MIN_CLIP_S <= m.end - m.start <= MAX_CLIP_S for m in moments):
+            raise _bad_times()  # browser-edited bounds: never a near-zero or hours-long clip
         if any(m.end > src.duration + 1.0 for m in moments):
             raise _bad_times()
         if on_title is not None:
@@ -424,5 +451,5 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         _discard(folder, None)
         raise
     shutil.rmtree(folder / ".work", ignore_errors=True)
-    _release_source(src, settings)  # with keep_sources the analysis stays too: the user may export again
+    _release_source(src, settings, busy)  # with keep_sources the analysis stays too: the user may export again
     return folder
