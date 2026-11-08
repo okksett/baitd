@@ -258,7 +258,7 @@
   "moment.plus": "Add 0.5 s",
   "moment.len": "Length {s}",
   "moment.credit": "Credit",
-  "moment.credit_placeholder": "Empty = Source: @channel",
+  "moment.credit_placeholder": "Empty = Source: channel name",
   "moment.err_time": "Invalid time → Use mm:ss, for example 1:05",
   "moment.err_len": "The clip must last between 10 and 180 s → Adjust the start or the end",
   "moment.err_range": "The clip goes past the video, which lasts {d} → Adjust the start or the end",

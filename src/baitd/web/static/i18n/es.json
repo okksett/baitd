@@ -258,7 +258,7 @@
   "moment.plus": "Sumar 0,5 s",
   "moment.len": "Dura {s}",
   "moment.credit": "Crédito",
-  "moment.credit_placeholder": "Vacío = Fuente: @canal",
+  "moment.credit_placeholder": "Vacío = Fuente: nombre del canal",
   "moment.err_time": "Tiempo no válido → Usa mm:ss, por ejemplo 1:05",
   "moment.err_len": "El clip debe durar entre 10 y 180 s → Ajusta el inicio o el fin",
   "moment.err_range": "El clip se sale del video, que dura {d} → Ajusta el inicio o el fin",

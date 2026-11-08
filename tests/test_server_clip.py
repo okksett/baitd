@@ -354,6 +354,15 @@ def test_delete_unused_upload(client, profile_id, queue, make_mp4):
         assert client.delete(f"/api/sources/{bad}", json={}).status_code == 404
 
 
+def test_delete_source_refuses_an_unfinished_upload(client):
+    """A folder without meta.json is an upload in progress: only DELETE /api/uploads/<id> may remove it."""
+    folder = sources.sources_dir() / ("7" * 12)
+    folder.mkdir(parents=True)
+    (folder / "source.mp4").write_bytes(b"half")
+    assert client.delete(f"/api/sources/{'7' * 12}", json={}).status_code == 404
+    assert folder.exists()
+
+
 def test_delete_source_in_use_is_409(client, profile_id, queue, make_mp4):
     used = _source(make_mp4, seconds=2)
     client.post("/api/clips", json={"profile_id": profile_id, "mode": "review", "source_id": used.id})  # pending job

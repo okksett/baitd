@@ -659,7 +659,8 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     def delete_source(source_id: str):
         """The "Quitar archivo" button: an upload no job has used yet, never one still needed."""
         _body()
-        if not clip_sources.valid_id(source_id) or not (clip_sources.sources_dir() / source_id).is_dir():
+        # No meta.json = an upload still in progress (or being probed): only DELETE /api/uploads/<id> removes it
+        if not clip_sources.valid_id(source_id) or not (clip_sources.sources_dir() / source_id / "meta.json").is_file():
             abort(404)
         if clip_pipeline.source_needed(source_id, queue.unfinished_refs):
             return jsonify(error=str(UserError("Ese video lo usa un trabajo de la cola o un análisis",
