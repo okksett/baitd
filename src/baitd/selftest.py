@@ -7,6 +7,7 @@ data folder, so it never touches the user's data."""
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import subprocess
 import tempfile
@@ -15,9 +16,12 @@ import time
 from pathlib import Path
 
 from . import pipeline
+from .clip import pipeline as clip_pipeline
+from .clip import sources
+from .clip.models import Transcript
 from .config import default_profile
 from .ffmpeg import ffmpeg_exe, has_filter, probe
-from .models import Media, Scene, Script, Voiceover
+from .models import Media, Scene, Script, Voiceover, Word
 from .tts.timing import estimate_words
 
 VOICE_SECONDS = 9.0
@@ -28,6 +32,10 @@ _SCRIPT = Script(
             Scene("Los clips y la voz se generan en el propio ordenador.", ["clips", "voz"]),
             Scene("Si ves este vídeo, la app está lista para usarse.", ["app", "lista"])],
     description="Vídeo de autoprueba", hashtags=["#prueba"], language="es")
+
+
+CLIP_SOURCE_SECONDS = 40
+_CLIP_MIN_S, _CLIP_MAX_S = 10, 20
 
 
 class SelftestError(Exception):
@@ -95,6 +103,49 @@ def _check(video: Path) -> None:
         raise SelftestError(f"El vídeo dura {info['duration']:.2f} s y la voz {VOICE_SECONDS} s")
 
 
+def _clip_providers(workdir: Path) -> clip_pipeline.ClipProviders:
+    """A generated 40 s 1920x1080 source, words on a known schedule (2 per second, a sentence every
+    5 s), an LLM that returns two moments and no faces: nothing touches the network or a model."""
+    words = [Word(f"palabra{i}." if i % 10 == 9 else f"palabra{i}", i * 0.5, i * 0.5 + 0.4) for i in range(80)]
+
+    def fetch_url(url, cancel, on_progress):
+        sid, target = sources.new_upload("autoprueba.mp4")
+        _ff("-f", "lavfi", "-i", f"testsrc2=s=1920x1080:r=30:d={CLIP_SOURCE_SECONDS}",
+            "-f", "lavfi", "-i", f"sine=f=220:d={CLIP_SOURCE_SECONDS}", "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", target)
+        on_progress(1.0)
+        return sources.finish_upload(sid, target, "Autoprueba de clips.mp4")
+
+    def complete(prompt):
+        def one(start, end, score, title):
+            return {"start": start, "end": end, "kind": "interesante", "score": score, "title": title,
+                    "description": "Clip de autoprueba", "hashtags": ["prueba"]}
+        return json.dumps({"moments": [one("00:00", "00:10", 90, "Primer clip"),
+                                       one("00:20", "00:30", 80, "Segundo clip")]})
+
+    return clip_pipeline.ClipProviders(
+        fetch_url=fetch_url, complete=complete, detect_faces=lambda src, start, end, fps, cancel: [],
+        transcribe=lambda audio, provider, language, settings, model, cancel, on_progress:
+            Transcript("es", words, float(CLIP_SOURCE_SECONDS)))
+
+
+def _check_clips(folder: Path) -> None:
+    for name in ("clip-01.mp4", "clip-02.mp4"):
+        clip = folder / name
+        if not clip.is_file():
+            raise SelftestError(f"Falta {name} en los clips de prueba")
+        info = probe(clip)
+        if (info["width"], info["height"]) != (1080, 1920):
+            raise SelftestError(f"{name} mide {info['width']}x{info['height']} y debería ser 1080x1920")
+        if info["fps"] is None or abs(info["fps"] - 30) > 0.01:
+            raise SelftestError(f"{name} va a {info['fps']} fps y deberían ser 30")
+        if not _CLIP_MIN_S - 0.1 <= info["duration"] <= _CLIP_MAX_S + 0.1:
+            raise SelftestError(f"{name} dura {info['duration']:.2f} s y debería estar entre "
+                                f"{_CLIP_MIN_S} y {_CLIP_MAX_S} s")
+    if (folder / ".work").exists() or not (folder / "publicacion.txt").is_file():
+        raise SelftestError("La carpeta de clips de prueba está incompleta")
+
+
 def run_selftest(workdir: Path | None = None) -> float:
     """Run the offline job; return the elapsed seconds or raise SelftestError.
 
@@ -120,6 +171,17 @@ def run_selftest(workdir: Path | None = None) -> float:
         except Exception as e:
             raise SelftestError(f"{type(e).__name__}: {e}") from e
         _check(folder / "video.mp4")
+        item = {"id": "selftest", "topic": "autoprueba", "kind": "clip_auto", "profile": profile.to_dict(),
+                "payload": {"source": {"url": "https://autoprueba.test/video"},
+                            "overrides": {"count": 2, "min_s": _CLIP_MIN_S, "max_s": _CLIP_MAX_S}}}
+        try:
+            clips = clip_pipeline.run_clip_auto(item, settings, threading.Event(), lambda *a: None,
+                                                _clip_providers(workdir))
+        except SelftestError:
+            raise
+        except Exception as e:
+            raise SelftestError(f"{type(e).__name__}: {e}") from e
+        _check_clips(clips)
         return time.monotonic() - start
     finally:
         if previous is None:
