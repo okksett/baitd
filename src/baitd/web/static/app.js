@@ -38,11 +38,12 @@
     voiceReq: 0,
     tab: "short",
     clip: {
-      source: null, // uploaded file: {source_id, title, duration, has_video}
+      source: null, // uploaded file: {source_id, title, duration, has_video, unused}
       xhr: null, // upload in flight
       watch: new Set(), // clip_analyze jobs started from this page: their review opens when done
-      review: null, // {analysisId, profileId, source, moments: [{...moment, pick, raw}]}
+      review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
       settingsBad: false, // a typed clip number is out of range (shown in #clip-error, not applied)
+      saveFailed: false, // a profile save failed while this tab was shown (also in #clip-error)
     },
   };
 
@@ -181,9 +182,20 @@
         const i = state.profiles.findIndex((x) => x.id === saved.id);
         if (i >= 0) state.profiles[i] = saved; else state.profiles.push(saved);
         showError($("#form-error"), null);
+        if (state.clip.saveFailed) { // the Clipping tab showed this save's failure: it is fixed now
+          state.clip.saveFailed = false;
+          showError($("#clip-error"), null);
+        }
         return saved;
       })
-      .catch((e) => { showError($("#form-error"), e); throw e; })
+      .catch((e) => {
+        showError($("#form-error"), e);
+        if (state.tab === "clip") { // its own form error is on the hidden tab
+          state.clip.saveFailed = true;
+          showError($("#clip-error"), e);
+        }
+        throw e;
+      })
       .finally(() => { if (state.savePromise === p) state.savePromise = null; });
     state.savePromise = p;
     return p;
@@ -996,6 +1008,7 @@
       else if (!url) throw new Error(tr("err.clip_source"));
       else if (!/^https?:\/\/\S+$/i.test(url)) throw new Error(tr("err.clip_url"));
       else body.url = url;
+      body.overrides = { ...state.current.clipping }; // what the screen shows, even if the save lags or failed
       setBusy(true);
       await flushSave();
       const { job_id: jobId } = await api("POST", "/api/clips", body);
@@ -1196,7 +1209,8 @@
     if (!r || state.busy) return;
     const yes = await ask({ title: tr("clip.discard"), text: tr("clip.discard_confirm", { title: r.source.title }),
       ok: tr("clip.discard") });
-    if (!yes) return;
+    if (!yes || state.busy) return;
+    setBusy(true);
     try {
       await api("DELETE", `/api/analyses/${encodeURIComponent(r.analysisId)}`, {});
     } catch (e) {
@@ -1204,6 +1218,8 @@
         showError($("#clip-review-error"), e);
         return;
       }
+    } finally {
+      setBusy(false);
     }
     state.clip.review = null;
     showError($("#clip-review-error"), null);

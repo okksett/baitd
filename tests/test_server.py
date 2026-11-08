@@ -566,6 +566,18 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert "/api/clips" in js and "/export" in js and "/api/ytdlp/update" in js
 
 
+def test_clipping_ui_lifecycle_seams():
+    js = JS.read_text("utf-8")
+    run = js[js.index("async function onClipRun"):js.index("// ---------- clipping: review list")]
+    assert "body.overrides = { ...state.current.clipping }" in run  # F7: what the screen shows, not a stale save
+    save = js[js.index("function saveNow"):js.index("async function flushSave")]
+    assert '$("#clip-error")' in save  # F7: save failures show on the Clipping tab too
+    assert "orig: m.orig" in js  # F4: the moment's index in the analysis
+    assert "`/api/sources/${encodeURIComponent(s.source_id)}`" in js  # F2: "Quitar archivo" deletes the upload
+    discard = js[js.index("async function discardAnalysis"):js.index("async function onExport")]
+    assert discard.index("setBusy(true)") < discard.index('api("DELETE"') < discard.index("setBusy(false)")
+
+
 def test_index_has_rights_notice_key(client):
     html = client.get("/").text
     es = json.loads(ES.read_text("utf-8"))
