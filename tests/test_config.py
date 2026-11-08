@@ -172,3 +172,15 @@ def test_migrate_rewrites_music_paths(tmp_path):
     default = default_profile().music
     assert music == {"a": str(bundled), "b": str(new / "musica" / "mia.mp3"), "c": default, "d": default,
                      "e": "epico", "f": "none", "g": str(bundled)}
+
+
+def test_bad_clipping_block_keeps_the_profile(tmp_data, caplog):
+    import json
+    from baitd.clip.models import ClipProfile
+    bad = {**default_profile().to_dict(), "id": "p", "name": "Mío", "tone": "serio", "clipping": {"count": 99}}
+    (tmp_data / "profiles.json").write_text(json.dumps([bad]), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        profiles = list_profiles()
+    assert [(p.name, p.tone) for p in profiles] == [("Mío", "serio")]
+    assert profiles[0].clipping == ClipProfile()
+    assert any("clipping" in r.getMessage().lower() for r in caplog.records)
