@@ -14,9 +14,11 @@ from waitress import create_server
 
 from . import config, instance
 from .jobqueue import JobQueue
-from .web.server import create_app
+from .web.server import UPLOAD_CHUNK_MAX, create_app
 
 HOST = "127.0.0.1"
+# waitress rejects bigger bodies before Flask sees them: one upload chunk plus headroom, under its 1 GB default
+MAX_BODY = UPLOAD_CHUNK_MAX + 1024**2
 log = logging.getLogger("baitd")
 _server = None
 _server_lock = threading.Lock()
@@ -32,7 +34,8 @@ def find_free_port() -> int:
 
 def build_server(port: int, queue: JobQueue):
     """A threaded WSGI server bound to 127.0.0.1 only; already listening when it returns."""
-    return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd")
+    return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd",
+                         max_request_body_size=MAX_BODY)  # uploads come in chunks; the route checks too
 
 
 def _close_everything(server) -> None:
@@ -129,7 +132,7 @@ def _selftest() -> int:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="baitd", description="Baitd: de un tema a un video corto.")
+    parser = argparse.ArgumentParser(prog="baitd", description="Baitd: de un tema a un video corto, y clips de un video largo.")
     parser.add_argument("--no-browser", action="store_true", help="no abrir el navegador, solo mostrar la URL")
     parser.add_argument("--port", type=int, default=None, help="puerto (por defecto, uno libre)")
     parser.add_argument("--selftest", action="store_true",
@@ -161,6 +164,10 @@ def main(argv: list[str] | None = None) -> None:
 def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     handlers = _setup_logging()
     queue = JobQueue(config.data_dir() / "queue.json")
+    try:  # before the server can accept an upload: nothing in flight can be mistaken for a leftover
+        queue.sweep_clip_data(keep_sources=bool(config.load_settings().get("keep_sources")))
+    except OSError:
+        log.exception("No se pudo limpiar fuentes/ y analisis/")
     global _server
     try:
         port = args.port or find_free_port()

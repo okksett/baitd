@@ -4,7 +4,7 @@
 
 ## Qué es
 
-Baitd es una aplicación gratuita y de código abierto (licencia MIT) que convierte **un tema** (por ejemplo, "los beneficios de leer") en un **video corto listo para publicar** en TikTok, YouTube Shorts o Reels. La IA escribe el guion con gancho, se buscan clips de stock gratuitos, se genera la voz, se queman subtítulos palabra por palabra y se añade música de fondo. Todo corre en tu ordenador; la interfaz solo escucha en `127.0.0.1`.
+Baitd es una aplicación gratuita y de código abierto (licencia MIT) que convierte **un tema** (por ejemplo, "los beneficios de leer") en un **video corto listo para publicar** en TikTok, YouTube Shorts o Reels, y saca **clips verticales de un video largo** (pestaña Clipping). La IA escribe el guion con gancho, se buscan clips de stock gratuitos, se genera la voz, se queman subtítulos palabra por palabra y se añade música de fondo. Todo corre en tu ordenador; la interfaz solo escucha en `127.0.0.1`.
 
 ## Instalar
 
@@ -56,11 +56,25 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 
 > **Aviso sobre edge-tts:** usa el servicio de voces de Microsoft Edge, que **no es oficial** y podría dejar de funcionar en cualquier momento. Si falla, cambia de proveedor de voz (OpenAI, ElevenLabs) en la sección **Voz** del perfil; sus claves se pegan en **Ajustes**.
 
+## Clipping: sacar clips de un video largo
+
+La pestaña **Clipping** convierte un video largo (podcast, entrevista, stream) en varios clips verticales. Tiene dos modos: **Buscar momentos** (descarga, transcribe y propone candidatos; tú eliges y pulsas «Exportar seleccionados») y **Crear clips** (modo automático: elige los mejores momentos y los recorta, encuadra y subtitula sin revisión).
+
+- **Enlaces y archivos:** pega un enlace (YouTube y cientos de sitios, con yt-dlp incluido) o sube un archivo desde el navegador; hasta 4 horas de video por fuente. Si YouTube rompe la descarga, la app avisa y puedes subir el archivo.
+- **Transcripción:** con la **API de OpenAI** (whisper-1, de pago, usa la clave de Ajustes) o **local** con faster-whisper (gratis, sin clave, más lenta). Tiempos objetivo en un equipo de gama media, para un podcast de 1 hora con 5 clips y sin contar la descarga: con API, **15 minutos o menos**; totalmente gratis, **45 minutos o menos**.
+- **Primera vez en local:** el modelo de Whisper ("small", unos **250 MB**) no viene dentro de la app; se descarga una sola vez al usar la transcripción local.
+- **Encuadre vertical** (se cambia por clip en la revisión): **Cara** (por defecto, sigue a quien habla), **Centro** (recorte fijo al centro, útil para pantallas y juegos) y **Completo** (el video entero con fondo difuminado, sin ampliar).
+- **Dónde se guarda:** los originales en `fuentes/` y las transcripciones y candidatos en `analisis/`, dentro de la carpeta de datos; los clips terminados van a `salidas/`. Los originales se borran al exportar todos sus clips, salvo que marques "Guardar videos originales" en Ajustes. No cuentan para el tope de 3 GB de la caché.
+- **Actualizar yt-dlp:** si una descarga deja de funcionar, usa el botón **Actualizar yt-dlp** en **Ajustes** y reinicia Baitd.
+
+> **Derechos:** si usas videos de otros canales, respeta sus derechos y las reglas de cada plataforma.
+
 ## Licencias de lo incluido
 
 - **Programa:** MIT (ver `LICENSE`).
 - **Música:** pistas de FreePD, dominio público (CC0), recuperadas de Internet Archive. Detalle en `src/baitd/assets/music/CREDITS.md`.
 - **Fuentes:** licencia OFL. Detalle en `src/baitd/assets/fonts/LICENSES`.
+- **Detección de caras:** modelo YuNet (licencia Apache 2.0). Detalle en `src/baitd/assets/models/LICENSE-yunet.txt`.
 
 ## Dónde se guardan tus datos
 
@@ -70,7 +84,7 @@ Ajustes, claves, perfiles, cola, caché de clips, música propia y videos viven 
 - **macOS:** `~/Library/Application Support/Baitd`
 - **Linux:** `~/.local/share/Baitd`
 
-Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` y `cache/`. El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA`.
+Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/`, `cache/`, `fuentes/`, `analisis/`, `modelos/` y `yt-dlp.zip`. El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA`.
 
 **Caché de clips:** los clips descargados se guardan en `cache/` para no bajarlos dos veces. La caché tiene un límite de **3 GB**: al empezar cada vídeo se borran los clips usados hace más tiempo. Para cambiar el límite, edita `"cache_max_gb"` en `settings.json` (por ejemplo `"cache_max_gb": 5`) con la app cerrada. Puedes borrar la carpeta `cache/` cuando quieras.
 
@@ -82,7 +96,7 @@ Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`,
 
 ## What it is
 
-Baitd is a free, open-source (MIT) app that turns **a topic** (e.g. "the benefits of reading") into a **ready-to-post short video** for TikTok, YouTube Shorts or Reels. An LLM writes a script with a hook, free stock clips are found, a voiceover is generated, word-by-word captions are burned in and background music is added. Everything runs on your machine; the UI only listens on `127.0.0.1`.
+Baitd is a free, open-source (MIT) app that turns **a topic** (e.g. "the benefits of reading") into a **ready-to-post short video** for TikTok, YouTube Shorts or Reels, and cuts **vertical clips from a long video** (Clipping tab). An LLM writes a script with a hook, free stock clips are found, a voiceover is generated, word-by-word captions are burned in and background music is added. Everything runs on your machine; the UI only listens on `127.0.0.1`.
 
 ## Install
 
@@ -134,11 +148,25 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 
 > **edge-tts warning:** it uses Microsoft Edge's voice service, which is **unofficial** and may stop working at any time. If it fails, switch to another voice provider (OpenAI, ElevenLabs) in the profile's **Voice** ("Voz") section; their keys go in **Settings**.
 
+## Clipping: cut clips from a long video
+
+The **Clipping** tab turns a long video (podcast, interview, stream) into several vertical clips. It has two modes: **Find moments** (download, transcribe and suggest candidates; you pick and press "Export selected") and **Create clips** (automatic mode: it picks the best moments and cuts, frames and captions them with no review).
+
+- **Links and uploads:** paste a link (YouTube and hundreds of sites, yt-dlp is bundled) or upload a file from the browser; up to 4 hours of video per source. If YouTube breaks the download, the app tells you and you can upload the file instead.
+- **Transcription:** through the **OpenAI API** (whisper-1, paid, uses the key from Settings) or **locally** with faster-whisper (free, no key, slower). Target times on a mid-range machine, for a 1-hour podcast with 5 clips and not counting the download: with the API, **15 minutes or less**; fully free, **45 minutes or less**.
+- **First local run:** the Whisper model ("small", about **250 MB**) is not bundled; it is downloaded once when you first use local transcription.
+- **Vertical framing** (changeable per clip during review): **Face** (default, follows the speaker), **Center** (fixed centre crop, good for screens and games) and **Full** (the whole video over a blurred background, no zoom).
+- **Where things live:** sources in `fuentes/` and transcripts and candidates in `analisis/`, inside the data folder; finished clips go to `salidas/`. Sources are deleted once all their clips are exported unless you tick "Keep original videos" in Settings. They do not count toward the 3 GB cache cap.
+- **Updating yt-dlp:** if downloads stop working, use the **Update yt-dlp** button in **Settings (Ajustes)** and restart Baitd.
+
+> **Rights:** if you use other channels' videos, respect their rights and each platform's rules.
+
 ## Bundled licences
 
 - **App:** MIT (see `LICENSE`).
 - **Music:** FreePD tracks, public domain (CC0), retrieved via the Internet Archive. See `src/baitd/assets/music/CREDITS.md`.
 - **Fonts:** OFL. See `src/baitd/assets/fonts/LICENSES`.
+- **Face detection:** YuNet model (Apache 2.0). See `src/baitd/assets/models/LICENSE-yunet.txt`.
 
 ## Where your data lives
 
@@ -148,6 +176,6 @@ Settings, keys, profiles, queue, clip cache, your own music and videos are store
 - **macOS:** `~/Library/Application Support/Baitd`
 - **Linux:** `~/.local/share/Baitd`
 
-Inside: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` and `cache/`. Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable.
+Inside: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/`, `cache/`, `fuentes/`, `analisis/`, `modelos/` and `yt-dlp.zip`. Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable.
 
 **Clip cache:** downloaded clips are kept in `cache/` so they are not fetched twice. The cache is capped at **3 GB**: when each video starts, the least recently used clips are deleted. To change the cap, edit `"cache_max_gb"` in `settings.json` (e.g. `"cache_max_gb": 5`) while the app is closed. You can delete the `cache/` folder at any time.

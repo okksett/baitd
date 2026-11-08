@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import shutil
 import threading
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Callable
 
 from . import config
+from .clip import pipeline as clip_pipeline
+from .clip import sources as clip_sources
 from .models import JobCancelled, Profile, Script, UserError
 from .pipeline import run_job
 
@@ -17,7 +20,9 @@ log = logging.getLogger(__name__)
 _STATUSES = ("pending", "running", "done", "error", "cancelled")
 _FINISHED = ("done", "error", "cancelled")
 _PUBLIC = ("id", "topic", "status", "step", "step_index", "percent", "error", "output",
-           "profile_name", "created_at")
+           "profile_name", "created_at", "kind", "analysis_id")
+_CLIP_RUNNERS = {"clip_auto": clip_pipeline.run_clip_auto, "clip_analyze": clip_pipeline.run_clip_analyze,
+                 "clip_export": clip_pipeline.run_clip_export}
 _UNEXPECTED = "Error inesperado: {} → Revisa el registro y vuelve a intentarlo"
 
 
@@ -28,9 +33,10 @@ class JobQueue:
     when it was added, so later profile edits never change queued jobs.
     """
 
-    def __init__(self, path: Path, runner: Callable = run_job):
+    def __init__(self, path: Path, runner: Callable = run_job, clip_runners: dict[str, Callable] | None = None):
         self._path = Path(path)
         self._runner = runner
+        self._clip_runners = {**_CLIP_RUNNERS, **(clip_runners or {})}
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
         self._items: list[dict] = []
@@ -69,6 +75,9 @@ class JobQueue:
             return None
         if not isinstance(d.get("profile"), dict):
             return None
+        kind = d.get("kind") if d.get("kind") in clip_pipeline.CLIP_JOB_KINDS else "short"
+        if kind != "short" and not isinstance(d.get("payload"), dict):
+            return None
         status = d.get("status") if d.get("status") in _STATUSES else "pending"
         try:
             step_index = int(d.get("step_index") or 0)
@@ -83,6 +92,8 @@ class JobQueue:
             "created_at": d.get("created_at") or "",
             "profile": d["profile"],
             "script": d["script"] if isinstance(d.get("script"), dict) else None,
+            "kind": kind, "payload": d["payload"] if kind != "short" else None,
+            "analysis_id": d["analysis_id"] if isinstance(d.get("analysis_id"), str) else "",
         }
 
     def _save(self) -> None:
@@ -112,12 +123,49 @@ class JobQueue:
                     "step": "", "step_index": 0, "percent": 0.0, "error": "", "output": "",
                     "profile_name": profile.name, "created_at": now,
                     "profile": snapshot, "script": script.to_dict() if script else None,
+                    "kind": "short", "payload": None, "analysis_id": "",
                 }
                 self._items.append(item)
                 ids.append(item["id"])
             self._save()
             self._wake.notify_all()
         return ids
+
+    def add_clip_job(self, kind: str, payload: dict, profile: Profile) -> str:
+        """Queue a clipping job (`clip_auto`, `clip_analyze` or `clip_export`) with a profile snapshot."""
+        if kind not in clip_pipeline.CLIP_JOB_KINDS or not isinstance(payload, dict):
+            raise ValueError(f"bad clip job: {kind!r}")
+        topic = self._clip_topic(kind, payload)
+        analysis_id = payload.get("analysis_id") if kind == "clip_export" else ""
+        item = {
+            "id": uuid.uuid4().hex[:12], "topic": topic, "status": "pending",
+            "step": "", "step_index": 0, "percent": 0.0, "error": "", "output": "",
+            "profile_name": profile.name, "created_at": datetime.now().isoformat(timespec="seconds"),
+            "profile": profile.to_dict(), "script": None,
+            "kind": kind, "payload": copy.deepcopy(payload),
+            "analysis_id": analysis_id if isinstance(analysis_id, str) else "",
+        }
+        with self._lock:
+            self._items.append(item)
+            self._save()
+            self._wake.notify_all()
+        return item["id"]
+
+    @staticmethod
+    def _clip_topic(kind: str, payload: dict) -> str:
+        """The link or file name until the job learns the source's title (on_title)."""
+        try:
+            if kind == "clip_export":
+                return clip_sources.load_source(clip_pipeline.load_analysis(payload.get("analysis_id"))["source_id"]).title
+            source = payload.get("source")
+            source = source if isinstance(source, dict) else {}
+            if isinstance(source.get("url"), str) and source["url"].strip():
+                return source["url"].strip()
+            if isinstance(source.get("source_id"), str):
+                return clip_sources.load_source(source["source_id"]).title
+        except UserError:
+            pass
+        return "Video"
 
     def list(self) -> list[dict]:
         with self._lock:
@@ -137,17 +185,51 @@ class JobQueue:
     def remove(self, id: str) -> None:
         """Delete one finished (done/error/cancelled) item; other statuses are left alone."""
         with self._lock:
-            before = len(self._items)
-            self._items = [i for i in self._items if not (i["id"] == id and i["status"] in _FINISHED)]
-            if len(self._items) != before:
+            gone = [i for i in self._items if i["id"] == id and i["status"] in _FINISHED]
+            if gone:
+                self._items = [i for i in self._items if i not in gone]
                 self._save()
+        self._release(gone)
 
     def clear_finished(self) -> None:
         with self._lock:
-            before = len(self._items)
-            self._items = [i for i in self._items if i["status"] not in _FINISHED]
-            if len(self._items) != before:
+            gone = [i for i in self._items if i["status"] in _FINISHED]
+            if gone:
+                self._items = [i for i in self._items if i["status"] not in _FINISHED]
                 self._save()
+        self._release(gone)
+
+    def _release(self, gone: list[dict]) -> None:
+        """Removed clip items free what they held: a finished analysis and its source, or the uploaded source
+        of a failed run, unless kept or still needed by an unfinished item (ruling T8c). Called unlocked."""
+        clip = [i for i in gone if i["kind"] != "short"]
+        if not clip:
+            return
+        settings = config.load_settings()
+        busy = lambda: self._unfinished_refs("")  # noqa: E731
+        for i in clip:
+            if i["kind"] == "clip_analyze" and i["analysis_id"]:
+                clip_pipeline.release_analysis(i["analysis_id"], settings, busy)
+            src = i["payload"].get("source")
+            if isinstance(src, dict) and isinstance(src.get("source_id"), str):
+                clip_pipeline.release_source_id(src["source_id"], settings, busy)
+
+    def sweep_clip_data(self, keep_sources: bool) -> None:
+        """Startup: drop analyses no queue item lists and sources nothing needs (see clip.pipeline.sweep)."""
+        analyses, sources_ = set(), set()
+        with self._lock:
+            for i in self._items:
+                if i["kind"] == "short":
+                    continue
+                if i["kind"] == "clip_analyze" and i["analysis_id"]:
+                    analyses.add(i["analysis_id"])
+                if i["status"] in ("pending", "running"):
+                    if isinstance(i["payload"].get("analysis_id"), str):
+                        analyses.add(i["payload"]["analysis_id"])
+                    src = i["payload"].get("source")
+                    if isinstance(src, dict) and isinstance(src.get("source_id"), str):
+                        sources_.add(src["source_id"])
+        clip_pipeline.sweep(analyses, sources_, keep_sources)
 
     def start(self) -> None:
         with self._lock:
@@ -191,14 +273,24 @@ class JobQueue:
 
     def _run_one(self, item: dict, cancel: threading.Event) -> None:
         id = item["id"]
+        kind = item["kind"]
         try:
-            profile = Profile.from_dict(item["profile"])
-            script = Script.from_dict(item["script"]) if item["script"] else None
             settings = config.load_settings()
-            path = self._runner(item["topic"], profile, settings, script, cancel,
-                                lambda *a: self._progress(id, *a),
-                                on_output=lambda folder: self._record_output(id, folder))
-            outcome = {"status": "done", "output": str(path), "percent": 100.0}
+            progress = lambda *a: self._progress(id, *a)  # noqa: E731
+            if kind == "short":
+                profile = Profile.from_dict(item["profile"])
+                script = Script.from_dict(item["script"]) if item["script"] else None
+                path = self._runner(item["topic"], profile, settings, script, cancel, progress,
+                                    on_output=lambda folder: self._record_output(id, folder))
+                outcome = {"status": "done", "output": str(path), "percent": 100.0}
+            else:
+                path = self._clip_runners[kind](dict(item), settings, cancel, progress,
+                                                on_output=lambda folder: self._record_output(id, folder),
+                                                on_title=lambda title: self._record_title(id, title),
+                                                busy=lambda: self._unfinished_refs(id))
+                outcome = {"status": "done", "percent": 100.0, "output": str(path)}
+                if kind == "clip_analyze":  # the analysis file, not a folder: the item frees the queue
+                    outcome.update(output="", analysis_id=Path(path).stem)
         except JobCancelled:
             outcome = {"status": "cancelled", "output": ""}  # the pipeline removed the folder
         except UserError as e:
@@ -213,6 +305,32 @@ class JobQueue:
             else:
                 item.update(outcome)
             self._save()
+
+    def unfinished_refs(self, exclude: str = "") -> tuple[set[str], set[str]]:
+        """(source ids, analysis ids) that pending or running clip items still need."""
+        return self._unfinished_refs(exclude)
+
+    def _unfinished_refs(self, exclude: str) -> tuple[set[str], set[str]]:
+        """(source ids, analysis ids) that other pending or running clip items still need."""
+        sources_, analyses = set(), set()
+        with self._lock:
+            for i in self._items:
+                if i["id"] == exclude or i["status"] not in ("pending", "running") or i["kind"] == "short":
+                    continue
+                src = i["payload"].get("source")
+                if isinstance(src, dict) and isinstance(src.get("source_id"), str):
+                    sources_.add(src["source_id"])
+                if isinstance(i["payload"].get("analysis_id"), str):
+                    analyses.add(i["payload"]["analysis_id"])
+        return sources_, analyses
+
+    def _record_title(self, id: str, title: str) -> None:
+        """A clip job starts with its link or file name as topic; the source's title replaces it."""
+        with self._lock:
+            item = self._find(id)
+            if item is not None and item["status"] == "running" and title:
+                item["topic"] = title
+                self._save()
 
     def _record_output(self, id: str, folder: Path) -> None:
         """Persist the job's folder as soon as it exists, so a hard kill can be cleaned up."""

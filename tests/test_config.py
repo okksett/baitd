@@ -114,3 +114,21 @@ def test_bad_profile_entry_skipped_good_kept(tmp_data):
 
 def test_slugify_all_emoji_fallback():
     assert slugify("🔥🔥") == "video"
+
+
+def test_data_dir_from_env(tmp_path, monkeypatch):
+    from baitd import config
+    monkeypatch.setenv("BAITD_DATA", str(tmp_path / "datos"))
+    assert config.data_dir() == tmp_path / "datos" and (tmp_path / "datos").is_dir()
+
+
+def test_bad_clipping_block_keeps_the_profile(tmp_data, caplog):
+    import json
+    from baitd.clip.models import ClipProfile
+    bad = {**default_profile().to_dict(), "id": "p", "name": "Mío", "tone": "serio", "clipping": {"count": 99}}
+    (tmp_data / "profiles.json").write_text(json.dumps([bad]), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        profiles = list_profiles()
+    assert [(p.name, p.tone) for p in profiles] == [("Mío", "serio")]
+    assert profiles[0].clipping == ClipProfile()
+    assert any("clipping" in r.getMessage().lower() for r in caplog.records)

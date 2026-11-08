@@ -9,6 +9,8 @@ import pytest
 
 from baitd import __main__ as app_main
 from baitd import instance
+from baitd.jobqueue import JobQueue
+from baitd.web import server as web_server
 
 
 def test_find_free_port():
@@ -197,3 +199,36 @@ def test_unwritable_data_dir_exits_with_message(monkeypatch, capsys):
         app_main.main(["--no-browser"])
     assert exc.value.code == 1
     assert "→" in capsys.readouterr().out
+
+
+def test_start_sweeps_orphan_clip_data(tmp_data):
+    orphan = tmp_data / "fuentes" / ("0" * 12)
+    orphan.mkdir(parents=True)
+    (orphan / "source.mp4").write_bytes(b"half an upload")
+    analysis = tmp_data / "analisis" / ("1" * 12 + ".json")
+    analysis.parent.mkdir()
+    analysis.write_text('{"source_id": "000000000000"}', encoding="utf-8")
+    port = app_main.find_free_port()
+    t = threading.Thread(target=app_main.main, args=(["--no-browser", "--port", str(port)],), daemon=True)
+    t.start()
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+                break
+            except OSError:
+                time.sleep(0.1)
+        assert not orphan.exists() and not analysis.exists()
+    finally:
+        app_main.request_shutdown()
+        t.join(10)
+
+
+def test_request_body_cap_fits_one_upload_chunk(tmp_data):
+    # uploads come in chunks (F3): waitress's cap stays at or under its 1 GB default, above one chunk
+    assert web_server.UPLOAD_CHUNK_MAX < app_main.MAX_BODY <= 1024**3
+    server = app_main.build_server(app_main.find_free_port(), JobQueue(tmp_data / "queue.json"))
+    try:
+        assert server.adj.max_request_body_size == app_main.MAX_BODY
+    finally:
+        server.close()

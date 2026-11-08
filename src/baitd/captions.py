@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -212,6 +212,14 @@ def write_ass(
     width: int, height: int, path: Path, fonts_dir: Path,
 ) -> None:
     """Write an .ass file with one event per (chunk x active word); phrase events for non-Latin."""
+    _write_ass(words, style, hook_word_count, width, height, path, fonts_dir)
+
+
+def _write_ass(
+    words: list[Word], style: SubtitleStyle, hook_word_count: int,
+    width: int, height: int, path: Path, fonts_dir: Path,
+    extra_styles: list[str] | None = None, extra_events: list[str] | None = None,
+) -> None:
     baseline = caption_baseline_y(style.position, width, height)
     latin = is_latin(" ".join(w.text for w in words))
     faces = _faces_in(Path(fonts_dir).resolve())
@@ -289,10 +297,11 @@ def write_ass(
             _style_line("Cap", style.font, faces.get(style.font), style, height, baseline),
         ]),
         _style_line("CapFallback", FALLBACK_FONT, faces.get(FALLBACK_FONT), style, height, baseline),
+        *(extra_styles or []),
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    Path(path).write_text("\n".join(header + events) + "\n", encoding="utf-8")
+    Path(path).write_text("\n".join(header + (extra_events or []) + events) + "\n", encoding="utf-8")
 
 
 def _dialogue(start: float, end: float, style_name: str, text: str, layer: int = 0) -> str:
@@ -304,3 +313,76 @@ def _mark(text: str, style: SubtitleStyle) -> str:
     if style.box:
         return f"{{\\1a&H00&\\3a&H00&}}{text}{{\\1a&HFF&\\3a&HFF&}}"
     return f"{{\\1c{_tag_color(style.highlight)}}}{text}{{\\1c{_tag_color(style.color)}}}"
+
+
+_TITLE_SCALE = 1.1
+_CREDIT_SCALE = 0.45
+_CREDIT_ALPHA = 0x4D  # 70 % opaque
+_CREDIT_BASELINE = {"portrait": 0.78, "landscape": 0.93}  # bottom of the credit text, inside the safe zone
+_FOREVER = 36000.0  # the credit lasts the whole clip; ffmpeg ends the stream
+
+
+def _fit_lines(text: str, face: _Face | None, em: float, avail: float, pad: float) -> tuple[str, float]:
+    """One line if it fits, else two balanced lines; shrinks the size when still too wide."""
+    if face is None:
+        return text, em
+    if face.width(text, em) + pad > avail:
+        words = text.split()
+        if len(words) > 1:
+            best = min(range(1, len(words)),
+                       key=lambda i: abs(len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+            text = " ".join(words[:best]) + "\\N" + " ".join(words[best:])
+    widest = max(face.width(part, em) for part in text.split("\\N")) + pad
+    if widest > avail:
+        em = max(1.0, math.floor(em * (avail - pad) / (widest - pad)))
+    return text, em
+
+
+def write_clip_ass(
+    words: list[Word], style: SubtitleStyle, width: int, height: int, path: Path, fonts_dir: Path,
+    top_text: str = "", top_until: float = 3.0, credit: str = "",
+) -> None:
+    """Captions as in write_ass (no hook scaling) plus an optional title in the top band
+    (0..top_until, boxed, 1.1x the caption size) and an optional credit (bottom-left, 0.45x, 70 %
+    opaque, whole clip). Titles and credits may come from users or an LLM, so ASS-significant
+    characters are stripped."""
+    faces = _faces_in(Path(fonts_dir).resolve())
+    for family in (style.font, FALLBACK_FONT):
+        if family not in faces:
+            raise ValueError(f"Font family {family!r} is not in the font bundle {fonts_dir}")
+    key = "landscape" if width > height else "portrait"
+    avail = width - 2 * _SAFE_MARGIN
+    styles: list[str] = []
+    events: list[str] = []
+
+    def font_for(text: str) -> tuple[str, bool]:
+        latin = is_latin(text)
+        return (style.font if latin else FALLBACK_FONT), latin
+
+    top_text = _clean(top_text).strip()
+    if top_text:
+        font, latin = font_for(top_text)
+        if latin and style.preset in _UPPERCASE_PRESETS:
+            top_text = top_text.upper()
+        face = faces[font]
+        box_style = replace(style, size=round(style.size * _TITLE_SCALE), box=True,
+                            highlight=style.highlight if style.box else "#000000")
+        baseline = caption_baseline_y("top", width, height)
+        em = box_style.size
+        text, em = _fit_lines(top_text, face, em, avail, 2 * _BOX_PAD)
+        styles.append(_style_line("Hook", font, face, box_style, height, baseline, "caja_box"))
+        y = round(baseline + face.descent / face.upm * em)
+        size_tag = f"\\fs{face.ass_size(em)}" if em != box_style.size else ""
+        events.append(_dialogue(0.0, top_until, "Hook", f"{{\\an2\\pos({width // 2},{y}){size_tag}}}{text}"))
+
+    credit = _clean(credit).strip()
+    if credit:
+        font, latin = font_for(credit)
+        face = faces[font]
+        small = replace(style, size=max(1, round(style.size * _CREDIT_SCALE)), outline=min(style.outline, 2))
+        styles.append(_style_line("Credit", font, face, small, height, 0))
+        y = round(height * _CREDIT_BASELINE[key])
+        alpha = f"\\alpha&H{_CREDIT_ALPHA:02X}&"
+        events.append(_dialogue(0.0, _FOREVER, "Credit", f"{{\\an1\\pos({_SAFE_MARGIN},{y}){alpha}}}{credit}"))
+
+    _write_ass(words, style, 0, width, height, path, fonts_dir, styles, events)

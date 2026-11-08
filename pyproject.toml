@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baitd"
-version = "0.1.0"
-description = "Local app that turns a topic into a short video"
+version = "0.2.0"
+description = "Local app that turns a topic into a short video and cuts clips from long videos"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
@@ -16,6 +16,10 @@ dependencies = [
     "platformdirs",
     "fonttools",
     "waitress>=3,<4",
+    "yt-dlp>=2026.10,<2027",
+    "faster-whisper>=1.2,<2",
+    "opencv-python-headless>=5,<6",
+    "numpy>=2,<3",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +32,7 @@ baitd = "baitd.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md",
+baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md", "assets/models/*.onnx", "assets/models/LICENSE-yunet.txt",
               "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/i18n/*.json"]
 
 [tool.pytest.ini_options]

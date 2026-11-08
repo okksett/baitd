@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from flask.testing import FlaskClient
+from markupsafe import escape
 
 from baitd import config
 from baitd.jobqueue import JobQueue
@@ -537,6 +538,57 @@ def test_index_uses_saved_language_and_theme(client):
 
 def test_index_theme_unset_on_first_run(client):
     assert 'data-theme=""' in client.get("/").text  # CSS follows prefers-color-scheme
+
+
+def test_index_has_clipping_tab_and_drop_zone(client):
+    html = client.get("/").text
+    es = json.loads(ES.read_text("utf-8"))
+    # two keyboard-usable tabs next to the logo, each with its own left panel
+    assert 'role="tablist"' in html
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-short"[^>]*aria-selected="true"', html)
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-clip"[^>]*aria-selected="false"', html)
+    assert 'id="panel-short" role="tabpanel"' in html and 'id="panel-clip" role="tabpanel"' in html
+    assert es["tab.short"] in html and es["tab.clip"] in html
+    # the drop zone: link input, file button, drag-and-drop area and the upload progress/cancel
+    assert 'id="drop"' in html and es["clip.drop"] in html
+    assert 'id="c-url"' in html and 'id="c-file"' in html and 'id="c-file-btn"' in html
+    assert 'id="upload-cancel"' in html and 'id="upload-pct"' in html
+    for field in ("c-count", "c-min", "c-max", "c-kind", "c-aspect", "c-fps", "c-transcriber", "c-model",
+                  "c-language", "c-framing", "c-preset", "c-hook", "c-credit", "c-music"):
+        assert f'id="{field}"' in html, field
+    assert 'id="clip-find"' in html and 'id="clip-create"' in html
+    assert 'id="clip-review"' in html and 'id="clip-export"' in html and 'id="clip-discard"' in html
+    assert 'id="tpl-moment"' in html
+    # settings dialog: keep sources and the yt-dlp updater
+    assert 'id="s-keep_sources"' in html and 'id="ytdlp-update"' in html
+    js = JS.read_text("utf-8")
+    assert "new XMLHttpRequest()" in js and ".abort()" in js and '"X-Baitd-Upload", "1"' in js
+    # chunked uploads (F3): 64 MiB PUTs in order, the extension checked first, abort deletes the partial upload
+    up = js[js.index("// ---------- clipping: source"):js.index("function bindDrop")]
+    assert "64 * 1024 * 1024" in up and 'xhr.open("PUT"' in up and "BOOT.upload_exts" in up
+    assert 'api("DELETE", `/api/uploads/' in up and "/finish`" in up
+    assert "/api/clips" in js and "/export" in js and "/api/ytdlp/update" in js
+
+
+def test_clipping_ui_lifecycle_seams():
+    js = JS.read_text("utf-8")
+    run = js[js.index("async function onClipRun"):js.index("// ---------- clipping: review list")]
+    assert "body.overrides = { ...state.current.clipping }" in run  # F7: what the screen shows, not a stale save
+    save = js[js.index("function saveNow"):js.index("async function flushSave")]
+    assert '$("#clip-error")' in save  # F7: save failures show on the Clipping tab too
+    assert "orig: m.orig" in js  # F4: the moment's index in the analysis
+    assert "`/api/sources/${encodeURIComponent(s.source_id)}`" in js  # F2: "Quitar archivo" deletes the upload
+    discard = js[js.index("async function discardAnalysis"):js.index("async function onExport")]
+    assert discard.index("setBusy(true)") < discard.index('api("DELETE"') < discard.index("setBusy(false)")
+
+
+def test_index_has_rights_notice_key(client):
+    html = client.get("/").text
+    es = json.loads(ES.read_text("utf-8"))
+    assert 'data-i18n="clip.rights"' in html and es["clip.rights"] in html
+    client.post("/api/settings", json={"ui_lang": "en"})
+    en = json.loads(EN.read_text("utf-8"))
+    assert str(escape(en["clip.rights"])) in client.get("/").text  # "channels' videos" is HTML-escaped
 
 
 # ---- shutdown (macOS .app has no console) ----

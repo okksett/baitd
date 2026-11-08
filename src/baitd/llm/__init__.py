@@ -7,7 +7,7 @@ import re
 from ..models import Profile, Scene, Script, UserError, first_sentence
 from . import gemini, openai_compat
 
-__all__ = ["generate_script", "build_prompt", "parse_script"]
+__all__ = ["generate_script", "build_prompt", "parse_script", "complete"]
 
 log = logging.getLogger(__name__)
 
@@ -103,24 +103,28 @@ def parse_script(raw: str, language: str, strict_hook: bool = True) -> Script:
     )
 
 
-def generate_script(topic: str, profile: Profile, settings: dict) -> Script:
+def complete(prompt: str, profile: Profile, settings: dict) -> str:
+    """One provider call (OpenAI, Gemini or OpenAI-compatible) returning the raw reply text."""
     provider = profile.llm_provider
     if provider not in DEFAULT_MODELS:
         raise UserError(f"Proveedor de IA desconocido: '{provider}'", "Elige OpenAI, Gemini o compatible en el perfil")
     model = profile.llm_model.strip() or DEFAULT_MODELS[provider]
+    if provider == "gemini":
+        return gemini.complete(prompt, model, settings)
+    return openai_compat.complete(prompt, model, settings, provider=provider)
 
-    def complete(prompt: str) -> str:
-        if provider == "gemini":
-            return gemini.complete(prompt, model, settings)
-        return openai_compat.complete(prompt, model, settings, provider=provider)
+
+def generate_script(topic: str, profile: Profile, settings: dict) -> Script:
+    def _complete(prompt: str) -> str:
+        return complete(prompt, profile, settings)
 
     prompt = build_prompt(topic, profile)
     try:
-        script = parse_script(complete(prompt), profile.language)
+        script = parse_script(_complete(prompt), profile.language)
     except ValueError as first:
         retry = f"{prompt}\n\nReturn only valid JSON matching the schema. Your previous reply was rejected: {first}"
         try:
-            script = parse_script(complete(retry), profile.language, strict_hook=False)
+            script = parse_script(_complete(retry), profile.language, strict_hook=False)
         except ValueError:
             raise UserError("La IA no devolvió un guion válido", "Inténtalo de nuevo o cambia de modelo") from None
     n = len(script.hook.split())

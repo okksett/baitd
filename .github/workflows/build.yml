@@ -23,7 +23,7 @@ jobs:
           - os: macos-15-intel
             exe: dist/Baitd.app/Contents/MacOS/Baitd
             artifact: Baitd-macos-x64.zip
-          - os: macos-14
+          - os: macos-15
             exe: dist/Baitd.app/Contents/MacOS/Baitd
             artifact: Baitd-macos-arm64.zip
           - os: ubuntu-22.04
@@ -84,6 +84,12 @@ jobs:
             Linux)   tar -czf "${{ matrix.artifact }}" -C dist Baitd ;;
           esac
           ls -l "${{ matrix.artifact }}"
+
+      - name: Size gate (zipped bundle must stay under 450 MB)
+        run: |
+          size=$(wc -c < "${{ matrix.artifact }}" | tr -d ' ')
+          echo "${{ matrix.artifact }}: $((size / 1048576)) MB"
+          test "$size" -le $((450 * 1048576)) || { echo "Bundle is over 450 MB"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:

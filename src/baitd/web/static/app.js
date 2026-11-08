@@ -10,6 +10,9 @@
   const FINISHED = ["done", "error", "cancelled"];
   const SAVE_DELAY = 500;
   const POLL_MS = 1000;
+  const MIN_CLIP_S = 10; // clip length limits and clips per run, as the server checks them
+  const MAX_CLIP_S = 180;
+  const MAX_EXPORT = 20;
   // SubtitleStyle.font -> CSS family + weight (declared with @font-face in app.css)
   const FONT_CSS = {
     "Montserrat ExtraBold": ["Montserrat", 800],
@@ -33,6 +36,15 @@
     saveTimer: null,
     savePromise: null,
     voiceReq: 0,
+    tab: "short",
+    clip: {
+      source: null, // uploaded file: {source_id, title, duration, has_video, unused}
+      upload: null, // upload in flight: {id, xhr, cancelled}
+      watch: new Set(), // clip_analyze jobs started from this page: their review opens when done
+      review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
+      settingsBad: false, // a typed clip number is out of range (shown in #clip-error, not applied)
+      saveFailed: false, // a profile save failed while this tab was shown (also in #clip-error)
+    },
   };
 
   // ---------- i18n ----------
@@ -77,7 +89,11 @@
     }
     let data = null;
     try { data = await res.json(); } catch (_) { /* empty or non-JSON body */ }
-    if (!res.ok) throw new Error((data && data.error) || tr("err.network"));
+    if (!res.ok) {
+      const err = new Error((data && data.error) || tr("err.network"));
+      err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
@@ -145,6 +161,7 @@
     remember("profile", profile.id);
     renderProfileSelect();
     fillForm();
+    fillClip();
     loadVoices();
   }
 
@@ -165,9 +182,20 @@
         const i = state.profiles.findIndex((x) => x.id === saved.id);
         if (i >= 0) state.profiles[i] = saved; else state.profiles.push(saved);
         showError($("#form-error"), null);
+        if (state.clip.saveFailed) { // the Clipping tab showed this save's failure: it is fixed now
+          state.clip.saveFailed = false;
+          showError($("#clip-error"), null);
+        }
         return saved;
       })
-      .catch((e) => { showError($("#form-error"), e); throw e; })
+      .catch((e) => {
+        showError($("#form-error"), e);
+        if (state.tab === "clip") { // its own form error is on the hidden tab
+          state.clip.saveFailed = true;
+          showError($("#clip-error"), e);
+        }
+        throw e;
+      })
       .finally(() => { if (state.savePromise === p) state.savePromise = null; });
     state.savePromise = p;
     return p;
@@ -315,11 +343,7 @@
     $("#f-seconds").value = String(p.seconds);
     $("#f-tts").value = p.tts_provider;
     $("#f-rate").value = String(p.rate);
-    $("#f-preset").value = p.subtitle.preset;
-    $("#f-size").value = String(p.subtitle.size);
-    $("#f-color").value = p.subtitle.color.toLowerCase();
-    $("#f-highlight").value = p.subtitle.highlight.toLowerCase();
-    $("#f-position").value = p.subtitle.position;
+    fillSubtitle("f");
     renderMusicSelect();
     $("#f-volume").value = String(Math.round(p.music_volume * 100));
     $("#f-llm").value = p.llm_provider;
@@ -339,24 +363,37 @@
     p.tts_provider = $("#f-tts").value;
     if ($("#f-voice").value) p.voice = $("#f-voice").value;
     p.rate = parseInt($("#f-rate").value, 10) || 0;
-    if (target && target.id === "f-preset") {
-      p.subtitle = structuredClone(BOOT.presets[$("#f-preset").value]);
-      $("#f-size").value = String(p.subtitle.size);
-      $("#f-color").value = p.subtitle.color.toLowerCase();
-      $("#f-highlight").value = p.subtitle.highlight.toLowerCase();
-      $("#f-position").value = p.subtitle.position;
-    } else {
-      const size = parseInt($("#f-size").value, 10);
-      if (size >= 24 && size <= 200) p.subtitle.size = size;
-      p.subtitle.color = $("#f-color").value.toUpperCase();
-      p.subtitle.highlight = $("#f-highlight").value.toUpperCase();
-      p.subtitle.position = $("#f-position").value;
-    }
+    readSubtitle("f", target);
     p.music = $("#f-music").value || "none";
     p.music_volume = Math.round(Number($("#f-volume").value)) / 100;
     p.llm_provider = $("#f-llm").value;
     p.llm_model = $("#f-model").value.trim();
     p.tone = $("#f-tone").value;
+  }
+
+  // The subtitle controls exist in both panels (prefix "f" in Crear short, "c" in Clipping); both edit
+  // the same profile.subtitle.
+  function fillSubtitle(prefix) {
+    const s = state.current.subtitle;
+    $(`#${prefix}-preset`).value = s.preset;
+    $(`#${prefix}-size`).value = String(s.size);
+    $(`#${prefix}-color`).value = s.color.toLowerCase();
+    $(`#${prefix}-highlight`).value = s.highlight.toLowerCase();
+    $(`#${prefix}-position`).value = s.position;
+  }
+
+  function readSubtitle(prefix, target) {
+    const p = state.current;
+    if (target && target.id === `${prefix}-preset`) {
+      p.subtitle = structuredClone(BOOT.presets[$(`#${prefix}-preset`).value]);
+      fillSubtitle(prefix);
+    } else {
+      const size = parseInt($(`#${prefix}-size`).value, 10);
+      if (size >= 24 && size <= 200) p.subtitle.size = size;
+      p.subtitle.color = $(`#${prefix}-color`).value.toUpperCase();
+      p.subtitle.highlight = $(`#${prefix}-highlight`).value.toUpperCase();
+      p.subtitle.position = $(`#${prefix}-position`).value;
+    }
   }
 
   function onFormInput(e) {
@@ -366,6 +403,7 @@
     if (!t.matches("select, input:not([type=radio]):not([type=checkbox]):not(#topic), textarea:not(#topics)")) return;
     readForm(t);
     renderDerived();
+    fillClip(); // format, fps and subtitles are shared with the Clipping tab
     if (t.id === "f-lang" && t.value === "other") $("#f-lang-other").focus();
     if (state.current.language) scheduleSave();
     else if (t.id !== "f-lang-other") showError($("#form-error"), new Error(tr("err.lang")));
@@ -515,10 +553,17 @@
     $("#write-script").disabled = busy;
     $("#create").disabled = busy;
     $$("#review-list .script-retry, #review-list .script-remove").forEach((b) => { b.disabled = busy; });
+    $("#clip-find").disabled = busy;
+    $("#clip-create").disabled = busy;
+    $("#c-file-btn").disabled = busy;
+    $("#clip-discard").disabled = busy;
+    $$("#moment-list .m-remove").forEach((b) => { b.disabled = busy; });
+    renderExportState();
     $("#profile").disabled = busy; // a batch must be submitted under the profile that wrote it
     $("#profile-menu-btn").disabled = busy;
     if (busy) closeProfileMenu();
     $(".form").setAttribute("aria-busy", String(busy));
+    $(".form-clip").setAttribute("aria-busy", String(busy));
   }
 
   async function writeScripts(topics) {
@@ -677,6 +722,615 @@
     }
   }
 
+  // ---------- tabs ----------
+
+  function setTab(tab, focus = false) {
+    state.tab = tab === "clip" ? "clip" : "short";
+    $$('[role="tab"]').forEach((b) => {
+      const on = b.dataset.tab === state.tab;
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+      if (on && focus) b.focus();
+    });
+    $("#panel-short").hidden = state.tab !== "short";
+    $("#panel-clip").hidden = state.tab !== "clip";
+    $(".skip").setAttribute("href", state.tab === "clip" ? "#clip-head" : "#head");
+    remember("tab", state.tab);
+  }
+
+  function onTabKey(e) {
+    const tabs = $$('[role="tab"]');
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const next = {
+      ArrowRight: tabs[(i + 1) % tabs.length],
+      ArrowLeft: tabs[(i - 1 + tabs.length) % tabs.length],
+      Home: tabs[0],
+      End: tabs[tabs.length - 1],
+    }[e.key];
+    if (!next) return;
+    e.preventDefault();
+    setTab(next.dataset.tab, true);
+  }
+
+  // ---------- clipping: settings (profile.clipping, plus the shared aspect, fps and subtitle) ----------
+
+  const CLIP_LANGS = ["auto", "es", "en", "fr", "de", "it", "pt"];
+
+  function fillClip() {
+    const p = state.current;
+    if (!p) return;
+    const c = p.clipping;
+    $("#c-count").value = String(c.count);
+    $("#c-min").value = String(c.min_s);
+    $("#c-max").value = String(c.max_s);
+    $("#c-kind").value = c.kind;
+    $("#c-aspect").value = p.aspect;
+    $("#c-fps").value = String(p.fps);
+    $("#c-transcriber").value = c.transcriber;
+    $("#c-model").value = c.whisper_model;
+    const lang = $("#c-language");
+    $$("option[data-extra]", lang).forEach((o) => o.remove());
+    if (!CLIP_LANGS.includes(c.language)) { // a code saved by hand stays selectable
+      const o = new Option(c.language, c.language);
+      o.dataset.extra = "1";
+      lang.append(o);
+    }
+    lang.value = c.language;
+    $("#c-framing").value = c.framing;
+    fillSubtitle("c");
+    $("#c-hook").checked = c.hook_title;
+    $("#c-credit").checked = c.credit;
+    $("#c-music").checked = c.music;
+    if (state.clip.settingsBad) { // the typed numbers were replaced by the profile's valid ones
+      state.clip.settingsBad = false;
+      showError($("#clip-error"), null);
+    }
+    renderClipDerived();
+  }
+
+  function renderClipDerived() {
+    const p = state.current;
+    if (!p) return;
+    const c = p.clipping;
+    $("#c-model").disabled = c.transcriber !== "local";
+    $("#c-fps-hint").hidden = p.fps !== 60;
+    $("#sum-trans").textContent = c.transcriber === "local"
+      ? `${tr("transcriber.local")} · ${c.whisper_model}` : tr("transcriber.openai");
+    $("#sum-framing").textContent = tr(`framing.${c.framing}`);
+    $("#sum-csubs").textContent = `${tr(`preset.${p.subtitle.preset}`)} · ${tr(`pos.${p.subtitle.position}`)}`;
+    const on = [c.hook_title && tr("extras.hook"), c.credit && tr("extras.credit"), c.music && tr("extras.music")];
+    $("#sum-extras").textContent = on.filter(Boolean).join(" · ") || tr("extras.none");
+  }
+
+  // Reads the Clipping controls into the profile. Out-of-range numbers are not applied; returns the
+  // problem ("cause → fix") or "".
+  function readClip(target) {
+    const p = state.current;
+    const c = p.clipping;
+    p.aspect = $("#c-aspect").value;
+    p.fps = Number($("#c-fps").value);
+    readSubtitle("c", target);
+    c.kind = $("#c-kind").value;
+    c.transcriber = $("#c-transcriber").value;
+    c.whisper_model = $("#c-model").value;
+    c.language = $("#c-language").value;
+    c.framing = $("#c-framing").value;
+    c.hook_title = $("#c-hook").checked;
+    c.credit = $("#c-credit").checked;
+    c.music = $("#c-music").checked;
+    const int = (sel) => (/^\d+$/.test($(sel).value.trim()) ? Number($(sel).value) : NaN);
+    const count = int("#c-count");
+    const min = int("#c-min");
+    const max = int("#c-max");
+    if (!(count >= 1 && count <= MAX_EXPORT)) return tr("err.clip_count");
+    if (!(min >= MIN_CLIP_S && max <= MAX_CLIP_S && min <= max)) return tr("err.clip_len");
+    Object.assign(c, { count, min_s: min, max_s: max });
+    return "";
+  }
+
+  function onClipInput(e) {
+    if (!state.current) return;
+    const t = e.target;
+    if (!t.closest || !t.closest("#clip-settings") || !t.matches("select, input")) return;
+    const problem = readClip(t);
+    if (problem) showError($("#clip-error"), new Error(problem));
+    else if (state.clip.settingsBad) showError($("#clip-error"), null);
+    state.clip.settingsBad = Boolean(problem);
+    fillForm(); // the Crear short tab shows the same format, fps and subtitles
+    renderClipDerived();
+    if (state.current.language) scheduleSave(); // the profile only ever holds valid numbers
+  }
+
+  // ---------- clipping: times ----------
+
+  function fmtTime(sec, tenths = true) {
+    const total = tenths ? Math.round(sec * 10) / 10 : Math.round(sec);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total - h * 3600) / 60);
+    const s = total - h * 3600 - m * 60;
+    const ss = `${s < 10 ? "0" : ""}${Number.isInteger(s) ? s : s.toFixed(1)}`;
+    return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+  }
+
+  // "1:05", "1:05.5", "0:01:05" or plain seconds ("65,5"); NaN when it is none of those.
+  function parseTime(text) {
+    const parts = String(text).trim().replace(",", ".").split(":");
+    if (parts.length > 3 || !parts.every((x, i) => (i === parts.length - 1 ? /^\d+(\.\d+)?$/ : /^\d+$/).test(x))) {
+      return NaN;
+    }
+    if (parts.slice(1).some((x) => Number(x) >= 60)) return NaN;
+    return parts.reduce((acc, x) => acc * 60 + Number(x), 0);
+  }
+
+  // ---------- clipping: source (a link or an uploaded file) ----------
+
+  function setUploadPct(pct) {
+    const v = Math.max(0, Math.min(100, Math.round(pct)));
+    $("#upload-fill").style.width = `${v}%`;
+    $("#upload-bar").setAttribute("aria-valuenow", String(v));
+    $("#upload-pct").textContent = v >= 100 ? tr("clip.upload_checking") : `${v} %`;
+  }
+
+  function setSource(data) {
+    state.clip.source = data;
+    $("#c-source-title").textContent = `${data.title} · ${fmtTime(data.duration, false)}`;
+    $("#c-source").hidden = false;
+    $("#c-url").value = "";
+    $("#c-url").disabled = true; // one source at a time: the file wins until it is removed
+  }
+
+  function clearSource() {
+    state.clip.source = null;
+    $("#c-source").hidden = true;
+    $("#c-url").disabled = false;
+  }
+
+  // An upload no job has used yet is also deleted on the server; the server refuses (409) if something needs it.
+  function dropSource() {
+    const s = state.clip.source;
+    clearSource();
+    if (!s || !s.unused) return;
+    api("DELETE", `/api/sources/${encodeURIComponent(s.source_id)}`, {}).catch((e) => {
+      if (e.status !== 404 && e.status !== 409) showError($("#clip-error"), e);
+    });
+  }
+
+  // The server takes at most 256 MiB per PUT; smaller chunks keep a retry cheap.
+  const UPLOAD_CHUNK = 64 * 1024 * 1024;
+
+  function uploadExtOk(name) {
+    const m = /\.([^./\\]+)$/.exec(name || "");
+    return Boolean(m) && BOOT.upload_exts.includes(m[1].trim().toLowerCase());
+  }
+
+  // One chunk as raw bytes over XMLHttpRequest (fetch has no upload progress). Resolves with the server's
+  // {offset}; an abort rejects with err.aborted set.
+  function putChunk(up, offset, blob, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      up.xhr = xhr;
+      xhr.open("PUT", `/api/uploads/${encodeURIComponent(up.id)}?offset=${offset}`);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("X-Baitd-Upload", "1");
+      xhr.responseType = "json";
+      xhr.upload.addEventListener("progress", (e) => onProgress(e.loaded));
+      xhr.addEventListener("load", () => {
+        up.xhr = null;
+        const data = xhr.response;
+        if (xhr.status >= 200 && xhr.status < 300 && data && Number.isInteger(data.offset)) resolve(data);
+        else reject(new Error((data && data.error) || tr("err.upload")));
+      });
+      xhr.addEventListener("error", () => { up.xhr = null; reject(new Error(tr("err.network"))); });
+      xhr.addEventListener("abort", () => {
+        up.xhr = null;
+        const err = new Error(tr("clip.upload_cancelled"));
+        err.aborted = true;
+        reject(err);
+      });
+      xhr.send(blob);
+    });
+  }
+
+  // Chunked upload: begin (name, size: the server checks both before storing anything), 64 MiB PUTs in
+  // order, then finish (probe). Cancel aborts the chunk in flight and deletes the partial upload.
+  async function startUpload(file) {
+    if (!file || state.busy || state.clip.upload) return;
+    showError($("#clip-error"), null);
+    $("#clip-status").textContent = "";
+    if (!uploadExtOk(file.name)) {
+      showError($("#clip-error"), new Error(tr("err.upload_type")));
+      return;
+    }
+    dropSource();
+    const up = { id: "", xhr: null, cancelled: false };
+    state.clip.upload = up;
+    $("#upload-name").textContent = file.name;
+    setUploadPct(0);
+    $("#upload-box").hidden = false;
+    setBusy(true);
+    $("#upload-cancel").focus();
+    const cancelled = () => { const err = new Error(tr("clip.upload_cancelled")); err.aborted = true; return err; };
+    try {
+      up.id = (await api("POST", "/api/uploads", { name: file.name, size: file.size })).upload_id;
+      let offset = 0;
+      while (offset < file.size) {
+        if (up.cancelled) throw cancelled();
+        const start = offset;
+        const blob = file.slice(start, Math.min(file.size, start + UPLOAD_CHUNK));
+        offset = (await putChunk(up, start, blob, (loaded) => setUploadPct(((start + loaded) / file.size) * 100))).offset;
+      }
+      if (up.cancelled) throw cancelled();
+      setUploadPct(100); // "checking the video" while the server probes it
+      const data = await api("POST", `/api/uploads/${encodeURIComponent(up.id)}/finish`, {});
+      if (up.cancelled) { // too late to abort the probe: the new source goes instead
+        api("DELETE", `/api/sources/${encodeURIComponent(data.source_id)}`, {}).catch(() => {});
+        throw cancelled();
+      }
+      setSource({ ...data, unused: true });
+    } catch (e) {
+      // the partial upload goes on the server (404 when finish already removed it, or it never began)
+      if (up.id) api("DELETE", `/api/uploads/${encodeURIComponent(up.id)}`, {}).catch(() => {});
+      if (up.cancelled || e.aborted) {
+        $("#clip-status").textContent = tr("clip.upload_cancelled");
+        $("#c-file-btn").focus();
+      } else {
+        showError($("#clip-error"), e);
+      }
+    } finally {
+      state.clip.upload = null;
+      $("#upload-box").hidden = true;
+      setBusy(false);
+    }
+  }
+
+  function cancelUpload() {
+    const up = state.clip.upload;
+    if (!up) return;
+    up.cancelled = true;
+    if (up.xhr) up.xhr.abort();
+  }
+
+  function bindDrop() {
+    const zone = $("#drop");
+    const hasFiles = (e) => Boolean(e.dataTransfer) && Array.from(e.dataTransfer.types || []).includes("Files");
+    zone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      zone.classList.add("over");
+    });
+    zone.addEventListener("dragleave", (e) => {
+      if (!zone.contains(e.relatedTarget)) zone.classList.remove("over");
+    });
+    zone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      zone.classList.remove("over");
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) {
+        startUpload(file);
+        return;
+      }
+      const link = (e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain") || "")
+        .split(/\r?\n/)[0].trim();
+      if (/^https?:\/\//i.test(link) && !state.clip.source) $("#c-url").value = link;
+    });
+    // a file dropped next to the zone must not make the browser leave the app to show it
+    window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+    window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  }
+
+  // ---------- clipping: run ----------
+
+  // Which profile started each analysis, so its export uses that same profile (kept across reloads
+  // when storage works; otherwise the job's profile name, then the selected profile).
+  function analysisProfiles() {
+    try {
+      const v = JSON.parse(remembered("analyses") || "{}");
+      return v && typeof v === "object" ? v : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function rememberAnalysisProfile(jobId, profileId) {
+    const map = analysisProfiles();
+    map[jobId] = profileId;
+    const ids = Object.keys(map);
+    ids.slice(0, Math.max(0, ids.length - 50)).forEach((k) => { delete map[k]; });
+    remember("analyses", JSON.stringify(map));
+  }
+
+  function analysisProfileId(job) {
+    const known = analysisProfiles()[job.id];
+    if (known && profileById(known)) return known;
+    const byName = state.profiles.find((p) => p.name === job.profile_name);
+    return (byName || state.current).id;
+  }
+
+  async function onClipRun(mode) {
+    if (state.busy || !state.current) return;
+    showError($("#clip-error"), null);
+    $("#clip-status").textContent = "";
+    const body = { profile_id: state.current.id, mode };
+    const url = $("#c-url").value.trim();
+    try {
+      const problem = readClip(null);
+      state.clip.settingsBad = Boolean(problem);
+      if (problem) throw new Error(problem);
+      if (state.clip.source) body.source_id = state.clip.source.source_id;
+      else if (!url) throw new Error(tr("err.clip_source"));
+      else if (!/^https?:\/\/\S+$/i.test(url)) throw new Error(tr("err.clip_url"));
+      else body.url = url;
+      body.overrides = { ...state.current.clipping }; // what the screen shows, even if the save lags or failed
+      setBusy(true);
+      await flushSave();
+      const { job_id: jobId } = await api("POST", "/api/clips", body);
+      if (mode === "review") {
+        state.clip.watch.add(jobId);
+        rememberAnalysisProfile(jobId, state.current.id);
+      }
+      $("#clip-status").textContent = tr(mode === "review" ? "clip.analyzing" : "clip.added");
+      $("#c-url").value = "";
+      clearSource();
+      refreshJobs();
+    } catch (e) {
+      showError($("#clip-error"), e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---------- clipping: review list ----------
+
+  // An analysis started here opens its review list when it finishes (unless one is already open).
+  function checkAnalyses() {
+    state.jobs.forEach((job) => {
+      if (!state.clip.watch.has(job.id) || !FINISHED.includes(job.status)) return;
+      state.clip.watch.delete(job.id);
+      if (job.status === "done" && job.analysis_id && !state.clip.review) openReview(job, false);
+    });
+  }
+
+  const reviewSignature = (r) => JSON.stringify(r.moments.map((m) => [m.orig, m.pick, m.title, m.start, m.end, m.framing, m.credit]));
+  const reviewEdited = (r) => reviewSignature(r) !== r.baseline;
+
+  async function openReview(job, userAsked) {
+    const errBox = userAsked ? $("#queue-error") : $("#clip-error");
+    const open = state.clip.review;
+    if (!open || open.analysisId !== job.analysis_id) {
+      if (open && userAsked && reviewEdited(open)) {
+        const yes = await ask({ title: tr("clip.switch_title"), text: tr("clip.switch_confirm"), ok: tr("queue.review") });
+        if (!yes) return;
+      }
+      try {
+        const data = await api("GET", `/api/analyses/${encodeURIComponent(job.analysis_id)}`);
+        const profileId = analysisProfileId(job);
+        const count = (profileById(profileId) || state.current).clipping.count;
+        // orig: the index in the analysis, so the server keeps its texts even after the bounds are edited
+        const ranked = data.moments.map((m, orig) => ({ ...m, orig })).sort((a, b) => b.score - a.score);
+        state.clip.review = {
+          analysisId: job.analysis_id, profileId, source: data.source,
+          moments: ranked.map((m, i) => ({ ...m, title: m.title || "", framing: m.framing || "cara",
+            credit: m.credit || "", pick: i < count, raw: {} })),
+        };
+        state.clip.review.baseline = reviewSignature(state.clip.review);
+      } catch (e) {
+        showError(errBox, e.status === 404 ? new Error(tr("err.analysis_gone")) : e);
+        return;
+      }
+      try {
+        state.clip.keepSources = (await api("GET", "/api/settings")).keep_sources === true;
+      } catch (_) { /* the note then stays visible: the default is to delete */ }
+      showError(errBox, null);
+      showError($("#clip-review-error"), null);
+      $("#clip-status").textContent = "";
+      renderClipReview();
+    }
+    if (userAsked) {
+      setTab("clip");
+      $("#clip-review-title").focus();
+    }
+  }
+
+  function momentProblem(m, duration) {
+    if (!Number.isFinite(m.start) || !Number.isFinite(m.end)) return tr("moment.err_time");
+    if (m.start < 0 || m.end > duration + 0.05) return tr("moment.err_range", { d: fmtTime(duration, false) });
+    const len = m.end - m.start;
+    if (len < MIN_CLIP_S || len > MAX_CLIP_S) return tr("moment.err_len");
+    return "";
+  }
+
+  function exportProblem() {
+    const r = state.clip.review;
+    const picked = r.moments.filter((m) => m.pick);
+    if (!picked.length) return tr("clip.why_none");
+    if (picked.length > MAX_EXPORT) return tr("clip.why_many");
+    if (picked.some((m) => momentProblem(m, r.source.duration))) return tr("clip.why_bad");
+    return "";
+  }
+
+  function renderExportState() {
+    const r = state.clip.review;
+    if (!r) return;
+    const why = exportProblem();
+    $("#clip-why").textContent = why;
+    $("#clip-export").disabled = state.busy || Boolean(why);
+    $("#clip-selected").textContent = tr("clip.selected", { n: r.moments.filter((m) => m.pick).length });
+  }
+
+  function renderClipReview() {
+    const r = state.clip.review;
+    if (!r) {
+      $("#moment-list").replaceChildren();
+      $("#clip-review").hidden = true;
+      return;
+    }
+    $("#clip-review").hidden = false;
+    $("#clip-keep-note").hidden = state.clip.keepSources === true;
+    $("#clip-review-source").textContent = `${r.source.title} · ${fmtTime(r.source.duration, false)}`;
+    $("#moment-list").replaceChildren(...r.moments.map((m, i) => momentCard(m, i)));
+    renderExportState();
+  }
+
+  function momentCard(m, idx) {
+    const r = state.clip.review;
+    const node = $("#tpl-moment").content.firstElementChild.cloneNode(true);
+    applyI18n(node);
+    const field = (name) => {
+      const el = $(`.m-${name}`, node);
+      el.id = `moment-${idx}-${name}`;
+      $(`.m-${name}-label`, node).htmlFor = el.id;
+      return el;
+    };
+    const title = field("title");
+    const times = { start: field("start"), end: field("end") };
+    const framing = field("framing");
+    const credit = field("credit");
+    const pick = $(".m-pick", node);
+    const remove = $(".m-remove", node);
+    const named = () => {
+      const name = m.title.trim() || `${fmtTime(m.start)}`;
+      pick.setAttribute("aria-label", `${tr("moment.pick")}: ${name}`);
+      remove.setAttribute("aria-label", `${tr("review.remove")}: ${name}`);
+    };
+
+    pick.checked = m.pick;
+    pick.addEventListener("change", () => { m.pick = pick.checked; renderExportState(); });
+    remove.disabled = state.busy;
+    remove.addEventListener("click", () => removeMoment(m));
+    $(".m-score", node).textContent = tr("moment.score", { n: m.score });
+    $(".m-kind", node).textContent = tr(`clip.kind.${m.kind}`);
+    title.value = m.title;
+    title.addEventListener("input", () => { m.title = title.value; named(); });
+    framing.value = m.framing;
+    framing.addEventListener("change", () => { m.framing = framing.value; });
+    credit.value = m.credit;
+    credit.addEventListener("input", () => { m.credit = credit.value; });
+
+    const text = $(".m-text", node);
+    if (m.text) {
+      text.textContent = m.text;
+      text.hidden = false;
+      const toggle = () => {
+        const open = text.classList.toggle("open");
+        text.setAttribute("aria-expanded", String(open));
+      };
+      text.addEventListener("click", toggle);
+      text.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+      });
+    }
+
+    // the preview plays only the moment: the media fragment starts it, timeupdate stops it at the end
+    const video = $(".m-video", node);
+    const setSrc = () => {
+      if (!Number.isFinite(m.start) || !Number.isFinite(m.end) || m.end <= m.start) return;
+      video.src = `/api/sources/${encodeURIComponent(r.source.id)}/media#t=${m.start},${m.end}`;
+    };
+    video.addEventListener("timeupdate", () => { if (video.currentTime >= m.end) video.pause(); });
+    video.addEventListener("play", () => {
+      $$("#moment-list .m-video").forEach((v) => { if (v !== video) v.pause(); });
+      if (video.currentTime < m.start - 0.25 || video.currentTime >= m.end - 0.05) video.currentTime = m.start;
+    });
+
+    const showTimes = () => {
+      for (const edge of ["start", "end"]) {
+        times[edge].value = Number.isFinite(m[edge]) ? fmtTime(m[edge]) : m.raw[edge] || "";
+      }
+      const len = m.end - m.start;
+      $(".m-len", node).textContent = Number.isFinite(len) ? tr("moment.len", { s: fmtTime(Math.max(0, len)) }) : "";
+      const problem = momentProblem(m, r.source.duration);
+      showError($(".m-err", node), problem ? new Error(problem) : null);
+      node.classList.toggle("bad", Boolean(problem));
+    };
+    const changed = () => { showTimes(); setSrc(); renderExportState(); named(); };
+    for (const edge of ["start", "end"]) {
+      times[edge].addEventListener("change", () => {
+        m.raw[edge] = times[edge].value;
+        m[edge] = parseTime(times[edge].value);
+        changed();
+      });
+    }
+    $$(".m-step", node).forEach((b) => {
+      const edge = b.dataset.edge;
+      const delta = Number(b.dataset.delta);
+      b.setAttribute("aria-label", `${tr(`moment.${edge}`)}: ${tr(delta < 0 ? "moment.minus" : "moment.plus")}`);
+      b.addEventListener("click", () => {
+        if (!Number.isFinite(m[edge])) return;
+        m[edge] = Math.min(r.source.duration, Math.max(0, m[edge] + delta));
+        changed();
+      });
+    });
+    setSrc();
+    showTimes();
+    named();
+    return node;
+  }
+
+  // Removing the last card is the same as discarding the whole analysis.
+  async function removeMoment(m) {
+    const r = state.clip.review;
+    if (!r || state.busy) return;
+    if (r.moments.length === 1) {
+      await discardAnalysis();
+      return;
+    }
+    const i = r.moments.indexOf(m);
+    if (i < 0) return;
+    r.moments.splice(i, 1);
+    renderClipReview();
+    const buttons = $$("#moment-list .m-remove");
+    (buttons[Math.min(i, buttons.length - 1)] || $("#clip-discard")).focus();
+  }
+
+  async function discardAnalysis() {
+    const r = state.clip.review;
+    if (!r || state.busy) return;
+    const yes = await ask({ title: tr("clip.discard"), text: tr("clip.discard_confirm", { title: r.source.title }),
+      ok: tr("clip.discard") });
+    if (!yes || state.busy) return;
+    setBusy(true);
+    try {
+      await api("DELETE", `/api/analyses/${encodeURIComponent(r.analysisId)}`, {});
+    } catch (e) {
+      if (e.status !== 404) { // already gone: just close the list
+        showError($("#clip-review-error"), e);
+        return;
+      }
+    } finally {
+      setBusy(false);
+    }
+    state.clip.review = null;
+    showError($("#clip-review-error"), null);
+    renderClipReview();
+    $("#clip-find").focus();
+  }
+
+  async function onExport() {
+    const r = state.clip.review;
+    if (!r || state.busy) return;
+    renderExportState();
+    if (exportProblem()) return;
+    showError($("#clip-review-error"), null);
+    const moments = r.moments.filter((m) => m.pick).map((m) => ({
+      orig: m.orig, start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim() }));
+    // the analysis was made with this profile; the selected one is only a fallback if it was deleted
+    const profileId = profileById(r.profileId) ? r.profileId : state.current.id;
+    setBusy(true);
+    try {
+      await flushSave(); // the export takes the hook title, credit and music switches from the saved profile
+      await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments });
+      state.clip.review = null;
+      renderClipReview();
+      $("#clip-status").textContent = tr("clip.added");
+      refreshJobs();
+      $("#clip-head").focus();
+    } catch (e) {
+      showError($("#clip-review-error"), e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ---------- queue ----------
 
   async function refreshJobs() {
@@ -686,6 +1340,7 @@
       state.jobs = jobs;
       showError($("#queue-error"), null);
       renderJobs();
+      checkAnalyses();
     } catch (e) {
       showError($("#queue-error"), e);
     }
@@ -695,6 +1350,12 @@
   function stepLabel(job) {
     if (job.status === "pending" || !job.step) return tr("step.waiting");
     return tr(`step.${job.step}`);
+  }
+
+  const isClipJob = (job) => Boolean(job.kind) && job.kind !== "short";
+
+  function stepCount(job) {
+    return tr("progress.count", { n: job.step_index, total: isClipJob(job) ? BOOT.clip_steps : BOOT.total_steps });
   }
 
   function renderJobs() {
@@ -720,19 +1381,23 @@
   }
 
   function updateJob(li, job) {
-    $(".job-topic", li).textContent = job.topic;
+    $(".job-topic", li).textContent = job.topic; // clip jobs: the source title, or its link until known
+    const kind = $(".job-kind", li);
+    kind.hidden = !isClipJob(job);
+    kind.textContent = isClipJob(job) ? tr(`kind.${job.kind}`) : "";
     const chip = $(".chip", li);
     chip.textContent = tr(`status.${job.status}`);
     chip.dataset.status = job.status;
     const running = job.status === "running";
     $(".job-step", li).hidden = !ACTIVE.includes(job.status);
     $(".job-label", li).textContent = stepLabel(job);
-    $(".job-count", li).textContent = running && job.step_index
-      ? tr("progress.count", { n: job.step_index, total: BOOT.total_steps }) : "";
+    $(".job-count", li).textContent = running && job.step_index ? stepCount(job) : "";
     const bar = $(".bar", li);
     bar.hidden = !running;
     $("i", bar).style.width = `${job.percent}%`;
     showError($(".job-err", li), job.error ? new Error(job.error) : null);
+    // a finished analysis has no folder: it opens its review list instead
+    $('[data-job-act="review"]', li).hidden = !(job.kind === "clip_analyze" && job.status === "done" && job.analysis_id);
     $('[data-job-act="open"]', li).hidden = !(job.status === "done" && job.output);
     $('[data-job-act="cancel"]', li).hidden = !ACTIVE.includes(job.status);
     $('[data-job-act="remove"]', li).hidden = !FINISHED.includes(job.status);
@@ -747,8 +1412,7 @@
     $("#progress-fill").style.width = `${pct}%`;
     $("#progress .bar").setAttribute("aria-valuenow", String(Math.round(pct)));
     $("#progress-step").textContent = `${stepLabel(job)}`;
-    $("#progress-count").textContent = job.step_index
-      ? tr("progress.count", { n: job.step_index, total: BOOT.total_steps }) : "";
+    $("#progress-count").textContent = job.step_index ? stepCount(job) : "";
   }
 
   function renderPreview() {
@@ -774,6 +1438,11 @@
     if (!btn) return;
     const id = btn.closest(".job").dataset.id;
     const act = btn.dataset.jobAct;
+    if (act === "review") {
+      const job = state.jobs.find((j) => j.id === id);
+      if (job) await openReview(job, true);
+      return;
+    }
     const url = {
       open: [`/api/jobs/${encodeURIComponent(id)}/open-folder`, "POST"],
       cancel: [`/api/jobs/${encodeURIComponent(id)}/cancel`, "POST"],
@@ -799,6 +1468,9 @@
     try {
       const s = await api("GET", "/api/settings");
       $$("[data-setting]", dlg).forEach((el) => { el.value = s[el.dataset.setting] || ""; });
+      $("#s-keep_sources").checked = s.keep_sources === true;
+      $("#ytdlp-status").textContent = "";
+      showError($("#ytdlp-error"), null);
       $("#s-theme").value = effectiveTheme();
       dlg.dataset.themeShown = effectiveTheme();
       $$(".show-btn", dlg).forEach((b) => setShown(b, false));
@@ -835,6 +1507,7 @@
     const dlg = $("#settings");
     const body = {};
     $$("[data-setting]", dlg).forEach((el) => { body[el.dataset.setting] = el.value; });
+    body.keep_sources = $("#s-keep_sources").checked;
     // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
     if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
@@ -844,6 +1517,7 @@
       showError($("#settings-error"), e);
       return;
     }
+    state.clip.keepSources = body.keep_sources;
     if (body.theme) {
       document.documentElement.dataset.theme = body.theme;
       renderTheme();
@@ -860,9 +1534,28 @@
     loadVoices(); // a new key may unlock voices
   }
 
+  // Installs the newest yt-dlp; it is used after a restart (the note says so in both outcomes).
+  async function updateYtdlp() {
+    const btn = $("#ytdlp-update");
+    btn.disabled = true;
+    showError($("#ytdlp-error"), null);
+    $("#ytdlp-status").textContent = tr("settings.ytdlp_running");
+    try {
+      const { version } = await api("POST", "/api/ytdlp/update", {});
+      $("#ytdlp-status").textContent = tr("settings.ytdlp_done", { version });
+    } catch (e) {
+      $("#ytdlp-status").textContent = "";
+      showError($("#ytdlp-error"), e);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   function rerenderDynamic() {
     renderMusicSelect();
     renderDerived();
+    renderClipDerived();
+    renderClipReview();
     renderReview();
     $$("#queue-list .job").forEach((li) => {
       applyI18n(li);
@@ -912,6 +1605,30 @@
       $("#write-script").focus();
     });
 
+    $(".tabs").addEventListener("click", (e) => {
+      const b = e.target.closest('[role="tab"]');
+      if (b) setTab(b.dataset.tab);
+    });
+    $(".tabs").addEventListener("keydown", onTabKey);
+
+    const clipPanel = $(".form-clip");
+    clipPanel.addEventListener("input", onClipInput);
+    clipPanel.addEventListener("change", onClipInput);
+    $("#c-file-btn").addEventListener("click", () => $("#c-file").click());
+    $("#c-file").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      e.target.value = ""; // the same file can be chosen again
+      startUpload(file);
+    });
+    $("#upload-cancel").addEventListener("click", cancelUpload);
+    $("#c-source-remove").addEventListener("click", () => { dropSource(); $("#c-url").focus(); });
+    bindDrop();
+    $("#c-url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !state.busy) onClipRun("auto"); });
+    $("#clip-find").addEventListener("click", () => onClipRun("review"));
+    $("#clip-create").addEventListener("click", () => onClipRun("auto"));
+    $("#clip-export").addEventListener("click", onExport);
+    $("#clip-discard").addEventListener("click", discardAnalysis);
+
     $("#queue-list").addEventListener("click", onJobAction);
     $("#clear-finished").addEventListener("click", async () => {
       try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($("#queue-error"), e); }
@@ -922,6 +1639,7 @@
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
     $("#quit-app").addEventListener("click", quitApp);
+    $("#ytdlp-update").addEventListener("click", updateYtdlp);
     $$("#settings [data-close]").forEach((b) => b.addEventListener("click", () => $("#settings").close()));
     $$("#settings .show-btn").forEach((b) => b.addEventListener("click", () => {
       setShown(b, b.getAttribute("aria-pressed") !== "true");
@@ -938,10 +1656,12 @@
   async function init() {
     bind();
     renderTheme();
+    setTab(remembered("tab") || "short");
     try {
       await loadStrings(BOOT.lang);
       await Promise.all([loadProfiles(), loadMusic()]);
       fillForm();
+      fillClip();
       loadVoices();
     } catch (e) {
       showError($("#top-error"), e);

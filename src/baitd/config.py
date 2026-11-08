@@ -20,6 +20,7 @@ SETTINGS_DEFAULTS: dict = {
     "pixabay_key": "", "compat_base_url": "", "compat_key": "", "output_dir": "",
     "ui_lang": "es", "theme": "dark",
     "cache_max_gb": 3,  # clip cache cap in GB (ruling R30); not in the UI, editable in settings.json
+    "keep_sources": False,  # Clipping: keep downloaded/uploaded videos and analyses after a run
 }
 
 

@@ -26,7 +26,6 @@ Sigue siendo una herramienta gratuita, abierta (MIT) y sin fines de lucro. Cada 
 - **Dos modos**, igual que en Crear short:
   - **Automático:** exporta los N mejores clips.
   - **Con revisión:** muestra los candidatos y el usuario elige cuáles exportar.
-- **Cambio de nombre:** la app completa pasa de Baitd a Baitd.
 
 ## 3. Lo que NO es (no-metas para esta versión)
 
@@ -167,7 +166,7 @@ El modo se puede cambiar por clip en la revisión.
 ### 6.9 Cambio de nombre a Baitd
 
 - El nombre cambia en todas partes: el paquete de Python, el comando (`baitd`), los lanzadores, la app de doble clic, el README, la interfaz y la licencia.
-- La carpeta de datos pasa a llamarse `Baitd`. Si al abrir la app existe la de Baitd y todavía no la de Baitd, se copian los perfiles, los ajustes y las claves **[decisión de Claude]**.
+- La carpeta de datos se llama `Baitd`.
 
 ## 7. Cómo se ve el éxito
 

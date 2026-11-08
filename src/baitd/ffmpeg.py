@@ -91,7 +91,10 @@ def run(
 
 
 def probe(path: Path) -> dict:
-    """Return duration (s), width, height, fps by parsing `ffmpeg -i` stderr."""
+    """Return duration (s), width, height, fps by parsing `ffmpeg -i` stderr.
+
+    Cover art (an `(attached pic)` stream, e.g. in an MP3) is not video: a file with only that
+    has width/height/fps None."""
     proc = subprocess.run(
         [ffmpeg_exe(), "-hide_banner", "-i", str(path)],
         capture_output=True,
@@ -107,9 +110,8 @@ def probe(path: Path) -> dict:
         raise RuntimeError("Cannot read media file %s:\n%s" % (path, "\n".join(err.splitlines()[-20:])))
     duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
     width = height = fps = None
-    v = re.search(r"Stream #\S+.*?Video:.*", err)
-    if v:
-        line = v.group(0)
+    line = next((ln for ln in re.findall(r"Stream #\S+.*?Video:.*", err) if "(attached pic)" not in ln), None)
+    if line:
         d = re.search(r"[\s,](\d{2,5})x(\d{2,5})(?=[\s,\[])", line)
         if d:
             width, height = int(d.group(1)), int(d.group(2))
