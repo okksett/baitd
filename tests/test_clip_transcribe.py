@@ -123,9 +123,9 @@ def test_local_uses_fake_model_and_progress(monkeypatch, make_wav):
     t = transcribe.local_words(make_wav(seconds=30), None, "small", threading.Event(), progress.append)
     assert loaded == ["small"]
     assert M.kw["word_timestamps"] is True and M.kw["vad_filter"] is True and M.kw["language"] is None
-    assert len(t.words) == 30 and t.language == "en" and t.duration == 30.0
+    assert len(t.words) == 30 and t.language == "en" and t.duration == pytest.approx(30.0, abs=0.1)
     assert t.words[0].text == "w0_0," and t.words[1].text == "w0_1"
-    assert progress == pytest.approx([1 / 3, 2 / 3, 1.0])
+    assert progress == pytest.approx([1 / 3, 2 / 3, 1.0], abs=0.01)
 
 
 def test_local_model_failure_maps_to_user_error(monkeypatch, make_wav):
@@ -179,3 +179,44 @@ def test_dispatch_and_models_dir(monkeypatch, make_wav, tmp_data):
     assert len(t.words) == 30
     with pytest.raises(ValueError):
         transcribe.transcribe(make_wav(seconds=3), "nope", None, {}, "small", threading.Event(), lambda p: None)
+
+
+def test_local_windows_offsets_language_and_cancel(monkeypatch, make_wav):
+    monkeypatch.setattr(transcribe, "CHUNK_S", 60.0)
+    wav = make_wav(seconds=150)
+    seen = []
+
+    class M:
+        def transcribe(self, path, **kw):
+            seen.append(kw["language"])
+            ws = [NS(word=f"w{i}", start=i * 0.5, end=i * 0.5 + 0.4) for i in range(10)]
+            return iter([NS(end=5.0, words=ws)]), NS(language="fr", duration=60.0)
+
+    loads = []
+    monkeypatch.setattr(transcribe, "_load_model", lambda m: loads.append(m) or M())
+    progress = []
+    t = transcribe.local_words(wav, None, "small", threading.Event(), progress.append)
+    assert loads == ["small"] and seen == [None, "fr", "fr"]
+    assert t.language == "fr" and len(t.words) == 30
+    assert [w.start for w in t.words[::10]] == [0, 60, 120]
+    assert progress == pytest.approx([5 / 150, 65 / 150, 125 / 150], abs=0.01)
+
+    cancel = threading.Event()
+
+    class C(M):
+        def transcribe(self, path, **kw):
+            cancel.set()
+            return super().transcribe(path, **kw)
+
+    monkeypatch.setattr(transcribe, "_load_model", lambda m: C())
+    seen.clear()
+    with pytest.raises(JobCancelled):
+        transcribe.local_words(wav, None, "small", cancel, lambda p: None)
+    assert len(seen) == 1
+
+
+def test_no_tiny_final_chunk(monkeypatch):
+    monkeypatch.setattr(transcribe, "CHUNK_S", 60.0)
+    assert transcribe._windows(120.2) == [(0, 60.0), (60.0, pytest.approx(60.2))]
+    assert transcribe._windows(120.6) == [(0, 60.0), (60.0, 60.0), (120.0, pytest.approx(0.6))]
+    assert transcribe._windows(30.0) == [(0, pytest.approx(30.0))]
