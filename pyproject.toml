@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "baitd"
 version = "0.2.0"
-description = "Local app that turns a topic into a short video"
+description = "Local app that turns a topic into a short video and cuts clips from long videos"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
@@ -16,10 +16,10 @@ dependencies = [
     "platformdirs",
     "fonttools",
     "waitress>=3,<4",
-    "yt-dlp",
-    "faster-whisper",
-    "opencv-python-headless",
-    "numpy",
+    "yt-dlp>=2026.10,<2027",
+    "faster-whisper>=1.2,<2",
+    "opencv-python-headless>=5,<6",
+    "numpy>=2,<3",
 ]
 
 [project.optional-dependencies]

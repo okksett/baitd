@@ -134,7 +134,7 @@ def _selftest() -> int:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="baitd", description="Baitd: de un tema a un video corto.")
+    parser = argparse.ArgumentParser(prog="baitd", description="Baitd: de un tema a un video corto, y clips de un video largo.")
     parser.add_argument("--no-browser", action="store_true", help="no abrir el navegador, solo mostrar la URL")
     parser.add_argument("--port", type=int, default=None, help="puerto (por defecto, uno libre)")
     parser.add_argument("--selftest", action="store_true",
