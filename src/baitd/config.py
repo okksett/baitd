@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import unicodedata
@@ -29,10 +30,44 @@ _LOCK = threading.RLock()
 
 
 def data_dir() -> Path:
-    env = os.environ.get("BAITD_DATA")
+    # BAITD_DATA wins; BAITD_DATA is the pre-rename name, still honoured for old setups.
+    env = os.environ.get("BAITD_DATA") or os.environ.get("BAITD_DATA")
     d = Path(env) if env else Path(user_data_dir("Baitd"))
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def legacy_data_dir() -> Path:
+    """Where the app (then called Baitd) kept its data before the rename."""
+    return Path(user_data_dir("Baitd"))
+
+
+# What carries over from the old folder: settings, profiles and the user's own music. The queue,
+# clip cache, outputs and log stay behind.
+_MIGRATED = ("settings.json", "profiles.json", "musica")
+
+
+def migrate_legacy_data(old: Path, new: Path) -> bool:
+    """Copy settings, profiles and user music from `old` to `new`, once.
+
+    Only when `old` exists and `new` does not; returns whether anything was copied."""
+    if not old.is_dir() or new.exists():
+        return False
+    copied = False
+    for name in _MIGRATED:
+        src = old / name
+        try:
+            if src.is_dir():
+                shutil.copytree(src, new / name)
+            elif src.is_file():
+                new.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, new / name)
+            else:
+                continue
+        except OSError:  # a half-readable old folder must not stop the app from starting
+            continue
+        copied = True
+    return copied
 
 
 def _write_json(path: Path, obj) -> None:

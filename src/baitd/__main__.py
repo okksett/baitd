@@ -4,12 +4,15 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import os
 import signal
 import socket
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
+from platformdirs import user_data_dir
 from waitress import create_server
 
 from . import config, instance
@@ -140,6 +143,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.selftest:
         raise SystemExit(_selftest())
+
+    if not (os.environ.get("BAITD_DATA") or os.environ.get("BAITD_DATA")):
+        config.migrate_legacy_data(config.legacy_data_dir(), Path(user_data_dir("Baitd")))
 
     # one instance per data folder: a second worker would rerun the first one's running job
     lock = instance.InstanceLock(config.data_dir() / instance.LOCK_NAME)

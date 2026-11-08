@@ -114,3 +114,36 @@ def test_bad_profile_entry_skipped_good_kept(tmp_data):
 
 def test_slugify_all_emoji_fallback():
     assert slugify("🔥🔥") == "video"
+
+
+def test_migrate_copies_profiles_settings_music_once(tmp_path):
+    from baitd import config
+    old, new = tmp_path / "Baitd", tmp_path / "Baitd"
+    (old / "musica").mkdir(parents=True)
+    (old / "cache").mkdir()
+    (old / "settings.json").write_text('{"openai_key": "sk-x"}', encoding="utf-8")
+    (old / "profiles.json").write_text("[]", encoding="utf-8")
+    (old / "musica" / "a.mp3").write_bytes(b"x")
+    (old / "queue.json").write_text("[]", encoding="utf-8")
+    (old / "cache" / "c.bin").write_bytes(b"x")
+    assert config.migrate_legacy_data(old, new) is True
+    assert (new / "settings.json").read_text(encoding="utf-8") == '{"openai_key": "sk-x"}'
+    assert (new / "profiles.json").exists()
+    assert (new / "musica" / "a.mp3").exists()
+    assert not (new / "queue.json").exists() and not (new / "cache").exists()
+    assert config.migrate_legacy_data(old, new) is False  # new already exists -> no-op
+
+
+def test_migrate_noop_without_old(tmp_path):
+    from baitd import config
+    assert config.migrate_legacy_data(tmp_path / "Baitd", tmp_path / "Baitd") is False
+    assert not (tmp_path / "Baitd").exists()
+
+
+def test_data_dir_prefers_baitd_then_legacy_env(tmp_path, monkeypatch):
+    from baitd import config
+    monkeypatch.delenv("BAITD_DATA", raising=False)
+    monkeypatch.setenv("BAITD_DATA", str(tmp_path / "legacy"))
+    assert config.data_dir() == tmp_path / "legacy"
+    monkeypatch.setenv("BAITD_DATA", str(tmp_path / "new"))
+    assert config.data_dir() == tmp_path / "new"

@@ -1,5 +1,7 @@
 # Baitd
 
+> Antes se llamaba Baitd. Al abrir Baitd por primera vez se copian tus ajustes, perfiles y música propia desde la carpeta de datos antigua.
+
 **Español** · [English](#english)
 
 ## Qué es
@@ -70,7 +72,7 @@ Ajustes, claves, perfiles, cola, caché de clips, música propia y videos viven 
 - **macOS:** `~/Library/Application Support/Baitd`
 - **Linux:** `~/.local/share/Baitd`
 
-Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` y `cache/`. El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA`.
+Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` y `cache/`. El registro de errores es `baitd.log` en esa misma carpeta. Puedes cambiarla con la variable de entorno `BAITD_DATA` (`BAITD_DATA` sigue funcionando).
 
 **Caché de clips:** los clips descargados se guardan en `cache/` para no bajarlos dos veces. La caché tiene un límite de **3 GB**: al empezar cada vídeo se borran los clips usados hace más tiempo. Para cambiar el límite, edita `"cache_max_gb"` en `settings.json` (por ejemplo `"cache_max_gb": 5`) con la app cerrada. Puedes borrar la carpeta `cache/` cuando quieras.
 
@@ -79,6 +81,8 @@ Dentro: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`,
 <a id="english"></a>
 
 # Baitd (English)
+
+> Formerly called Baitd. On first launch your settings, profiles and own music are copied over from the old data folder.
 
 ## What it is
 
@@ -148,6 +152,6 @@ Settings, keys, profiles, queue, clip cache, your own music and videos are store
 - **macOS:** `~/Library/Application Support/Baitd`
 - **Linux:** `~/.local/share/Baitd`
 
-Inside: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` and `cache/`. Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable.
+Inside: `settings.json`, `profiles.json`, `queue.json`, `baitd.log`, `salidas/`, `musica/` and `cache/`. Errors are logged to `baitd.log` in that folder. Override the location with the `BAITD_DATA` environment variable (`BAITD_DATA` still works).
 
 **Clip cache:** downloaded clips are kept in `cache/` so they are not fetched twice. The cache is capped at **3 GB**: when each video starts, the least recently used clips are deleted. To change the cap, edit `"cache_max_gb"` in `settings.json` (e.g. `"cache_max_gb": 5`) while the app is closed. You can delete the `cache/` folder at any time.
