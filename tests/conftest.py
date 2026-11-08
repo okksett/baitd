@@ -66,3 +66,104 @@ def make_ass(voice_6s):
                            width, height, path, captions.FONTS_DIR)
         return path
     return make
+
+
+# ---- clipping fixtures: small generated media and a fake yt-dlp, all offline ----
+import itertools
+import shutil
+import types
+
+_SPEECH = [("esto", 0.5, 0.9), ("es", 1.0, 1.3), ("una", 1.4, 1.7), ("prueba", 1.8, 2.4),
+           ("de", 3.4, 3.7), ("habla", 3.8, 4.3), ("con", 4.4, 4.7), ("pausas", 4.8, 5.4)]  # gap 2.4 -> 3.4
+
+
+@pytest.fixture
+def make_mp4(tmp_path):
+    n = itertools.count()
+
+    def make(seconds=10, w=1920, h=1080, fps=30) -> Path:
+        out = tmp_path / "media" / f"v{next(n)}.mp4"
+        out.parent.mkdir(exist_ok=True)
+        _ff("-f", "lavfi", "-i", f"testsrc2=s={w}x{h}:r={fps}:d={seconds}",
+            "-f", "lavfi", "-i", f"sine=f=440:d={seconds}", "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", out)
+        return out
+    return make
+
+
+@pytest.fixture
+def make_wav(tmp_path):
+    n = itertools.count()
+
+    def make(seconds=10) -> Path:
+        out = tmp_path / "media" / f"a{next(n)}.wav"
+        out.parent.mkdir(exist_ok=True)
+        _ff("-f", "lavfi", "-i", f"sine=f=440:d={seconds}", "-ar", "16000", "-ac", "1", out)
+        return out
+    return make
+
+
+@pytest.fixture
+def make_mp4_with_speech(tmp_path):
+    """(path, words): a tone audible only during each word, silent between them; absolute seconds."""
+    out = tmp_path / "media" / "speech.mp4"
+    out.parent.mkdir(exist_ok=True)
+    gate = "+".join(f"between(t,{s},{e})" for _, s, e in _SPEECH)
+    _ff("-f", "lavfi", "-i", "testsrc2=s=320x180:r=15:d=6",
+        "-f", "lavfi", "-i", f"sine=f=300:r=16000:d=6,volume='gt({gate},0)':eval=frame",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", out)
+    return out, [Word(t, s, e) for t, s, e in _SPEECH]
+
+
+class FakeYtdlp:
+    """Stands in for the yt_dlp module. download() writes a small real mp4 to the outtmpl path and
+    calls the progress hooks, wrapping hook errors in DownloadError like yt-dlp does."""
+
+    def __init__(self, make_mp4):
+        from yt_dlp.utils import DownloadError, YoutubeDLError
+        self.utils = types.SimpleNamespace(DownloadError=DownloadError, YoutubeDLError=YoutubeDLError)
+        self.info = {"id": "x", "title": "Video", "uploader": "Canal", "duration": 60, "is_live": False}
+        self.error: Exception | None = None  # raised by download()
+        self.in_download = None  # callable run between progress hooks
+        self.opts: dict = {}
+        fake = self
+
+        class YoutubeDL:
+            def __init__(self, opts):
+                fake.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download=True):
+                return dict(fake.info)
+
+            def download(self, urls):
+                out = Path(fake.opts["outtmpl"].replace("%(ext)s", "mp4"))
+                out.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    for frac in (0.25, 0.5):
+                        if fake.in_download:
+                            fake.in_download()
+                        for hook in fake.opts["progress_hooks"]:
+                            hook({"status": "downloading", "downloaded_bytes": int(frac * 100), "total_bytes": 100})
+                except Exception as e:
+                    raise DownloadError(str(e)) from e
+                if fake.error:
+                    raise fake.error
+                shutil.copy(make_mp4(seconds=2, w=320, h=180, fps=15), out)
+                for hook in fake.opts["progress_hooks"]:
+                    hook({"status": "finished"})
+
+        self.YoutubeDL = YoutubeDL
+
+
+@pytest.fixture
+def fake_ytdlp(monkeypatch, make_mp4):
+    from baitd.clip import ytdlp_loader
+    fake = FakeYtdlp(make_mp4)
+    monkeypatch.setattr(ytdlp_loader, "import_ytdlp", lambda: fake)
+    return fake

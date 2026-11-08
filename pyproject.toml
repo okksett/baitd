@@ -16,6 +16,7 @@ dependencies = [
     "platformdirs",
     "fonttools",
     "waitress>=3,<4",
+    "yt-dlp",
 ]
 
 [project.optional-dependencies]
