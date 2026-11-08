@@ -58,11 +58,25 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 
 > **Aviso sobre edge-tts:** usa el servicio de voces de Microsoft Edge, que **no es oficial** y podría dejar de funcionar en cualquier momento. Si falla, cambia de proveedor de voz (OpenAI, ElevenLabs) en la sección **Voz** del perfil; sus claves se pegan en **Ajustes**.
 
+## Clipping: sacar clips de un video largo
+
+La pestaña **Clipping** convierte un video largo (podcast, entrevista, stream) en varios clips verticales. Hay dos pasos: **Buscar momentos** (descarga, transcribe y propone candidatos) y **Crear clips** (recorta, encuadra y subtitula los que elijas).
+
+- **Enlaces y archivos:** pega un enlace (YouTube y cientos de sitios, con yt-dlp incluido) o sube un archivo desde el navegador; hasta 4 horas de video por fuente. Si YouTube rompe la descarga, la app avisa y puedes subir el archivo.
+- **Transcripción:** con la **API de OpenAI** (whisper-1, de pago, usa la clave de Ajustes) o **local** con faster-whisper (gratis, sin clave, más lenta). Tiempos objetivo en un equipo de gama media, para un podcast de 1 hora con 5 clips y sin contar la descarga: con API, **15 minutos o menos**; totalmente gratis, **45 minutos o menos**.
+- **Primera vez en local:** el modelo de Whisper ("small", unos **250 MB**) no viene dentro de la app; se descarga una sola vez al usar la transcripción local.
+- **Encuadre vertical** (se cambia por clip en la revisión): **Cara** (por defecto, sigue a quien habla), **Centro** (recorte fijo al centro, útil para pantallas y juegos) y **Completo** (el video entero con fondo difuminado, sin ampliar).
+- **Dónde se guarda:** los originales en `fuentes/` y las transcripciones y candidatos en `analisis/`, dentro de la carpeta de datos; los clips terminados van a `salidas/`. Los originales se borran al exportar todos sus clips, salvo que marques "Guardar videos originales" en Ajustes. No cuentan para el tope de 3 GB de la caché.
+- **Actualizar yt-dlp:** si una descarga deja de funcionar, usa el botón **Actualizar yt-dlp** en **Ajustes** y reinicia Baitd.
+
+> **Derechos:** si usas videos de otros canales, respeta sus derechos y las reglas de cada plataforma.
+
 ## Licencias de lo incluido
 
 - **Programa:** MIT (ver `LICENSE`).
 - **Música:** pistas de FreePD, dominio público (CC0), recuperadas de Internet Archive. Detalle en `src/baitd/assets/music/CREDITS.md`.
 - **Fuentes:** licencia OFL. Detalle en `src/baitd/assets/fonts/LICENSES`.
+- **Detección de caras:** modelo YuNet (licencia Apache 2.0). Detalle en `src/baitd/assets/models/LICENSE-yunet.txt`.
 
 ## Dónde se guardan tus datos
 
@@ -138,11 +152,25 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 
 > **edge-tts warning:** it uses Microsoft Edge's voice service, which is **unofficial** and may stop working at any time. If it fails, switch to another voice provider (OpenAI, ElevenLabs) in the profile's **Voice** ("Voz") section; their keys go in **Settings**.
 
+## Clipping: cut clips from a long video
+
+The **Clipping** tab turns a long video (podcast, interview, stream) into several vertical clips. It works in two steps: **Find moments** (download, transcribe and suggest candidates) and **Create clips** (cut, frame and caption the ones you pick).
+
+- **Links and uploads:** paste a link (YouTube and hundreds of sites, yt-dlp is bundled) or upload a file from the browser; up to 4 hours of video per source. If YouTube breaks the download, the app tells you and you can upload the file instead.
+- **Transcription:** through the **OpenAI API** (whisper-1, paid, uses the key from Settings) or **locally** with faster-whisper (free, no key, slower). Target times on a mid-range machine, for a 1-hour podcast with 5 clips and not counting the download: with the API, **15 minutes or less**; fully free, **45 minutes or less**.
+- **First local run:** the Whisper model ("small", about **250 MB**) is not bundled; it is downloaded once when you first use local transcription.
+- **Vertical framing** (changeable per clip during review): **Face** (default, follows the speaker), **Center** (fixed centre crop, good for screens and games) and **Full** (the whole video over a blurred background, no zoom).
+- **Where things live:** sources in `fuentes/` and transcripts and candidates in `analisis/`, inside the data folder; finished clips go to `salidas/`. Sources are deleted once all their clips are exported unless you tick "Keep original videos" in Settings. They do not count toward the 3 GB cache cap.
+- **Updating yt-dlp:** if downloads stop working, use the **Update yt-dlp** button in **Settings (Ajustes)** and restart Baitd.
+
+> **Rights:** if you use other channels' videos, respect their rights and each platform's rules.
+
 ## Bundled licences
 
 - **App:** MIT (see `LICENSE`).
 - **Music:** FreePD tracks, public domain (CC0), retrieved via the Internet Archive. See `src/baitd/assets/music/CREDITS.md`.
 - **Fonts:** OFL. See `src/baitd/assets/fonts/LICENSES`.
+- **Face detection:** YuNet model (Apache 2.0). See `src/baitd/assets/models/LICENSE-yunet.txt`.
 
 ## Where your data lives
 

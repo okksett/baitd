@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 PKG = ROOT / "src" / "baitd"
@@ -20,13 +20,21 @@ datas = [
 datas += collect_data_files("imageio_ffmpeg")                # binaries/ffmpeg-* (keeps its exec bit)
 datas += collect_data_files("certifi")                       # cacert.pem for HTTPS (requests, edge-tts)
 datas += collect_data_files("edge_tts")
+datas += collect_data_files("faster_whisper")                # VAD asset (silero), no Whisper model
+# The YuNet face model + its licence ride along inside baitd/assets (copied above); no Whisper model is bundled.
+
+# Clipping: yt-dlp extractors are imported dynamically, ctranslate2 ships native libs.
+hiddenimports = collect_submodules("baitd") + collect_submodules("yt_dlp") + collect_submodules("faster_whisper")
+binaries = collect_dynamic_libs("ctranslate2")
 
 a = Analysis(
     [str(ROOT / "packaging" / "launch.py")],
     pathex=[str(ROOT / "src")],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=collect_submodules("baitd"),
-    excludes=["tkinter", "pytest"],
+    hiddenimports=hiddenimports,
+    excludes=["tkinter", "pytest", "torch", "torchvision", "torchaudio",
+              "PyQt5", "PyQt6", "PySide2", "PySide6"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(
