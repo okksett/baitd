@@ -13,9 +13,9 @@ from baitd.ffmpeg import JobCancelled, ffmpeg_exe
 from baitd.models import UserError, Word
 
 
-def make_transcript(n_sentences=40, words_per=5, word_s=0.5, gap=0.1, punct=True):
+def make_transcript(n_sentences=40, words_per=5, word_s=0.5, gap=0.1, punct=True, offset=0.0):
     """Sentence k spans [k*S, k*S + 2.5) where S = words_per*word_s + gap; absolute seconds."""
-    words, t = [], 0.0
+    words, t = [], offset
     for k in range(n_sentences):
         for j in range(words_per):
             last = j == words_per - 1
@@ -243,3 +243,20 @@ def test_generate_script_still_uses_complete(monkeypatch):
     monkeypatch.setattr(llm, "complete", lambda prompt, profile, settings: prompts.append(prompt) or valid)
     script = llm.generate_script("tema", default_profile(), {})
     assert script.title == "T" and len(prompts) == 1 and "tema" in prompts[0]
+
+
+@pytest.mark.parametrize("offset", [0.0, 3600.0 + 1.3])
+def test_prompt_marks_round_trip(offset):
+    """Echoing the prompt's own marks (first line, last line included) returns exactly those sentences."""
+    t = make_transcript(n_sentences=40, offset=offset)
+    sents = moments._sentences(t.words)
+    opts = ClipProfile(min_s=5, max_s=60)
+    lines = moments._window_lines(sents, t.words, 0.0, 1e9).splitlines()
+    mark = lambda ln: ln[1:ln.index("]")]
+    for k, j in [(2, 6), (3, 8), (10, 14), (21, 27), (30, 34)]:
+        raw = reply({"start": mark(lines[k]), "end": mark(lines[j]), "kind": "gracioso", "score": 70,
+                     "title": "t", "description": "d", "hashtags": []})
+        [m] = moments.parse_moments(raw, t, opts)
+        assert m.start == pytest.approx(sents[k][0]) and m.end == pytest.approx(sents[j][1]), (k, j)
+    if offset:
+        assert lines[0].startswith("[1:00:01]")

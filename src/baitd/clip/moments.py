@@ -105,8 +105,8 @@ def build_prompt(lines: str, opts: ClipProfile, language: str) -> str:
         "- the clip is understandable without any context from the rest of the video;",
         "- it ends on the payoff (the punchline or the conclusion);",
         f"- its length fits {opts.min_s}-{opts.max_s} seconds.",
-        "Start and end times must be taken from the [mm:ss] marks of the lines; a clip starts at the start "
-        "of a line and ends at the end of a line.",
+        "start is the mark of the FIRST line included in the clip; end is the mark of the LAST line "
+        "included in the clip (that line's own mark, not the time after it). Copy the marks exactly.",
         f"kind is one of: {', '.join(kinds)}.",
         f"Write title (at most {TITLE_WORDS} words), description and hashtags in this language: {language}.",
         'Reply with JSON only, no commentary: {"moments":[{"start":"mm:ss","end":"mm:ss","kind":"...",'
@@ -160,6 +160,24 @@ def snap_to_sentences(start: float, end: float, words: list[Word], min_s: float,
 
 # ---- parsing ----
 
+def _from_marks(start: float, end: float, words: list[Word]) -> tuple[float, float]:
+    """The prompt's marks are whole seconds (floored), so a whole-second start/end names the sentence
+    starting in [mark, mark+1): start moves to that sentence's start, end to that sentence's end.
+    Non-integral times (mid-sentence) are left to snap_to_sentences."""
+    sents = _sentences(words)
+    if start == int(start):
+        for s0, _e, _i, _j in sents:
+            if start <= s0 < start + 1:
+                start = s0
+                break
+    if end == int(end):
+        for s0, e0, _i, _j in sents:
+            if end <= s0 < end + 1:
+                end = e0
+                break
+    return start, end
+
+
 def parse_moments(raw: str, t: Transcript, opts: ClipProfile) -> list[Moment]:
     text = re.sub(r"```(?:json)?", "", raw, flags=re.IGNORECASE)
     a, b = text.find("{"), text.rfind("}")
@@ -189,6 +207,7 @@ def parse_moments(raw: str, t: Transcript, opts: ClipProfile) -> list[Moment]:
         kind = kind.strip().lower() if isinstance(kind, str) else ""
         if kind not in allowed:
             continue
+        start, end = _from_marks(start, end, t.words)
         snapped = snap_to_sentences(start, end, t.words, opts.min_s, opts.max_s)
         if snapped is None:
             continue
