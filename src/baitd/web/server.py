@@ -307,7 +307,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         def t(key: str) -> str:
             return strings.get(key) or i18n["es"].get(key) or key
 
-        boot = {"lang": lang, "total_steps": len(STEPS),
+        boot = {"lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
                 "presets": {k: v.to_dict() for k, v in captions.PRESETS.items()}}
         return render_template("index.html", t=t, lang=lang, theme=_stored_theme(), boot=boot)
 

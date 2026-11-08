@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from flask.testing import FlaskClient
+from markupsafe import escape
 
 from baitd import config
 from baitd.jobqueue import JobQueue
@@ -537,6 +538,41 @@ def test_index_uses_saved_language_and_theme(client):
 
 def test_index_theme_unset_on_first_run(client):
     assert 'data-theme=""' in client.get("/").text  # CSS follows prefers-color-scheme
+
+
+def test_index_has_clipping_tab_and_drop_zone(client):
+    html = client.get("/").text
+    es = json.loads(ES.read_text("utf-8"))
+    # two keyboard-usable tabs next to the logo, each with its own left panel
+    assert 'role="tablist"' in html
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-short"[^>]*aria-selected="true"', html)
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-clip"[^>]*aria-selected="false"', html)
+    assert 'id="panel-short" role="tabpanel"' in html and 'id="panel-clip" role="tabpanel"' in html
+    assert es["tab.short"] in html and es["tab.clip"] in html
+    # the drop zone: link input, file button, drag-and-drop area and the upload progress/cancel
+    assert 'id="drop"' in html and es["clip.drop"] in html
+    assert 'id="c-url"' in html and 'id="c-file"' in html and 'id="c-file-btn"' in html
+    assert 'id="upload-cancel"' in html and 'id="upload-pct"' in html
+    for field in ("c-count", "c-min", "c-max", "c-kind", "c-aspect", "c-fps", "c-transcriber", "c-model",
+                  "c-language", "c-framing", "c-preset", "c-hook", "c-credit", "c-music"):
+        assert f'id="{field}"' in html, field
+    assert 'id="clip-find"' in html and 'id="clip-create"' in html
+    assert 'id="clip-review"' in html and 'id="clip-export"' in html and 'id="clip-discard"' in html
+    assert 'id="tpl-moment"' in html
+    # settings dialog: keep sources and the yt-dlp updater
+    assert 'id="s-keep_sources"' in html and 'id="ytdlp-update"' in html
+    js = JS.read_text("utf-8")
+    assert "new XMLHttpRequest()" in js and ".abort()" in js and '"X-Baitd-Upload", "1"' in js
+    assert "/api/clips" in js and "/export" in js and "/api/ytdlp/update" in js
+
+
+def test_index_has_rights_notice_key(client):
+    html = client.get("/").text
+    es = json.loads(ES.read_text("utf-8"))
+    assert 'data-i18n="clip.rights"' in html and es["clip.rights"] in html
+    client.post("/api/settings", json={"ui_lang": "en"})
+    en = json.loads(EN.read_text("utf-8"))
+    assert str(escape(en["clip.rights"])) in client.get("/").text  # "channels' videos" is HTML-escaped
 
 
 # ---- shutdown (macOS .app has no console) ----
