@@ -268,6 +268,7 @@
   "kind.clip_export": "Clips",
   "step.source": "Preparando el video…",
   "step.transcribe": "Transcribiendo…",
+  "step.model": "Descargando modelo de transcripción…",
   "step.moments": "Buscando momentos…",
   "step.framing": "Encuadrando…",
   "settings.clipping": "Clipping",

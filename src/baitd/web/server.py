@@ -526,8 +526,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     @app.put("/api/uploads/<upload_id>")
     def put_upload_chunk(upload_id: str):
         """Append one chunk; `offset` must equal the bytes received so far (else 409 with that number)."""
-        if not clip_sources.valid_id(upload_id):
-            abort(404)
+        pending_upload_or_404(upload_id)  # no lock is made for an id that is not an upload
         with upload_lock(upload_id):
             path, size, _name = pending_upload_or_404(upload_id)
             received = path.stat().st_size
@@ -565,8 +564,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     def finish_upload(upload_id: str):
         """All bytes are in: probe and register the source (same answer as the old one-shot upload)."""
         _body()
-        if not clip_sources.valid_id(upload_id):
-            abort(404)
+        pending_upload_or_404(upload_id)  # no lock is made for an id that is not an upload
         with upload_lock(upload_id):
             path, size, _name = pending_upload_or_404(upload_id)
             received = path.stat().st_size
@@ -580,8 +578,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     def abort_upload(upload_id: str):
         """Cancel an unfinished upload: its partial file goes. A finished one is a source (DELETE /api/sources)."""
         _body()
-        if not clip_sources.valid_id(upload_id):
-            abort(404)
+        pending_upload_or_404(upload_id)  # no lock is made for an id that is not an upload
         with upload_lock(upload_id):  # waits for a chunk still being written
             pending_upload_or_404(upload_id)
             clip_sources.delete_source(upload_id)

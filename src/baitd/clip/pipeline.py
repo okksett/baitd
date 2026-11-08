@@ -24,12 +24,14 @@ from .models import FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
 from .moments import find_moments
 from .render import clip_fps, render_clip
 
-__all__ = ["CLIP_STEPS", "CLIP_JOB_KINDS", "ClipProviders", "analyses_dir", "run_clip_auto", "run_clip_analyze",
-           "run_clip_export", "load_analysis", "delete_analysis"]
+__all__ = ["CLIP_STEPS", "CLIP_STEP_LABELS", "MODEL_STEP", "CLIP_JOB_KINDS", "ClipProviders", "analyses_dir",
+           "run_clip_auto", "run_clip_analyze", "run_clip_export", "load_analysis", "delete_analysis"]
 
 log = logging.getLogger(__name__)
 
 CLIP_STEPS = ("source", "transcribe", "moments", "framing", "render")
+MODEL_STEP = "model"  # step 2's text while the local whisper model loads (downloaded on first use)
+CLIP_STEP_LABELS = (*CLIP_STEPS, MODEL_STEP)  # every step name a clip job can show (step.<name> in i18n)
 CLIP_JOB_KINDS = ("clip_auto", "clip_analyze", "clip_export")
 _TOTAL = len(CLIP_STEPS)
 _DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
@@ -42,7 +44,8 @@ _MAX_EXPORT = 20  # same cap as the clip count of a run
 class ClipProviders:
     """Replaceable network- or model-facing steps; None means the real implementation."""
     fetch_url: Callable | None = None     # (url, cancel, on_progress) -> SourceInfo
-    transcribe: Callable | None = None    # (audio, provider, language, settings, model, cancel, on_progress) -> Transcript
+    transcribe: Callable | None = None    # (audio, provider, language, settings, model, cancel, on_progress,
+                                          #  on_model_load=None) -> Transcript
     complete: Callable | None = None      # (prompt) -> str
     detect_faces: Callable | None = None  # (src, start, end, fps, cancel) -> [(t, [faces])]
 
@@ -189,6 +192,10 @@ class _Steps:
     def end(self, i: int) -> None:
         self._progress(CLIP_STEPS[i - 1], i, _TOTAL, 100.0)
 
+    def show(self, i: int, label: str) -> None:
+        """Step i under another text (e.g. MODEL_STEP); the next frac/end shows the step's own text again."""
+        self._progress(label, i, _TOTAL, 0.0)
+
 
 def _payload(item: dict) -> dict:
     p = item.get("payload")
@@ -233,7 +240,8 @@ def _understand(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: 
         language = None if opts.language == "auto" else opts.language
         transcript = (providers.transcribe or transcribe.transcribe)(
             audio, opts.transcriber, language, settings, opts.whisper_model, cancel,
-            lambda f: steps.frac(2, f))
+            lambda f: steps.frac(2, f),
+            on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0))
         steps.end(2)
 
         steps.begin(3)

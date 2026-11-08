@@ -220,3 +220,38 @@ def test_no_tiny_final_chunk(monkeypatch):
     assert transcribe._windows(120.2) == [(0, 60.0), (60.0, pytest.approx(60.2))]
     assert transcribe._windows(120.6) == [(0, 60.0), (60.0, 60.0), (120.0, pytest.approx(0.6))]
     assert transcribe._windows(30.0) == [(0, pytest.approx(30.0))]
+
+
+def test_local_model_load_is_announced_and_cancellable(monkeypatch, make_wav):
+    wav = make_wav(seconds=3)
+    events = []
+    monkeypatch.setattr(transcribe, "_load_model", lambda m: events.append("load") or _fake_model()())
+    t = transcribe.local_words(wav, None, "small", threading.Event(), lambda p: None,
+                               on_model_load=lambda loading: events.append(loading))
+    assert events == [True, "load", False] and len(t.words) == 30  # the step shows "downloading" around the load
+
+    cancel = threading.Event()
+    cancel.set()
+    events.clear()
+    with pytest.raises(JobCancelled):  # cancelled before the (possibly long) download starts
+        transcribe.local_words(wav, None, "small", cancel, lambda p: None, on_model_load=events.append)
+    assert "load" not in events
+
+    cancel2 = threading.Event()
+    used = []
+
+    class M:
+        def transcribe(self, path, **kw):
+            used.append(path)
+            return iter([]), NS(language="en", duration=3.0)
+
+    monkeypatch.setattr(transcribe, "_load_model", lambda m: cancel2.set() or M())  # cancelled during the load
+    with pytest.raises(JobCancelled):
+        transcribe.local_words(wav, None, "small", cancel2, lambda p: None)
+    assert used == []
+    # the dispatcher passes the hook through
+    monkeypatch.setattr(transcribe, "_load_model", lambda m: _fake_model()())
+    events.clear()
+    transcribe.transcribe(wav, "local", None, {}, "small", threading.Event(), lambda p: None,
+                          on_model_load=events.append)
+    assert events == [True, False]

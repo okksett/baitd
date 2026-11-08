@@ -125,7 +125,7 @@ def _clip_providers(workdir: Path) -> clip_pipeline.ClipProviders:
 
     return clip_pipeline.ClipProviders(
         fetch_url=fetch_url, complete=complete, detect_faces=lambda src, start, end, fps, cancel: [],
-        transcribe=lambda audio, provider, language, settings, model, cancel, on_progress:
+        transcribe=lambda audio, provider, language, settings, model, cancel, on_progress, on_model_load=None:
             Transcript("es", words, float(CLIP_SOURCE_SECONDS)))
 
 

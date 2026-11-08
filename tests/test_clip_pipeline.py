@@ -43,8 +43,11 @@ def providers(make_mp4):
         info.channel = "Canal"
         return info
 
-    def transcribe(audio, provider, language, settings, model, cancel, on_progress):
+    def transcribe(audio, provider, language, settings, model, cancel, on_progress, on_model_load=None):
         assert audio.is_file()
+        if seen.get("model_load"):  # a local model that has to be downloaded first
+            on_model_load(True)
+            on_model_load(False)
         on_progress(1.0)
         return Transcript("es", _words(), float(SECONDS))
 
@@ -90,6 +93,17 @@ def test_auto_end_to_end_offline(tmp_data, tmp_path, providers):
     assert all(c[2] == 5 and c[1] == pipeline.CLIP_STEPS.index(c[0]) + 1 for c in calls)
     assert providers.seen["faces"] == 2
     assert not list(sources.sources_dir().iterdir())  # the source goes after a successful run
+
+
+def test_model_download_shows_its_own_step_text(tmp_data, tmp_path, providers):
+    providers.seen["model_load"] = True
+    calls = []
+    pipeline.run_clip_analyze(_item("clip_analyze"), _settings(tmp_path), threading.Event(),
+                              lambda *a: calls.append(a), providers)
+    labels = [c[0] for c in calls if c[1] == 2]
+    assert labels[:3] == ["transcribe", pipeline.MODEL_STEP, "transcribe"]  # back to "transcribing" after the load
+    assert all(c[1:3] == (2, 5) for c in calls if c[0] == pipeline.MODEL_STEP)
+    assert pipeline.MODEL_STEP in pipeline.CLIP_STEP_LABELS and pipeline.MODEL_STEP not in pipeline.CLIP_STEPS
 
 
 def test_analyze_then_export_with_edited_bounds(tmp_data, tmp_path, providers):

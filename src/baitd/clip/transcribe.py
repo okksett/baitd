@@ -54,11 +54,12 @@ def _finish(words: list[Word], language: str, duration: float) -> Transcript:
 
 
 def transcribe(audio: Path, provider: str, language: str | None, settings: dict, model: str,
-               cancel: threading.Event, on_progress: Callable[[float], None]) -> Transcript:
+               cancel: threading.Event, on_progress: Callable[[float], None],
+               on_model_load: Callable[[bool], None] | None = None) -> Transcript:
     if provider == "openai":
         return openai_words(audio, language, settings, cancel, on_progress)
     if provider == "local":
-        return local_words(audio, language, model, cancel, on_progress)
+        return local_words(audio, language, model, cancel, on_progress, on_model_load=on_model_load)
     raise ValueError(f"unknown transcriber: {provider}")
 
 
@@ -120,12 +121,21 @@ def _load_model(model: str):
 
 
 def local_words(audio: Path, language: str | None, model: str, cancel: threading.Event,
-                on_progress: Callable[[float], None]) -> Transcript:
+                on_progress: Callable[[float], None],
+                on_model_load: Callable[[bool], None] | None = None) -> Transcript:
+    """`on_model_load(True)` before the model loads (downloaded into modelos/ on first use, which can take
+    minutes and cannot be interrupted), `on_model_load(False)` once it is ready."""
+    _check(cancel)
+    if on_model_load is not None:
+        on_model_load(True)
     try:
         wm = _load_model(model)
     except Exception as e:
         raise UserError("No se pudo descargar el modelo de transcripción",
                         "Revisa tu conexión e inténtalo de nuevo") from e
+    _check(cancel)
+    if on_model_load is not None:
+        on_model_load(False)
     duration = float(ffmpeg.probe(audio)["duration"])
     words: list[Word] = []
     lang = language
