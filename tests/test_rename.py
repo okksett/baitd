@@ -3,7 +3,7 @@ import pathlib
 import re
 import subprocess
 
-OLD = "short" + "smith"  # spelled in two parts so this file does not match itself
+OLD = bytes([115, 104, 111, 114, 116, 115, 109, 105, 116, 104]).decode()  # the previous name, encoded so this file does not contain it
 
 
 def test_package_is_baitd():
