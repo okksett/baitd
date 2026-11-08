@@ -143,6 +143,22 @@ def test_filters_render_exact_size(make_mp4, tmp_path):
     assert "unsharp" not in crop_filter(plans["completo"], 1080, 1920)
 
 
+def test_completo_foreground_fits_inside_the_frame():
+    flt = crop_filter(CropPlan("completo", 1080, 1920, [(0.0, 0)], False), 1920, 1080)
+    assert "scale=1920:1080:force_original_aspect_ratio=decrease" in flt
+    assert "scale=1920:-2" not in flt
+
+
+def test_completo_portrait_source_in_landscape_output(make_mp4, tmp_path):
+    src = make_mp4(seconds=2, w=360, h=640)
+    out = tmp_path / "p.mp4"
+    flt = crop_filter(CropPlan("completo", 360, 640, [(0.0, 0)], False), 640, 360)
+    ffmpeg.run(["-i", str(src), "-filter_complex", f"[0:v]{flt}[out]", "-map", "[out]", "-an",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out)])
+    info = ffmpeg.probe(out)
+    assert (info["width"], info["height"]) == (640, 360)
+
+
 def test_detect_faces_runs_on_synthetic_frames(make_mp4):
     path = make_mp4(seconds=3, w=1280, h=720)
     src = SourceInfo(id="b" * 12, path=path, title="t", channel="", url="", duration=3.0,

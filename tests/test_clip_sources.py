@@ -309,3 +309,14 @@ def test_speech_fixture_is_silent_between_words(make_mp4_with_speech):
         return float(err.split("max_volume:")[1].split("dB")[0])
     assert peak(words[1].start + 0.05, words[1].end - 0.05) > -20
     assert peak(words[3].end + 0.1, words[4].start - 0.1) < -60
+
+
+@pytest.mark.parametrize("info,expected", [
+    ({"uploader": "Canal Uno", "uploader_id": "@canaluno"}, "@canaluno"),
+    ({"uploader": "Canal Uno", "channel": "Otro", "uploader_id": "UC123"}, "Canal Uno"),
+    ({"channel": "Solo Canal"}, "Solo Canal"),
+    ({"uploader": "", "channel": "@manejo"}, "@manejo"),
+    ({}, ""),
+])
+def test_channel_credit_prefers_handle(info, expected):
+    assert sources._channel_credit(info) == expected

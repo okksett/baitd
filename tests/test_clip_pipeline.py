@@ -6,7 +6,7 @@ import time
 import pytest
 
 from baitd import config, selftest
-from baitd.clip import pipeline, sources
+from baitd.clip import framing, pipeline, sources
 from baitd.clip.models import Transcript
 from baitd.ffmpeg import probe
 from baitd.jobqueue import JobQueue
@@ -507,3 +507,20 @@ def test_export_uses_the_export_time_title_credit_and_music(tmp_data, tmp_path, 
     assert (clip.hook_title, clip.credit, clip.music) == (False, False, True)
     assert clip.count == analysis["profile"]["count"] and clip.min_s == analysis["profile"]["min_s"]
     assert seen[1][1] == "Yo"
+
+
+def test_framing_failure_falls_back_to_centre(tmp_data, tmp_path, providers, monkeypatch, caplog):
+    real = framing.plan_crop
+    modes = []
+
+    def flaky(src, start, end, w, h, mode, cancel, faces=None, cuts=None):
+        modes.append(mode)
+        if mode == "cara":
+            raise RuntimeError("scene detection exploded")
+        return real(src, start, end, w, h, mode, cancel, faces=faces, cuts=cuts)
+
+    monkeypatch.setattr(framing, "plan_crop", flaky)
+    with caplog.at_level("WARNING"):
+        folder = pipeline.run_clip_auto(_item(), _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert modes.count("centro") == 2 and (folder / "clip-01.mp4").is_file()
+    assert "se usa el centro" in caplog.text

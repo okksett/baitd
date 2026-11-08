@@ -286,7 +286,13 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
             faces = None
             if providers.detect_faces is not None and mode == "cara":
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
-            plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces))
+            try:
+                plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces))
+            except (JobCancelled, UserError):
+                raise
+            except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip
+                log.warning("Falló el encuadre de %s; se usa el centro", m.title, exc_info=True)
+                plans.append(framing.plan_crop(src, m.start, m.end, width, height, "centro", cancel))
         steps.frac(4, (i + 1) / n)
     steps.end(4)
 

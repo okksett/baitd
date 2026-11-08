@@ -147,7 +147,7 @@ def test_title_and_credit_follow_profile_flags(make_mp4_with_speech, tmp_path, m
     monkeypatch.setattr(captions, "write_clip_ass", spy)
     plan = CropPlan("centro", 100, 178, [(0.0, 110)], False)
     _render(make_mp4_with_speech, tmp_path, plan)
-    assert seen == {"top": "Un titulo", "credit": "Fuente: @Canal"}
+    assert seen == {"top": "Un titulo", "credit": "Fuente: Canal"}
     _render(make_mp4_with_speech, tmp_path, plan, profile=_profile(hook_title=False, credit=False))
     assert seen == {"top": "", "credit": ""}
 

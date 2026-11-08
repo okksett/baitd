@@ -151,7 +151,7 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
             raise UserError("No se pudo descargar el video: no se creó ningún archivo",
                             "Actualiza yt-dlp en Ajustes o sube el archivo")
         src = _build_info(source_id, path, title=info.get("title") or "Video",
-                          channel=info.get("uploader") or info.get("channel") or "", url=url)
+                          channel=_channel_credit(info), url=url)
         _write_meta(folder, src)
         on_progress(1.0)
         return src
@@ -165,6 +165,15 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
             raise UserError(f"No se pudo descargar el video: {_short_reason(e, url)}",
                             "Actualiza yt-dlp en Ajustes o sube el archivo") from None
         raise
+
+
+def _channel_credit(info: dict) -> str:
+    """What the credit line shows: the channel's @handle when yt-dlp gives one, else its plain name."""
+    for key in ("uploader_id", "channel", "uploader"):
+        v = str(info.get(key) or "").strip()
+        if v.startswith("@"):
+            return v
+    return str(info.get("uploader") or info.get("channel") or "").strip()
 
 
 # ---- uploads ----

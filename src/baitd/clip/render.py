@@ -144,7 +144,7 @@ def render_clip(src: SourceInfo, m: Moment, words: list[Word], plan: CropPlan | 
                 shutil.copy2(ttf, fonts / ttf.name)
         style = profile.subtitle if plan is not None else replace(profile.subtitle, position="middle")
         # a credit typed on the card always shows; the automatic one follows the profile's switch
-        credit = m.credit or (f"Fuente: @{src.channel}" if clipping.credit and src.channel else "")
+        credit = m.credit or (f"Fuente: {src.channel}" if clipping.credit and src.channel else "")
         captions.write_clip_ass(
             remap_words(words, segs), style, w, h, workdir / ass_name, fonts,
             top_text=m.title if clipping.hook_title else "", top_until=3.0, credit=credit)

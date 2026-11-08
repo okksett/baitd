@@ -290,7 +290,8 @@ def crop_filter(plan: CropPlan, out_w: int, out_h: int) -> str:
     """
     if plan.mode == "completo":
         return (f"split[a][b];[a]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
-                f"crop={out_w}:{out_h},boxblur=20:2[bg];[b]scale={out_w}:-2:flags=lanczos[fg];"
+                f"crop={out_w}:{out_h},boxblur=20:2[bg];"
+                f"[b]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2")
     keys = plan.keys if plan.mode == "cara" else [plan.keys[0]]
     chain = f"crop={plan.crop_w}:{plan.crop_h}:x='{_x_expr(keys)}':y=(ih-{plan.crop_h})/2,scale={out_w}:{out_h}:flags=lanczos"
