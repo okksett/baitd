@@ -163,7 +163,12 @@ def test_analysis_get_export_validation_delete(client, profile_id, queue, tmp_da
     assert client.post(f"/api/analyses/{aid}/export", json={"moments": [{**ok, "framing": "x"}]}).status_code == 400
     assert client.post("/api/analyses/ffffffffffff/export", json={"moments": [ok]}).status_code == 404
 
-    # delete: unfinished export item references the analysis -> the source stays
+    # delete: refused while an unfinished export needs the analysis
+    r = client.delete(f"/api/analyses/{aid}", json={})
+    assert r.status_code == 409 and "→" in r.get_json()["error"]
+    assert (pipeline.analyses_dir() / f"{aid}.json").exists()
+    for i in list(queue._items):
+        queue.cancel(i["id"])
     r = client.delete(f"/api/analyses/{aid}", json={})
     assert r.status_code == 200 and r.get_json() == {"ok": True}
     assert not (pipeline.analyses_dir() / f"{aid}.json").exists()

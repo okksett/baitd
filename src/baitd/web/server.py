@@ -561,6 +561,9 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         file = clip_pipeline.analyses_dir() / f"{analysis_id}.json"
         if not file.is_file():
             abort(404)
+        if analysis_id in queue.unfinished_refs()[1]:
+            return jsonify(error=str(UserError("Este análisis tiene una exportación en la cola",
+                                               "Espera a que termine o cancélala"))), 409
         try:
             src = clip_sources.load_source(json.loads(file.read_text(encoding="utf-8")).get("source_id"))
         except (OSError, ValueError, AttributeError, UserError):
