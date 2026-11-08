@@ -23,7 +23,7 @@ jobs:
           - os: macos-15-intel
             exe: dist/Baitd.app/Contents/MacOS/Baitd
             artifact: Baitd-macos-x64.zip
-          - os: macos-14
+          - os: macos-15
             exe: dist/Baitd.app/Contents/MacOS/Baitd
             artifact: Baitd-macos-arm64.zip
           - os: ubuntu-22.04
