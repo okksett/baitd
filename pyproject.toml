@@ -18,6 +18,8 @@ dependencies = [
     "waitress>=3,<4",
     "yt-dlp",
     "faster-whisper",
+    "opencv-python-headless",
+    "numpy",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,7 @@ baitd = "baitd.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md",
+baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md", "assets/models/*.onnx", "assets/models/LICENSE-yunet.txt",
               "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/i18n/*.json"]
 
 [tool.pytest.ini_options]
