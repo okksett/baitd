@@ -222,8 +222,13 @@ def _export_moments(raw, analysis: dict, duration: float) -> list[dict]:
         framing, title, credit = m.get("framing", "cara"), m.get("title", ""), m.get("credit", "")
         if framing not in FRAMINGS or not isinstance(title, str) or not isinstance(credit, str):
             raise UserError("Un clip tiene valores no válidos", "Revisa el encuadre, el título y el crédito")
-        # keep what the analysis knows about this moment (description, hashtags...) under the user's edits
-        base = next((k for k in analysis["moments"] if k.get("start") == start and k.get("end") == end), {})
+        # keep what the analysis knows about this moment (description, hashtags...) under the user's edits:
+        # `orig` is its index in analysis["moments"] (bounds may be edited); else the exact-bounds match
+        orig, known = m.get("orig"), analysis["moments"]
+        if type(orig) is int and 0 <= orig < len(known):
+            base = known[orig]
+        else:
+            base = next((k for k in known if k.get("start") == start and k.get("end") == end), {})
         out.append({**base, "start": float(start), "end": float(end), "framing": framing,
                     "title": title, "credit": credit})
     return out

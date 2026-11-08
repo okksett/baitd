@@ -1,5 +1,6 @@
 import json
 import shutil
+import threading
 
 import pytest
 
@@ -239,3 +240,36 @@ def test_delete_source_in_use_is_409(client, profile_id, queue, make_mp4):
         r = client.delete(f"/api/sources/{src.id}", json={})
         assert r.status_code == 409 and "→" in r.get_json()["error"]
         assert sources.load_source(src.id).id == src.id
+
+
+def test_export_with_edited_bounds_keeps_the_moment_texts(client, profile_id, queue, tmp_data, make_mp4):
+    src = _source(make_mp4, seconds=30)
+    other = {"start": 1.0, "end": 12.0, "kind": "historia", "score": 60, "title": "Otro", "description": "otra",
+             "hashtags": ["y"], "text": "", "framing": "cara", "credit": ""}
+    first = {"start": 5.0, "end": 25.0, "kind": "gracioso", "score": 80, "title": "T", "description": "Descripción",
+             "hashtags": ["risa", "#clip"], "text": "hola", "framing": "cara", "credit": ""}
+    aid = _analysis(src, moments=[other, first])
+    edited = {"start": 6.0, "end": 16.5, "framing": "centro", "title": "Nuevo", "credit": "", "orig": 1}
+    r = client.post(f"/api/analyses/{aid}/export", json={"moments": [edited], "profile_id": profile_id})
+    assert r.status_code == 200, r.get_json()
+    item = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])
+    m = item["payload"]["moments"][0]
+    assert (m["kind"], m["score"], m["description"], m["hashtags"], m["text"]) == \
+        ("gracioso", 80, "Descripción", ["risa", "#clip"], "hola")
+    assert (m["start"], m["end"], m["title"], m["framing"]) == (6.0, 16.5, "Nuevo", "centro")
+    assert "orig" not in m
+
+    # a bad index falls back to the exact-bounds match (or to nothing)
+    for orig in (5, -1, True, "1", None):
+        r = client.post(f"/api/analyses/{aid}/export", json={"moments": [{**edited, "orig": orig}]})
+        m = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])["payload"]["moments"][0]
+        assert m.get("description", "") == "" and "orig" not in m, orig
+    r = client.post(f"/api/analyses/{aid}/export", json={"moments": [{**edited, "start": 1.0, "end": 12.0, "orig": 9}]})
+    m = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])["payload"]["moments"][0]
+    assert m["description"] == "otra"
+
+    # the clip job renders with those texts
+    folder = pipeline.run_clip_export(dict(item), {"output_dir": str(tmp_data / "out")}, threading.Event(),
+                                      lambda *a: None)
+    text = (folder / "publicacion.txt").read_text(encoding="utf-8")
+    assert "Nuevo" in text and "Descripción" in text and "#risa #clip" in text

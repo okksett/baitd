@@ -1033,7 +1033,8 @@
         const data = await api("GET", `/api/analyses/${encodeURIComponent(job.analysis_id)}`);
         const profileId = analysisProfileId(job);
         const count = (profileById(profileId) || state.current).clipping.count;
-        const ranked = [...data.moments].sort((a, b) => b.score - a.score);
+        // orig: the index in the analysis, so the server keeps its texts even after the bounds are edited
+        const ranked = data.moments.map((m, orig) => ({ ...m, orig })).sort((a, b) => b.score - a.score);
         state.clip.review = {
           analysisId: job.analysis_id, profileId, source: data.source,
           moments: ranked.map((m, i) => ({ ...m, title: m.title || "", framing: m.framing || "cara",
@@ -1217,7 +1218,7 @@
     if (exportProblem()) return;
     showError($("#clip-review-error"), null);
     const moments = r.moments.filter((m) => m.pick).map((m) => ({
-      start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim() }));
+      orig: m.orig, start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim() }));
     // the analysis was made with this profile; the selected one is only a fallback if it was deleted
     const profileId = profileById(r.profileId) ? r.profileId : state.current.id;
     setBusy(true);
