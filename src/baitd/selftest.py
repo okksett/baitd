@@ -146,6 +146,28 @@ def _check_clips(folder: Path) -> None:
         raise SelftestError("La carpeta de clips de prueba está incompleta")
 
 
+def _check_clip_deps() -> None:
+    """The clipping dependencies a frozen app can lose: the YuNet detector, the transcription
+    libraries (imported, no model loaded) and yt-dlp."""
+    try:
+        import numpy as np
+        from .clip import framing
+        detector = framing._make_detector((320, 180))
+        detector.detect(np.zeros((180, 320, 3), dtype=np.uint8))
+    except Exception as e:
+        raise SelftestError(f"El detector de caras no funciona: {type(e).__name__}: {e}") from e
+    try:
+        import ctranslate2  # noqa: F401
+        import faster_whisper  # noqa: F401
+    except Exception as e:
+        raise SelftestError(f"Falta la transcripción local: {type(e).__name__}: {e}") from e
+    try:
+        from .clip import ytdlp_loader
+        ytdlp_loader.import_ytdlp()
+    except Exception as e:
+        raise SelftestError(f"yt-dlp no se puede cargar: {type(e).__name__}: {e}") from e
+
+
 def run_selftest(workdir: Path | None = None) -> float:
     """Run the offline job; return the elapsed seconds or raise SelftestError.
 
@@ -182,6 +204,7 @@ def run_selftest(workdir: Path | None = None) -> float:
         except Exception as e:
             raise SelftestError(f"{type(e).__name__}: {e}") from e
         _check_clips(clips)
+        _check_clip_deps()
         return time.monotonic() - start
     finally:
         if previous is None:

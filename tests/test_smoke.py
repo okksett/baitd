@@ -43,3 +43,22 @@ def test_main_selftest_failure_exits_1(monkeypatch, capsys):
     assert exc.value.code == 1
     out = capsys.readouterr()
     assert "SELFTEST FAILED" in out.out and "filtro ass" in out.out
+
+
+def test_selftest_checks_clip_dependencies(monkeypatch):
+    calls = []
+    from baitd.clip import framing, ytdlp_loader
+    real = framing._make_detector
+    monkeypatch.setattr(framing, "_make_detector", lambda size: (calls.append("yunet"), real(size))[1])
+    monkeypatch.setattr(ytdlp_loader, "import_ytdlp", lambda: calls.append("ytdlp"))
+    selftest._check_clip_deps()
+    assert calls == ["yunet", "ytdlp"]
+
+
+def test_selftest_fails_when_detector_breaks(monkeypatch):
+    from baitd.clip import framing
+    def boom(size):
+        raise RuntimeError("modelo ausente")
+    monkeypatch.setattr(framing, "_make_detector", boom)
+    with pytest.raises(selftest.SelftestError, match="detector de caras"):
+        selftest._check_clip_deps()
