@@ -20,6 +20,7 @@ from .jobqueue import JobQueue
 from .web.server import create_app
 
 HOST = "127.0.0.1"
+MAX_BODY = 40 * 1024**3  # waitress rejects bigger bodies (default 1 GB) before Flask sees them
 log = logging.getLogger("baitd")
 _server = None
 _server_lock = threading.Lock()
@@ -35,7 +36,8 @@ def find_free_port() -> int:
 
 def build_server(port: int, queue: JobQueue):
     """A threaded WSGI server bound to 127.0.0.1 only; already listening when it returns."""
-    return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd")
+    return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd",
+                         max_request_body_size=MAX_BODY)  # long-video uploads; the route checks too
 
 
 def _close_everything(server) -> None:

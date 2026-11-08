@@ -272,6 +272,10 @@ class JobQueue:
                 item.update(outcome)
             self._save()
 
+    def unfinished_refs(self, exclude: str = "") -> tuple[set[str], set[str]]:
+        """(source ids, analysis ids) that pending or running clip items still need."""
+        return self._unfinished_refs(exclude)
+
     def _unfinished_refs(self, exclude: str) -> tuple[set[str], set[str]]:
         """(source ids, analysis ids) that other pending or running clip items still need."""
         sources_, analyses = set(), set()

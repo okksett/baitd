@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -21,7 +23,10 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import HTTPException
 
 from .. import audio, captions, config, llm, tts
-from ..clip.models import ClipProfile
+from ..clip import pipeline as clip_pipeline
+from ..clip import sources as clip_sources
+from ..clip import ytdlp_loader
+from ..clip.models import FRAMINGS, ClipProfile
 from ..jobqueue import JobQueue
 from ..models import Profile, Script, UserError, first_sentence
 from ..pipeline import STEPS, check_output_dir
@@ -39,6 +44,10 @@ _LOCAL_HOSTS = ("127.0.0.1", "localhost")
 _POSITIONS = ("bottom", "middle", "top")
 _MAX_OUTLINE = 20  # px; the presets use 0-6
 _LLM_PROVIDERS = tuple(llm.DEFAULT_MODELS)
+_UPLOAD_PATH = "/api/uploads"
+_UPLOAD_MAX = 40 * 1024**3  # long-video uploads; the global MAX_CONTENT_LENGTH stays untouched
+_CHUNK = 1024 * 1024
+_ID = re.compile(r"[0-9a-f]{12}")
 _UNEXPECTED = "Error inesperado: {} → Revisa el registro y vuelve a intentarlo"
 
 
@@ -178,6 +187,48 @@ def _scripts(data: dict) -> dict[str, Script]:
     return scripts
 
 
+def _is_upload(req) -> bool:
+    """The one mutating request that is not JSON: raw bytes, which a cross-site page cannot send."""
+    return (req.method == "POST" and req.path == _UPLOAD_PATH and req.mimetype == "application/octet-stream"
+            and req.headers.get("X-Baitd-Upload") == "1")
+
+
+def _bad_times() -> UserError:
+    return UserError("Un clip tiene inicio o fin no válido", "Ajusta el inicio y el fin del clip")
+
+
+def _public_source(src) -> dict:
+    """Source info for the browser: never the local file path."""
+    return {"id": src.id, "title": src.title, "channel": src.channel, "url": src.url,
+            "duration": src.duration, "width": src.width, "height": src.height, "fps": src.fps,
+            "has_video": src.has_video}
+
+
+def _export_moments(raw, analysis: dict, duration: float) -> list[dict]:
+    """The moments the user chose to export, checked against the source and the global clip limits."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
+        raise UserError("Elige entre 1 y 20 clips para exportar", "Marca al menos un momento")
+    out = []
+    for m in raw:
+        if not isinstance(m, dict):
+            raise _bad_times()
+        start, end = m.get("start"), m.get("end")
+        for v in (start, end):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise _bad_times()
+        if (start < 0 or not clip_pipeline.MIN_CLIP_S <= end - start <= clip_pipeline.MAX_CLIP_S
+                or end > duration + 1.0):
+            raise _bad_times()
+        framing, title, credit = m.get("framing", "cara"), m.get("title", ""), m.get("credit", "")
+        if framing not in FRAMINGS or not isinstance(title, str) or not isinstance(credit, str):
+            raise UserError("Un clip tiene valores no válidos", "Revisa el encuadre, el título y el crédito")
+        # keep what the analysis knows about this moment (description, hashtags...) under the user's edits
+        base = next((k for k in analysis["moments"] if k.get("start") == start and k.get("end") == end), {})
+        out.append({**base, "start": float(start), "end": float(end), "framing": framing,
+                    "title": title, "credit": credit})
+    return out
+
+
 def _public_job(job: dict) -> dict:
     video = Path(job["output"]) / "video.mp4" if job["output"] else None
     return {**job, "has_video": bool(video and job["status"] == "done" and video.is_file())}
@@ -206,7 +257,10 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         allowed = {f"{h}:{port}" for h in _LOCAL_HOSTS}
         if request.headers.get("Host", "").lower() not in allowed:
             return jsonify(error="Dirección no permitida → Abre Baitd desde la dirección que muestra la app"), 403
-        if request.method in _MUTATING and request.mimetype != "application/json":
+        if request.method == "POST" and request.path == _UPLOAD_PATH:
+            if not _is_upload(request):  # the upload route takes raw bytes only, with its header
+                return jsonify(error="La petición debe ser JSON → Recarga la página e inténtalo de nuevo"), 415
+        elif request.method in _MUTATING and request.mimetype != "application/json":
             return jsonify(error="La petición debe ser JSON → Recarga la página e inténtalo de nuevo"), 415
         return None
 
@@ -279,6 +333,11 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
                 continue
             if key == "cache_max_gb":
                 update[key] = _cache_gb(value)
+                continue
+            if key == "keep_sources":
+                if not isinstance(value, bool):
+                    raise UserError("Valor no válido para 'keep_sources'", "Revisa los ajustes")
+                update[key] = value
                 continue
             if not isinstance(value, str):
                 raise UserError(f"Valor no válido para '{key}'", "Revisa los ajustes")
@@ -405,6 +464,121 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         except OSError:
             raise UserError("No se pudo abrir la carpeta", f"Ábrela a mano: {folder}") from None
         return jsonify(ok=True)
+
+    # --- clipping ---
+
+    @app.post(_UPLOAD_PATH)
+    def post_upload():
+        name = request.args.get("name", "")  # only a display title and an extension: never a path
+        length = request.content_length
+        if length is None:
+            raise UserError("La subida no indica su tamaño", "Vuelve a subir el archivo desde Baitd")
+        if length > _UPLOAD_MAX:
+            raise UserError("El archivo es demasiado grande (máximo 40 GB)", "Recorta el video o usa uno más corto")
+        if length * 1.1 > clip_sources.free_bytes(clip_sources.sources_dir()):
+            raise UserError(f"No hay espacio suficiente para subir el archivo (~{length * 1.1 / 1e9:.1f} GB)",
+                            "Libera espacio en el disco")
+        source_id, path = clip_sources.new_upload(name)
+        try:
+            received = 0
+            with open(path, "wb") as f:
+                while True:
+                    chunk = request.stream.read(_CHUNK)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > length:
+                        break
+                    f.write(chunk)
+            if received != length:
+                raise UserError("La subida se interrumpió", "Vuelve a subir el archivo")
+            src = clip_sources.finish_upload(source_id, path, name)  # probes; removes the folder on failure
+        except BaseException:
+            clip_sources.delete_source(source_id)  # a broken upload leaves no partial file
+            raise
+        return jsonify(source_id=src.id, title=src.title, duration=src.duration, has_video=src.has_video)
+
+    @app.post("/api/clips")
+    def post_clips():
+        data = _body()
+        profile = _find_profile(data.get("profile_id"))
+        mode = data.get("mode")
+        if mode not in ("auto", "review"):
+            raise UserError("Modo de clipping no válido", "Elige automático o con revisión")
+        url, source_id = data.get("url"), data.get("source_id")
+        if (url is None) == (source_id is None):
+            raise UserError("Indica un enlace o un video subido, no ambos", "Pega un enlace o sube un archivo")
+        overrides = data.get("overrides", {})
+        try:
+            if not isinstance(overrides, dict):
+                raise ValueError("overrides must be an object")
+            ClipProfile.from_dict({**profile.clipping.to_dict(), **overrides})
+        except ValueError:
+            raise UserError("Ajustes de clipping no válidos",
+                            "Revisa número de clips y duración en el perfil") from None
+        if url is not None:
+            if not isinstance(url, str) or not url.strip():
+                raise UserError("Ese enlace no es válido", "Pega un enlace http o https de YouTube u otro sitio")
+            clip_sources.check_url(url)
+            source = {"url": url.strip()}
+        else:
+            source = {"source_id": clip_sources.load_source(source_id).id}
+        job_id = queue.add_clip_job("clip_auto" if mode == "auto" else "clip_analyze",
+                                    {"source": source, "overrides": overrides}, profile)
+        return jsonify(job_id=job_id)
+
+    def analysis_or_404(analysis_id: str) -> dict:
+        if not _ID.fullmatch(analysis_id) or not (clip_pipeline.analyses_dir() / f"{analysis_id}.json").is_file():
+            abort(404)
+        return clip_pipeline.load_analysis(analysis_id)
+
+    @app.get("/api/analyses/<analysis_id>")
+    def get_analysis(analysis_id: str):
+        analysis = analysis_or_404(analysis_id)
+        src = clip_sources.load_source(analysis["source_id"])
+        return jsonify(source=_public_source(src), moments=analysis["moments"],
+                       language=analysis["transcript"]["language"])
+
+    @app.post("/api/analyses/<analysis_id>/export")
+    def export_analysis(analysis_id: str):
+        data = _body()
+        analysis = analysis_or_404(analysis_id)
+        src = clip_sources.load_source(analysis["source_id"])
+        moments = _export_moments(data.get("moments"), analysis, src.duration)
+        profile = _find_profile(data["profile_id"]) if "profile_id" in data else _profiles()[0]
+        job_id = queue.add_clip_job("clip_export", {"analysis_id": analysis_id, "moments": moments}, profile)
+        return jsonify(job_id=job_id)
+
+    @app.delete("/api/analyses/<analysis_id>")
+    def delete_analysis(analysis_id: str):
+        if not _ID.fullmatch(analysis_id):
+            abort(404)
+        file = clip_pipeline.analyses_dir() / f"{analysis_id}.json"
+        if not file.is_file():
+            abort(404)
+        try:
+            src = clip_sources.load_source(json.loads(file.read_text(encoding="utf-8")).get("source_id"))
+        except (OSError, ValueError, AttributeError, UserError):
+            src = None  # damaged analysis or source already gone: only the analysis is removed
+        if src is not None:  # the source goes too unless kept or still needed by a queued item
+            clip_pipeline._release_source(src, config.load_settings(), queue.unfinished_refs)
+        clip_pipeline.delete_analysis(analysis_id)
+        return jsonify(ok=True)
+
+    @app.get("/api/sources/<source_id>/media")
+    def source_media(source_id: str):
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites
+            abort(403)
+        try:
+            src = clip_sources.load_source(source_id)
+        except UserError:
+            abort(404)
+        return send_file(src.path, conditional=True)
+
+    @app.post("/api/ytdlp/update")
+    def ytdlp_update():
+        _body()
+        return jsonify(version=ytdlp_loader.update_ytdlp())
 
     @app.post("/api/shutdown")
     def post_shutdown():
