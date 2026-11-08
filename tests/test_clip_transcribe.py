@@ -115,6 +115,27 @@ def _fake_model(words_per_seg=10, segs=3, lang="en", duration=30.0, on_seg=None)
     return M
 
 
+def test_local_hands_whisper_decoded_audio_not_a_path(monkeypatch, make_wav):
+    # faster-whisper 1.2.1 opens paths with av.open(metadata_errors=...), which PyAV 15+ rejects
+    # (TypeError at step 2 of every local transcription). We decode with our FFmpeg and pass samples.
+    import numpy as np
+    seen = []
+
+    class M:
+        def transcribe(self, audio, **kw):
+            seen.append(audio)
+            seg = NS(end=3.0, words=[NS(word=f" w{i}", start=i * 0.1, end=i * 0.1 + 0.05) for i in range(20)])
+            return iter([seg]), NS(language="es", duration=3.0)
+
+    monkeypatch.setattr(transcribe, "_load_model", lambda m: M())
+    transcribe.local_words(make_wav(seconds=3), None, "small", threading.Event(), lambda p: None)
+    assert len(seen) == 1
+    audio = seen[0]
+    assert isinstance(audio, np.ndarray) and audio.dtype == np.float32 and audio.ndim == 1
+    assert len(audio) == pytest.approx(3 * 16000, abs=400)  # 16 kHz mono, the rate whisper expects
+    assert float(np.abs(audio).max()) <= 1.0
+
+
 def test_local_uses_fake_model_and_progress(monkeypatch, make_wav):
     M = _fake_model()
     loaded = []

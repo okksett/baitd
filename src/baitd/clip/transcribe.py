@@ -115,6 +115,21 @@ def openai_words(audio: Path, language: str | None, settings: dict, cancel: thre
     return _finish(words, detected or "en", duration)
 
 
+def _read_pcm16(path: Path):
+    """Samples of a 16 kHz mono s16 WAV (as written by `_cut`) as float32 in [-1, 1].
+
+    faster-whisper decodes a *path* with av.open(..., metadata_errors=...), a keyword PyAV 15+ no
+    longer accepts, so we hand it the samples instead and it never touches PyAV."""
+    import wave
+
+    import numpy as np
+    with wave.open(str(path), "rb") as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1:
+            raise ValueError(f"expected 16-bit mono WAV, got {w.getsampwidth() * 8}-bit x{w.getnchannels()}")
+        raw = w.readframes(w.getnframes())
+    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+
+
 def _load_model(model: str):
     from faster_whisper import WhisperModel  # lazy: heavy import, optional at test time
     return WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir()))
@@ -146,7 +161,8 @@ def local_words(audio: Path, language: str | None, model: str, cancel: threading
             chunk = Path(tmp) / f"chunk{i}.wav"
             _cut(audio, start, length, chunk, ["-c:a", "pcm_s16le"], cancel)
             _check(cancel)
-            segments, info = wm.transcribe(str(chunk), language=lang, word_timestamps=True, vad_filter=True)
+            segments, info = wm.transcribe(_read_pcm16(chunk), language=lang, word_timestamps=True,
+                                           vad_filter=True)
             if first_lang is None:
                 first_lang = language or getattr(info, "language", None) or "en"
                 lang = lang or first_lang
