@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import tempfile
+import threading
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Callable
+
+from . import audio, captions, ffmpeg, llm, timeline, tts
+from .config import data_dir, slugify
+from .models import (JobCancelled, Media, Profile, ProgressFn, RenderOptions, Script, UserError,
+                     first_sentence)
+from .render import render_video
+from .stock import cache
+from .stock.select import find_media
+
+log = logging.getLogger(__name__)
+
+STEPS = ("script", "voice", "clips", "edit", "captions", "render")
+_TOTAL = len(STEPS)
+_DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
+
+
+@dataclass
+class Providers:
+    """Replaceable network-facing steps (the offline self-test injects generated ones).
+
+    A field left as None means the real implementation, looked up when the job runs."""
+    generate_script: Callable | None = None
+    synthesize: Callable | None = None
+    find_media: Callable | None = None
+    download: Callable | None = None
+
+
+def output_dir_error(path: Path) -> UserError:
+    return UserError(f"No se puede usar la carpeta de salida {path}", "Elige otra carpeta en Ajustes")
+
+
+def check_output_dir(path: Path) -> None:
+    """Create `path` if needed and prove it is writable (probe file); UserError otherwise."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(dir=path, prefix=".baitd-", suffix=".probe")
+        os.close(fd)
+        os.unlink(probe)
+    except OSError:
+        raise output_dir_error(path) from None
+
+
+def _create_output_dir(settings: dict, topic: str) -> Path:
+    base = Path(settings["output_dir"]) if settings.get("output_dir") else data_dir() / "salidas"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:  # a typo, a removed drive, an offline synced folder, a file in the way...
+        raise output_dir_error(base) from None
+    stem = f"{date.today().isoformat()}_{slugify(topic)}"
+    n = 1
+    while True:
+        folder = base / (stem if n == 1 else f"{stem}-{n}")
+        try:
+            folder.mkdir(exist_ok=False)  # atomic: two jobs can't claim the same folder
+            return folder
+        except FileExistsError:
+            n += 1
+        except OSError:  # e.g. a read-only folder
+            raise output_dir_error(base) from None
+
+
+def _hook_word_count(script: Script) -> int:
+    """Words of the hook = the first sentence of scene 1 (ruling R28), which is what is spoken."""
+    return len(first_sentence(script.scenes[0].text).split()) if script.scenes else 0
+
+
+def _write_texts(folder: Path, script: Script) -> None:
+    # the hook is scene 1's first sentence, so it is not repeated as its own paragraph
+    paragraphs = [script.title] + [s.text for s in script.scenes]
+    (folder / "guion.txt").write_text("\n\n".join(paragraphs) + "\n", encoding="utf-8")
+    tags = " ".join(t if t.startswith("#") else f"#{t}" for t in script.hashtags)
+    (folder / "publicacion.txt").write_text(
+        f"{script.title}\n\n{script.description}\n\n{tags}\n", encoding="utf-8")
+
+
+def _download_or_replace(m: Media, find_one: Callable[[], list[Media]],
+                         download: Callable[[Media], Path], used: set[str]) -> Media:
+    """Download m; if that fails, try one replacement clip before failing the job."""
+    used.add(m.id)
+    try:
+        m.path = download(m)
+        return m
+    except UserError as first:
+        log.warning("No se pudo descargar %s (%s); se busca otro clip", m.id, first.cause)
+        try:
+            spare = find_one()
+        except UserError:
+            spare = []
+        if not spare:
+            raise first from None
+        r = spare[0]
+        used.add(r.id)
+        r.path = download(r)  # a second failure fails the job with its own message
+        return r
+
+
+def run_job(topic: str, profile: Profile, settings: dict, script: Script | None,
+            cancel: threading.Event, progress: ProgressFn, providers: Providers | None = None,
+            *, on_output: Callable[[Path], None] | None = None) -> Path:
+    """Run the six steps; returns the output folder. Failed or cancelled jobs leave nothing behind.
+
+    `on_output` is told the output folder as soon as it is created (the queue records it, so a
+    folder left by a hard kill can be removed on the next start)."""
+    try:
+        cache.prune(cache.max_bytes(settings))  # LRU cap on the clip cache (ruling R30)
+    except OSError:
+        log.warning("No se pudo limpiar la caché de clips", exc_info=True)
+    folder = _create_output_dir(settings, topic)
+    try:
+        workdir = folder / ".work"
+        workdir.mkdir()
+        if on_output is not None:
+            on_output(folder)
+        _run(topic, profile, settings, script, cancel, progress, folder, workdir, providers or Providers())
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    shutil.rmtree(workdir, ignore_errors=True)
+    return folder
+
+
+def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
+         cancel: threading.Event, progress: ProgressFn, folder: Path, workdir: Path,
+         providers: Providers) -> None:
+    def begin(i: int) -> None:
+        if cancel.is_set():
+            raise JobCancelled()
+        progress(STEPS[i - 1], i, _TOTAL, 0.0)
+
+    def end(i: int) -> None:
+        progress(STEPS[i - 1], i, _TOTAL, 100.0)
+
+    width, height = _DIMS[profile.aspect]
+
+    begin(1)
+    if script is None:
+        script = (providers.generate_script or llm.generate_script)(topic, profile, settings)
+    end(1)
+
+    begin(2)
+    voice = (providers.synthesize or tts.synthesize)(script, profile, settings, workdir)
+    end(2)
+
+    begin(3)
+    cuts = timeline.plan_cuts(voice.scene_bounds, voice.words)
+    by_scene: dict[int, list[tuple[int, float, float]]] = {}
+    for cut in cuts:
+        by_scene.setdefault(cut[0], []).append(cut)
+    used: set[str] = set()  # shared across scenes: no clip repeats in the video
+    media_by_scene: dict[int, list[Media]] = {}
+    for n, (idx, scene_cuts) in enumerate(sorted(by_scene.items())):
+        if cancel.is_set():
+            raise JobCancelled()
+        progress("clips", 3, _TOTAL, 100.0 * n / len(by_scene))
+        longest = max(e - s for _, s, e in scene_cuts)
+        find = providers.find_media or find_media
+        keywords = script.scenes[idx].keywords
+        found = find(keywords, len(scene_cuts), longest, width, height, used, settings)
+        media_by_scene[idx] = [
+            _download_or_replace(m, lambda: find(keywords, 1, longest, width, height, used, settings),
+                                 providers.download or cache.download, used)
+            for m in found]
+    end(3)
+
+    begin(4)
+    try:
+        shots = timeline.assign_media(cuts, media_by_scene)
+    except ValueError:
+        raise UserError("No se encontraron suficientes clips para el vídeo",
+                        "Prueba otro tema o añade una clave de Pixabay en Ajustes") from None
+    end(4)
+
+    begin(5)
+    ass = workdir / "subs.ass"
+    captions.write_ass(voice.words, profile.subtitle, _hook_word_count(script), width, height,
+                       ass, captions.FONTS_DIR)
+    end(5)
+
+    begin(6)
+    opts = RenderOptions(width, height, profile.fps, ffmpeg.pick_encoder())
+    try:
+        render_video(shots, voice, ass, audio.pick_track(profile.music), profile.music_volume, opts,
+                     workdir, folder / "video.mp4", cancel,
+                     lambda pct: progress("render", 6, _TOTAL, pct * 100))
+    except RuntimeError:  # FFmpeg failed: disk full, unreadable clip... the details go to the log
+        log.exception("Fallo al renderizar %r", topic)
+        raise UserError("No se pudo renderizar el video",
+                        "Comprueba el espacio en disco y vuelve a intentarlo") from None
+    _write_texts(folder, script)
+    end(6)

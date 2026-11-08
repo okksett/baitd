@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="{{ lang }}" data-theme="{{ theme }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="app.title">{{ t("app.title") }}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script type="application/json" id="boot">{{ boot|tojson }}</script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#head" data-i18n="skip">{{ t("skip") }}</a>
+<div class="app">
+
+<header class="top">
+  <div class="brandrow">
+    <h1 class="brand"><span data-i18n="brand.a">{{ t("brand.a") }}</span><em data-i18n="brand.b">{{ t("brand.b") }}</em></h1>
+    <div class="tabs" role="tablist" data-i18n-aria="tabs.label" aria-label='{{ t("tabs.label") }}'>
+      <button type="button" role="tab" id="tab-short" aria-selected="true" aria-controls="panel-short" data-tab="short" data-i18n="tab.short">{{ t("tab.short") }}</button>
+      <button type="button" role="tab" id="tab-clip" aria-selected="false" aria-controls="panel-clip" data-tab="clip" tabindex="-1" data-i18n="tab.clip">{{ t("tab.clip") }}</button>
+    </div>
+  </div>
+  <div class="tools">
+    <div class="profile">
+      <label class="sr-only" for="profile" data-i18n="profile.label">{{ t("profile.label") }}</label>
+      <select id="profile" class="pill"></select>
+      <button type="button" id="profile-menu-btn" class="pill icon-btn" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="profile-menu" data-i18n-aria="profile.actions" aria-label='{{ t("profile.actions") }}'>⋯</button>
+      <div id="profile-menu" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-profile-act="new" data-i18n="profile.new">{{ t("profile.new") }}</button>
+        <button type="button" role="menuitem" data-profile-act="duplicate" data-i18n="profile.duplicate">{{ t("profile.duplicate") }}</button>
+        <button type="button" role="menuitem" data-profile-act="rename" data-i18n="profile.rename">{{ t("profile.rename") }}</button>
+        <button type="button" role="menuitem" data-profile-act="delete" data-i18n="profile.delete">{{ t("profile.delete") }}</button>
+      </div>
+    </div>
+    <div class="modetog" role="group" data-i18n-aria="theme.label" aria-label='{{ t("theme.label") }}'>
+      <button type="button" data-theme-set="dark" aria-pressed="false" data-i18n="theme.dark">{{ t("theme.dark") }}</button>
+      <button type="button" data-theme-set="light" aria-pressed="false" data-i18n="theme.light">{{ t("theme.light") }}</button>
+    </div>
+    <button type="button" id="open-settings" class="gear" data-i18n-aria="settings.open" aria-label='{{ t("settings.open") }}'
+            data-i18n-title="settings.open" title='{{ t("settings.open") }}'>⚙</button>
+  </div>
+</header>
+<p id="top-error" class="err" role="alert" hidden></p>
+
+<main class="grid">
+  <section class="form" id="panel-short" role="tabpanel" aria-labelledby="tab-short">
+    <h2 class="head" id="head" tabindex="-1"><span data-i18n="head.a">{{ t("head.a") }}</span> <em data-i18n="head.b">{{ t("head.b") }}</em></h2>
+
+    <fieldset class="seg">
+      <legend class="sr-only" data-i18n="mode.label">{{ t("mode.label") }}</legend>
+      <input type="radio" name="mode" id="mode-single" value="single" checked>
+      <label for="mode-single" data-i18n="mode.single">{{ t("mode.single") }}</label>
+      <input type="radio" name="mode" id="mode-batch" value="batch">
+      <label for="mode-batch" data-i18n="mode.batch">{{ t("mode.batch") }}</label>
+    </fieldset>
+
+    <div id="single-box">
+      <label class="lbl" for="topic" data-i18n="topic.label">{{ t("topic.label") }}</label>
+      <input id="topic" class="input big" type="text" autocomplete="off" maxlength="300"
+             data-i18n-placeholder="topic.placeholder" placeholder='{{ t("topic.placeholder") }}'>
+    </div>
+    <div id="batch-box" hidden>
+      <label class="lbl" for="topics" data-i18n="topics.label">{{ t("topics.label") }}</label>
+      <textarea id="topics" class="input" rows="5" data-i18n-placeholder="topics.placeholder" placeholder='{{ t("topics.placeholder") }}'></textarea>
+      <label class="check"><input type="checkbox" id="review-first"> <span data-i18n="review_first">{{ t("review_first") }}</span></label>
+    </div>
+
+    <div class="row">
+      <label class="sr-only" for="f-lang" data-i18n="lang.label">{{ t("lang.label") }}</label>
+      <select id="f-lang" class="input" data-field="language">
+        <option value="es" data-i18n="lang.es">{{ t("lang.es") }}</option>
+        <option value="en" data-i18n="lang.en">{{ t("lang.en") }}</option>
+        <option value="fr" data-i18n="lang.fr">{{ t("lang.fr") }}</option>
+        <option value="de" data-i18n="lang.de">{{ t("lang.de") }}</option>
+        <option value="other" data-i18n="lang.other">{{ t("lang.other") }}</option>
+      </select>
+      <label class="sr-only" for="f-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
+      <select id="f-aspect" class="input">
+        <option value="9:16" data-i18n="format.vertical">{{ t("format.vertical") }}</option>
+        <option value="16:9" data-i18n="format.horizontal">{{ t("format.horizontal") }}</option>
+      </select>
+      <label class="sr-only" for="f-fps" data-i18n="fps.label">{{ t("fps.label") }}</label>
+      <select id="f-fps" class="input">
+        <option value="30" data-i18n="fps.30">{{ t("fps.30") }}</option>
+        <option value="60" data-i18n="fps.60">{{ t("fps.60") }}</option>
+      </select>
+      <label class="sr-only" for="f-seconds" data-i18n="seconds.label">{{ t("seconds.label") }}</label>
+      <select id="f-seconds" class="input">
+        <option value="30" data-i18n="seconds.30">{{ t("seconds.30") }}</option>
+        <option value="45" data-i18n="seconds.45">{{ t("seconds.45") }}</option>
+        <option value="60" data-i18n="seconds.60">{{ t("seconds.60") }}</option>
+      </select>
+    </div>
+    <p class="hint" id="fps-hint" data-i18n="fps.hint" hidden>{{ t("fps.hint") }}</p>
+    <div id="lang-other-box" class="field" hidden>
+      <label class="lbl" for="f-lang-other" data-i18n="lang.other_label">{{ t("lang.other_label") }}</label>
+      <input id="f-lang-other" class="input" type="text" maxlength="20" autocomplete="off"
+             data-i18n-placeholder="lang.other_placeholder" placeholder='{{ t("lang.other_placeholder") }}'>
+    </div>
+
+    <div class="lbl" data-i18n="style.label">{{ t("style.label") }}</div>
+    <details class="acc" id="acc-voice">
+      <summary><span data-i18n="voice.title">{{ t("voice.title") }}</span><span class="sum" id="sum-voice"></span></summary>
+      <div class="acc-body">
+        <div class="field">
+          <label class="lbl" for="f-tts" data-i18n="voice.provider">{{ t("voice.provider") }}</label>
+          <select id="f-tts" class="input">
+            <option value="edge" data-i18n="voice.edge">{{ t("voice.edge") }}</option>
+            <option value="openai" data-i18n="voice.openai">{{ t("voice.openai") }}</option>
+            <option value="elevenlabs" data-i18n="voice.elevenlabs">{{ t("voice.elevenlabs") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-voice" data-i18n="voice.voice">{{ t("voice.voice") }}</label>
+          <select id="f-voice" class="input"></select>
+        </div>
+        <p class="warn wide" id="voice-warning" data-i18n="voice.warning">{{ t("voice.warning") }}</p>
+        <p class="err wide" id="voice-error" role="alert" hidden></p>
+        <div class="field wide">
+          <label class="lbl" for="f-rate" data-i18n="voice.speed">{{ t("voice.speed") }}</label>
+          <div class="slider"><input id="f-rate" type="range" min="-50" max="50" step="5" aria-describedby="rate-note"><output id="o-rate" for="f-rate"></output></div>
+          <p class="hint" id="rate-note" data-i18n="voice.speed_na" hidden>{{ t("voice.speed_na") }}</p>
+        </div>
+      </div>
+    </details>
+    <details class="acc" id="acc-subs">
+      <summary><span data-i18n="subs.title">{{ t("subs.title") }}</span><span class="sum" id="sum-subs"></span></summary>
+      <div class="acc-body">
+        <div class="field wide">
+          <label class="lbl" for="f-preset" data-i18n="subs.preset">{{ t("subs.preset") }}</label>
+          <select id="f-preset" class="input">
+            <option value="caja_azul" data-i18n="preset.caja_azul">{{ t("preset.caja_azul") }}</option>
+            <option value="amarillo_clasico" data-i18n="preset.amarillo_clasico">{{ t("preset.amarillo_clasico") }}</option>
+            <option value="minimal_blanco" data-i18n="preset.minimal_blanco">{{ t("preset.minimal_blanco") }}</option>
+            <option value="poster" data-i18n="preset.poster">{{ t("preset.poster") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-size" data-i18n="subs.size">{{ t("subs.size") }}</label>
+          <input id="f-size" class="input" type="number" min="24" max="200" step="2">
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-position" data-i18n="subs.position">{{ t("subs.position") }}</label>
+          <select id="f-position" class="input">
+            <option value="bottom" data-i18n="pos.bottom">{{ t("pos.bottom") }}</option>
+            <option value="middle" data-i18n="pos.middle">{{ t("pos.middle") }}</option>
+            <option value="top" data-i18n="pos.top">{{ t("pos.top") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-color" data-i18n="subs.color">{{ t("subs.color") }}</label>
+          <input id="f-color" class="input color" type="color">
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-highlight" data-i18n="subs.highlight">{{ t("subs.highlight") }}</label>
+          <input id="f-highlight" class="input color" type="color">
+        </div>
+      </div>
+    </details>
+    <details class="acc" id="acc-music">
+      <summary><span data-i18n="music.title">{{ t("music.title") }}</span><span class="sum" id="sum-music"></span></summary>
+      <div class="acc-body">
+        <div class="field wide">
+          <label class="lbl" for="f-music" data-i18n="music.choice">{{ t("music.choice") }}</label>
+          <select id="f-music" class="input"></select>
+        </div>
+        <div class="field wide">
+          <label class="lbl" for="f-volume" data-i18n="music.volume">{{ t("music.volume") }}</label>
+          <div class="slider"><input id="f-volume" type="range" min="0" max="100" step="1"><output id="o-volume" for="f-volume"></output></div>
+        </div>
+      </div>
+    </details>
+    <details class="acc" id="acc-ai">
+      <summary><span data-i18n="ai.title">{{ t("ai.title") }}</span><span class="sum" id="sum-ai"></span></summary>
+      <div class="acc-body">
+        <div class="field">
+          <label class="lbl" for="f-llm" data-i18n="ai.provider">{{ t("ai.provider") }}</label>
+          <select id="f-llm" class="input">
+            <option value="gemini" data-i18n="llm.gemini">{{ t("llm.gemini") }}</option>
+            <option value="openai" data-i18n="llm.openai">{{ t("llm.openai") }}</option>
+            <option value="compat" data-i18n="llm.compat">{{ t("llm.compat") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-model" data-i18n="ai.model">{{ t("ai.model") }}</label>
+          <input id="f-model" class="input" type="text" autocomplete="off" maxlength="80"
+                 data-i18n-placeholder="ai.model_placeholder" placeholder='{{ t("ai.model_placeholder") }}'>
+        </div>
+        <div class="field wide">
+          <label class="lbl" for="f-tone" data-i18n="ai.tone">{{ t("ai.tone") }}</label>
+          <input id="f-tone" class="input" type="text" autocomplete="off" maxlength="200"
+                 data-i18n-placeholder="ai.tone_placeholder" placeholder='{{ t("ai.tone_placeholder") }}'>
+        </div>
+      </div>
+    </details>
+
+    <div class="btns">
+      <button type="button" class="b1" id="write-script" data-i18n="btn.write">{{ t("btn.write") }}</button>
+      <button type="button" class="b2" id="create" data-i18n="create">{{ t("create") }}</button>
+    </div>
+    <p id="form-error" class="err" role="alert" hidden></p>
+    <p id="form-status" class="status" role="status"></p>
+
+    <section id="review" class="review" aria-labelledby="review-title" hidden>
+      <div class="review-head">
+        <h3 id="review-title" data-i18n="review.title">{{ t("review.title") }}</h3>
+        <button type="button" class="link-btn" id="discard-review" data-i18n="btn.discard">{{ t("btn.discard") }}</button>
+      </div>
+      <p class="hint" data-i18n="review.hint">{{ t("review.hint") }}</p>
+      <p id="review-progress" class="status" role="status"></p>
+      <div id="review-list"></div>
+    </section>
+  </section>
+
+  <section class="form-clip" id="panel-clip" role="tabpanel" aria-labelledby="tab-clip" hidden>
+    <h2 class="head" id="clip-head" tabindex="-1"><span data-i18n="clip.head_a">{{ t("clip.head_a") }}</span> <em data-i18n="clip.head_b">{{ t("clip.head_b") }}</em></h2>
+
+    <div class="drop" id="drop">
+      <p class="drop-title" data-i18n="clip.drop">{{ t("clip.drop") }}</p>
+      <label class="sr-only" for="c-url" data-i18n="clip.url_label">{{ t("clip.url_label") }}</label>
+      <input id="c-url" class="input big" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="2000"
+             data-i18n-placeholder="clip.url_placeholder" placeholder='{{ t("clip.url_placeholder") }}'>
+      <div class="drop-row">
+        <button type="button" class="pill" id="c-file-btn" data-i18n="clip.file_btn">{{ t("clip.file_btn") }}</button>
+        <span class="hint" data-i18n="clip.drop_hint">{{ t("clip.drop_hint") }}</span>
+        <input type="file" id="c-file" accept="video/*,audio/*,.mkv,.m4v,.opus,.flac" hidden>
+      </div>
+      <div id="upload-box" class="upload" hidden>
+        <div class="step"><b id="upload-name"></b><span id="upload-pct"></span></div>
+        <div class="bar" id="upload-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             data-i18n-aria="clip.upload_progress" aria-label='{{ t("clip.upload_progress") }}'><i id="upload-fill"></i></div>
+        <button type="button" class="link-btn" id="upload-cancel" data-i18n="clip.upload_cancel">{{ t("clip.upload_cancel") }}</button>
+      </div>
+      <div id="c-source" class="source-chip" hidden>
+        <span id="c-source-title"></span>
+        <button type="button" class="link-btn" id="c-source-remove" data-i18n="clip.source_remove">{{ t("clip.source_remove") }}</button>
+      </div>
+    </div>
+
+    <div id="clip-settings">
+      <div class="row clip-row">
+        <div class="field num">
+          <label class="lbl" for="c-count" data-i18n="clip.count">{{ t("clip.count") }}</label>
+          <input id="c-count" class="input" type="number" min="1" max="20" step="1" inputmode="numeric">
+        </div>
+        <div class="field">
+          <span class="lbl" id="c-len-label" data-i18n="clip.duration">{{ t("clip.duration") }}</span>
+          <div class="range">
+            <label class="sr-only" for="c-min" data-i18n="clip.min">{{ t("clip.min") }}</label>
+            <input id="c-min" class="input" type="number" min="10" max="180" step="1" inputmode="numeric">
+            <span aria-hidden="true">–</span>
+            <label class="sr-only" for="c-max" data-i18n="clip.max">{{ t("clip.max") }}</label>
+            <input id="c-max" class="input" type="number" min="10" max="180" step="1" inputmode="numeric">
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="c-kind" data-i18n="clip.kind">{{ t("clip.kind") }}</label>
+          <select id="c-kind" class="input">
+            <option value="todos" data-i18n="clip.kind.todos">{{ t("clip.kind.todos") }}</option>
+            <option value="gracioso" data-i18n="clip.kind.gracioso">{{ t("clip.kind.gracioso") }}</option>
+            <option value="interesante" data-i18n="clip.kind.interesante">{{ t("clip.kind.interesante") }}</option>
+            <option value="polemico" data-i18n="clip.kind.polemico">{{ t("clip.kind.polemico") }}</option>
+            <option value="historia" data-i18n="clip.kind.historia">{{ t("clip.kind.historia") }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <label class="sr-only" for="c-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
+        <select id="c-aspect" class="input">
+          <option value="9:16" data-i18n="format.vertical">{{ t("format.vertical") }}</option>
+          <option value="16:9" data-i18n="format.horizontal">{{ t("format.horizontal") }}</option>
+        </select>
+        <label class="sr-only" for="c-fps" data-i18n="fps.label">{{ t("fps.label") }}</label>
+        <select id="c-fps" class="input">
+          <option value="30" data-i18n="fps.30">{{ t("fps.30") }}</option>
+          <option value="60" data-i18n="fps.60">{{ t("fps.60") }}</option>
+        </select>
+      </div>
+      <p class="hint" id="c-fps-hint" data-i18n="fps.hint" hidden>{{ t("fps.hint") }}</p>
+
+      <div class="lbl" data-i18n="style.label">{{ t("style.label") }}</div>
+      <details class="acc" id="acc-trans">
+        <summary><span data-i18n="trans.title">{{ t("trans.title") }}</span><span class="sum" id="sum-trans"></span></summary>
+        <div class="acc-body">
+          <div class="field">
+            <label class="lbl" for="c-transcriber" data-i18n="trans.provider">{{ t("trans.provider") }}</label>
+            <select id="c-transcriber" class="input" aria-describedby="c-trans-hint">
+              <option value="openai" data-i18n="transcriber.openai">{{ t("transcriber.openai") }}</option>
+              <option value="local" data-i18n="transcriber.local">{{ t("transcriber.local") }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="lbl" for="c-model" data-i18n="trans.model">{{ t("trans.model") }}</label>
+            <select id="c-model" class="input">
+              <option value="small" data-i18n="whisper.small">{{ t("whisper.small") }}</option>
+              <option value="medium" data-i18n="whisper.medium">{{ t("whisper.medium") }}</option>
+              <option value="large-v3" data-i18n="whisper.large">{{ t("whisper.large") }}</option>
+            </select>
+          </div>
+          <p class="hint wide" id="c-trans-hint" data-i18n="trans.hint">{{ t("trans.hint") }}</p>
+          <div class="field wide">
+            <label class="lbl" for="c-language" data-i18n="lang.label">{{ t("lang.label") }}</label>
+            <select id="c-language" class="input">
+              <option value="auto" data-i18n="lang.auto">{{ t("lang.auto") }}</option>
+              <option value="es" data-i18n="lang.es">{{ t("lang.es") }}</option>
+              <option value="en" data-i18n="lang.en">{{ t("lang.en") }}</option>
+              <option value="fr" data-i18n="lang.fr">{{ t("lang.fr") }}</option>
+              <option value="de" data-i18n="lang.de">{{ t("lang.de") }}</option>
+              <option value="it" data-i18n="lang.it">{{ t("lang.it") }}</option>
+              <option value="pt" data-i18n="lang.pt">{{ t("lang.pt") }}</option>
+            </select>
+          </div>
+        </div>
+      </details>
+      <details class="acc" id="acc-framing">
+        <summary><span data-i18n="framing.title">{{ t("framing.title") }}</span><span class="sum" id="sum-framing"></span></summary>
+        <div class="acc-body">
+          <div class="field wide">
+            <label class="lbl" for="c-framing" data-i18n="framing.title">{{ t("framing.title") }}</label>
+            <select id="c-framing" class="input" aria-describedby="c-framing-hint">
+              <option value="cara" data-i18n="framing.cara">{{ t("framing.cara") }}</option>
+              <option value="centro" data-i18n="framing.centro">{{ t("framing.centro") }}</option>
+              <option value="completo" data-i18n="framing.completo">{{ t("framing.completo") }}</option>
+            </select>
+          </div>
+          <p class="hint wide" id="c-framing-hint" data-i18n="framing.hint">{{ t("framing.hint") }}</p>
+        </div>
+      </details>
+      <details class="acc" id="acc-csubs">
+        <summary><span data-i18n="subs.title">{{ t("subs.title") }}</span><span class="sum" id="sum-csubs"></span></summary>
+        <div class="acc-body">
+          <div class="field wide">
+            <label class="lbl" for="c-preset" data-i18n="subs.preset">{{ t("subs.preset") }}</label>
+            <select id="c-preset" class="input">
+              <option value="caja_azul" data-i18n="preset.caja_azul">{{ t("preset.caja_azul") }}</option>
+              <option value="amarillo_clasico" data-i18n="preset.amarillo_clasico">{{ t("preset.amarillo_clasico") }}</option>
+              <option value="minimal_blanco" data-i18n="preset.minimal_blanco">{{ t("preset.minimal_blanco") }}</option>
+              <option value="poster" data-i18n="preset.poster">{{ t("preset.poster") }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="lbl" for="c-size" data-i18n="subs.size">{{ t("subs.size") }}</label>
+            <input id="c-size" class="input" type="number" min="24" max="200" step="2">
+          </div>
+          <div class="field">
+            <label class="lbl" for="c-position" data-i18n="subs.position">{{ t("subs.position") }}</label>
+            <select id="c-position" class="input">
+              <option value="bottom" data-i18n="pos.bottom">{{ t("pos.bottom") }}</option>
+              <option value="middle" data-i18n="pos.middle">{{ t("pos.middle") }}</option>
+              <option value="top" data-i18n="pos.top">{{ t("pos.top") }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="lbl" for="c-color" data-i18n="subs.color">{{ t("subs.color") }}</label>
+            <input id="c-color" class="input color" type="color">
+          </div>
+          <div class="field">
+            <label class="lbl" for="c-highlight" data-i18n="subs.highlight">{{ t("subs.highlight") }}</label>
+            <input id="c-highlight" class="input color" type="color">
+          </div>
+        </div>
+      </details>
+      <details class="acc" id="acc-extras">
+        <summary><span data-i18n="extras.title">{{ t("extras.title") }}</span><span class="sum" id="sum-extras"></span></summary>
+        <div class="acc-body">
+          <label class="check wide"><input type="checkbox" id="c-hook"> <span data-i18n="extras.hook">{{ t("extras.hook") }}</span></label>
+          <label class="check wide"><input type="checkbox" id="c-credit"> <span data-i18n="extras.credit">{{ t("extras.credit") }}</span></label>
+          <label class="check wide"><input type="checkbox" id="c-music" aria-describedby="c-music-hint"> <span data-i18n="extras.music">{{ t("extras.music") }}</span></label>
+          <p class="hint wide" id="c-music-hint" data-i18n="extras.music_hint">{{ t("extras.music_hint") }}</p>
+        </div>
+      </details>
+    </div>
+
+    <div class="btns">
+      <button type="button" class="b1" id="clip-find" data-i18n="clip.find">{{ t("clip.find") }}</button>
+      <button type="button" class="b2" id="clip-create" data-i18n="clip.create">{{ t("clip.create") }}</button>
+    </div>
+    <p class="hint rights" data-i18n="clip.rights">{{ t("clip.rights") }}</p>
+    <p id="clip-error" class="err" role="alert" hidden></p>
+    <p id="clip-status" class="status" role="status"></p>
+
+    <section id="clip-review" class="review" aria-labelledby="clip-review-title" hidden>
+      <div class="review-head">
+        <h3 id="clip-review-title" tabindex="-1" data-i18n="clip.review_title">{{ t("clip.review_title") }}</h3>
+        <span class="hint" id="clip-selected"></span>
+      </div>
+      <p class="hint" id="clip-review-source"></p>
+      <p class="hint" data-i18n="clip.review_hint">{{ t("clip.review_hint") }}</p>
+      <p class="hint" id="clip-keep-note" data-i18n="clip.keep_note">{{ t("clip.keep_note") }}</p>
+      <div id="moment-list"></div>
+      <p id="clip-why" class="why" role="status"></p>
+      <p id="clip-review-error" class="err" role="alert" hidden></p>
+      <div class="btns">
+        <button type="button" class="b1" id="clip-discard" data-i18n="clip.discard">{{ t("clip.discard") }}</button>
+        <button type="button" class="b2" id="clip-export" aria-describedby="clip-why" data-i18n="clip.export">{{ t("clip.export") }}</button>
+      </div>
+    </section>
+  </section>
+
+  <section class="side">
+    <div class="phone" id="phone" data-aspect="9:16">
+      <span class="tag" data-i18n="preview.label">{{ t("preview.label") }}</span>
+      <div class="sub" id="sample-sub" aria-hidden="true">
+        <span data-i18n="preview.sample_a">{{ t("preview.sample_a") }}</span> <b data-i18n="preview.sample_b">{{ t("preview.sample_b") }}</b><br><span data-i18n="preview.sample_c">{{ t("preview.sample_c") }}</span>
+      </div>
+      <video id="preview" controls playsinline preload="metadata" hidden data-i18n-aria="preview.player" aria-label='{{ t("preview.player") }}'></video>
+    </div>
+    <div class="prog panel" id="progress" hidden>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+           data-i18n-aria="progress.label" aria-label='{{ t("progress.label") }}'><i id="progress-fill"></i></div>
+      <div class="step"><b id="progress-step"></b><span id="progress-count"></span></div>
+    </div>
+
+    <section class="queue panel" aria-labelledby="queue-title">
+      <div class="queue-head">
+        <h3 id="queue-title" tabindex="-1" data-i18n="queue.title">{{ t("queue.title") }}</h3>
+        <button type="button" class="link-btn" id="clear-finished" data-i18n="queue.clear">{{ t("queue.clear") }}</button>
+      </div>
+      <p id="queue-error" class="err" role="alert" hidden></p>
+      <p id="queue-empty" class="hint" data-i18n="queue.empty">{{ t("queue.empty") }}</p>
+      <ul id="queue-list" class="jobs"></ul>
+    </section>
+  </section>
+</main>
+</div>
+
+<dialog id="settings" aria-labelledby="settings-title">
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="settings-title" data-i18n="settings.title">{{ t("settings.title") }}</h2>
+      <button type="button" class="gear" data-close data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>✕</button>
+    </div>
+    <h3 class="lbl" data-i18n="settings.keys">{{ t("settings.keys") }}</h3>
+    <p class="hint" data-i18n="settings.keys_hint">{{ t("settings.keys_hint") }}</p>
+    <div class="keys">
+      <div class="key-row">
+        <label for="s-pexels_key" data-i18n="key.pexels">{{ t("key.pexels") }}</label>
+        <div class="key-input"><input id="s-pexels_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="pexels_key">
+          <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-pexels_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
+        <a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer" data-i18n="key.free_link">{{ t("key.free_link") }}</a>
+      </div>
+      <div class="key-row">
+        <label for="s-pixabay_key" data-i18n="key.pixabay">{{ t("key.pixabay") }}</label>
+        <div class="key-input"><input id="s-pixabay_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="pixabay_key">
+          <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-pixabay_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
+        <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer" data-i18n="key.free_link">{{ t("key.free_link") }}</a>
+      </div>
+      <div class="key-row">
+        <label for="s-gemini_key" data-i18n="key.gemini">{{ t("key.gemini") }}</label>
+        <div class="key-input"><input id="s-gemini_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="gemini_key">
+          <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-gemini_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" data-i18n="key.free_link">{{ t("key.free_link") }}</a>
+      </div>
+      <div class="key-row">
+        <label for="s-openai_key" data-i18n="key.openai">{{ t("key.openai") }}</label>
+        <div class="key-input"><input id="s-openai_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="openai_key">
+          <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-openai_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
+      </div>
+      <div class="key-row">
+        <label for="s-elevenlabs_key" data-i18n="key.elevenlabs">{{ t("key.elevenlabs") }}</label>
+        <div class="key-input"><input id="s-elevenlabs_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="elevenlabs_key">
+          <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-elevenlabs_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
+      </div>
+      <div class="key-row">
+        <label for="s-compat_base_url" data-i18n="settings.compat_url">{{ t("settings.compat_url") }}</label>
+        <input id="s-compat_base_url" class="input" type="url" autocomplete="off" spellcheck="false" data-setting="compat_base_url"
+               data-i18n-placeholder="settings.compat_placeholder" placeholder='{{ t("settings.compat_placeholder") }}'>
+      </div>
+      <div class="key-row">
+        <label for="s-compat_key" data-i18n="key.compat">{{ t("key.compat") }}</label>
+        <div class="key-input"><input id="s-compat_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="compat_key">
+          <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-compat_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
+      </div>
+    </div>
+    <h3 class="lbl" data-i18n="settings.general">{{ t("settings.general") }}</h3>
+    <div class="keys">
+      <div class="key-row">
+        <label for="s-output_dir" data-i18n="settings.output">{{ t("settings.output") }}</label>
+        <input id="s-output_dir" class="input" type="text" autocomplete="off" spellcheck="false" data-setting="output_dir"
+               data-i18n-placeholder="settings.output_placeholder" placeholder='{{ t("settings.output_placeholder") }}'>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="s-ui_lang" data-i18n="settings.ui_lang">{{ t("settings.ui_lang") }}</label>
+          <select id="s-ui_lang" class="input" data-setting="ui_lang">
+            <option value="es" data-i18n="ui.es">{{ t("ui.es") }}</option>
+            <option value="en" data-i18n="ui.en">{{ t("ui.en") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="s-theme" data-i18n="theme.label">{{ t("theme.label") }}</label>
+          <select id="s-theme" class="input" data-setting="theme">
+            <option value="dark" data-i18n="theme.dark">{{ t("theme.dark") }}</option>
+            <option value="light" data-i18n="theme.light">{{ t("theme.light") }}</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <h3 class="lbl" data-i18n="settings.clipping">{{ t("settings.clipping") }}</h3>
+    <label class="check"><input type="checkbox" id="s-keep_sources" aria-describedby="keep-hint"> <span data-i18n="settings.keep_sources">{{ t("settings.keep_sources") }}</span></label>
+    <p class="hint" id="keep-hint" data-i18n="settings.keep_hint">{{ t("settings.keep_hint") }}</p>
+    <div class="ytdlp">
+      <button type="button" class="pill" id="ytdlp-update" aria-describedby="ytdlp-hint" data-i18n="settings.ytdlp">{{ t("settings.ytdlp") }}</button>
+      <p class="hint" id="ytdlp-hint" data-i18n="settings.ytdlp_hint">{{ t("settings.ytdlp_hint") }}</p>
+      <p class="status" id="ytdlp-status" role="status"></p>
+      <p class="err" id="ytdlp-error" role="alert" hidden></p>
+    </div>
+    <div class="field quit-row">
+      <button type="button" class="b1" id="quit-app" data-i18n="settings.quit">{{ t("settings.quit") }}</button>
+    </div>
+    <p id="settings-error" class="err" role="alert" hidden></p>
+    <div class="btns">
+      <button type="button" class="b1" data-close data-i18n="btn.cancel">{{ t("btn.cancel") }}</button>
+      <button type="button" class="b2" id="settings-save" data-i18n="btn.save">{{ t("btn.save") }}</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="ask" aria-labelledby="ask-title">
+  <div class="dlg small">
+    <h2 id="ask-title"></h2>
+    <p id="ask-text" class="hint"></p>
+    <div id="ask-field" class="field">
+      <label class="lbl" for="ask-input" data-i18n="profile.name">{{ t("profile.name") }}</label>
+      <input id="ask-input" class="input" type="text" maxlength="60" autocomplete="off">
+    </div>
+    <p id="ask-error" class="err" role="alert" hidden></p>
+    <div class="btns">
+      <button type="button" class="b1" id="ask-cancel" data-i18n="btn.cancel">{{ t("btn.cancel") }}</button>
+      <button type="button" class="b2" id="ask-ok"></button>
+    </div>
+  </div>
+</dialog>
+
+<template id="tpl-job">
+  <li class="job">
+    <div class="job-head"><span class="job-title"><span class="job-kind" hidden></span><span class="job-topic"></span></span><span class="chip"></span></div>
+    <div class="job-step"><span class="job-label"></span><span class="job-count"></span></div>
+    <div class="bar small"><i></i></div>
+    <p class="err job-err" hidden></p>
+    <div class="job-actions">
+      <button type="button" class="pill" data-job-act="review" data-i18n="queue.review">{{ t("queue.review") }}</button>
+      <button type="button" class="pill" data-job-act="open" data-i18n="queue.open">{{ t("queue.open") }}</button>
+      <button type="button" class="pill" data-job-act="cancel" data-i18n="queue.cancel">{{ t("queue.cancel") }}</button>
+      <button type="button" class="pill" data-job-act="remove" data-i18n="queue.remove">{{ t("queue.remove") }}</button>
+    </div>
+  </li>
+</template>
+
+<template id="tpl-script">
+  <article class="script-card panel">
+    <div class="script-head">
+      <h3 class="script-topic"></h3>
+      <button type="button" class="link-btn script-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
+    </div>
+    <p class="err script-err" role="alert" hidden></p>
+    <button type="button" class="pill script-retry" hidden data-i18n="review.retry">{{ t("review.retry") }}</button>
+    <div class="script-body">
+      <ol class="scenes"></ol>
+    </div>
+  </article>
+</template>
+
+<template id="tpl-scene">
+  <li class="scene">
+    <div class="lbl scene-n"></div>
+    <label class="sr-only scene-text-label" data-i18n="review.text">{{ t("review.text") }}</label>
+    <textarea class="input scene-text" rows="2"></textarea>
+    <label class="lbl scene-kw-label" data-i18n="review.keywords">{{ t("review.keywords") }}</label>
+    <input class="input scene-kw" type="text" spellcheck="false">
+  </li>
+</template>
+
+<template id="tpl-moment">
+  <article class="moment panel">
+    <div class="moment-head">
+      <label class="check m-pick-wrap"><input type="checkbox" class="m-pick"> <span data-i18n="moment.pick">{{ t("moment.pick") }}</span></label>
+      <span class="chip m-score"></span>
+      <span class="chip m-kind"></span>
+      <button type="button" class="link-btn m-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
+    </div>
+    <p class="m-text" role="button" tabindex="0" aria-expanded="false" hidden></p>
+    <video class="m-video" controls playsinline preload="none" data-i18n-aria="moment.preview" aria-label='{{ t("moment.preview") }}'></video>
+    <div class="moment-fields">
+      <div class="field wide">
+        <label class="lbl m-title-label" data-i18n="moment.title">{{ t("moment.title") }}</label>
+        <input class="input m-title" type="text" maxlength="120" autocomplete="off">
+      </div>
+      <div class="field">
+        <label class="lbl m-start-label" data-i18n="moment.start">{{ t("moment.start") }}</label>
+        <div class="stepper">
+          <button type="button" class="pill m-step" data-edge="start" data-delta="-0.5" data-i18n-aria="moment.minus" aria-label='{{ t("moment.minus") }}'>−</button>
+          <input class="input m-start" type="text" inputmode="decimal" spellcheck="false" autocomplete="off">
+          <button type="button" class="pill m-step" data-edge="start" data-delta="0.5" data-i18n-aria="moment.plus" aria-label='{{ t("moment.plus") }}'>+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="lbl m-end-label" data-i18n="moment.end">{{ t("moment.end") }}</label>
+        <div class="stepper">
+          <button type="button" class="pill m-step" data-edge="end" data-delta="-0.5" data-i18n-aria="moment.minus" aria-label='{{ t("moment.minus") }}'>−</button>
+          <input class="input m-end" type="text" inputmode="decimal" spellcheck="false" autocomplete="off">
+          <button type="button" class="pill m-step" data-edge="end" data-delta="0.5" data-i18n-aria="moment.plus" aria-label='{{ t("moment.plus") }}'>+</button>
+        </div>
+      </div>
+      <p class="hint wide m-len"></p>
+      <div class="field">
+        <label class="lbl m-framing-label" data-i18n="framing.title">{{ t("framing.title") }}</label>
+        <select class="input m-framing">
+          <option value="cara" data-i18n="framing.cara">{{ t("framing.cara") }}</option>
+          <option value="centro" data-i18n="framing.centro">{{ t("framing.centro") }}</option>
+          <option value="completo" data-i18n="framing.completo">{{ t("framing.completo") }}</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="lbl m-credit-label" data-i18n="moment.credit">{{ t("moment.credit") }}</label>
+        <input class="input m-credit" type="text" maxlength="80" autocomplete="off"
+               data-i18n-placeholder="moment.credit_placeholder" placeholder='{{ t("moment.credit_placeholder") }}'>
+      </div>
+      <p class="err wide m-err" hidden></p>
+    </div>
+  </article>
+</template>
+</body>
+</html>
