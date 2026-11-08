@@ -17,6 +17,7 @@ dependencies = [
     "fonttools",
     "waitress>=3,<4",
     "yt-dlp",
+    "faster-whisper",
 ]
 
 [project.optional-dependencies]
