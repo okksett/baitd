@@ -387,6 +387,7 @@
       </div>
       <p class="hint" id="clip-review-source"></p>
       <p class="hint" data-i18n="clip.review_hint">{{ t("clip.review_hint") }}</p>
+      <p class="hint" id="clip-keep-note" data-i18n="clip.keep_note">{{ t("clip.keep_note") }}</p>
       <div id="moment-list"></div>
       <p id="clip-why" class="why" role="status"></p>
       <p id="clip-review-error" class="err" role="alert" hidden></p>
@@ -550,7 +551,7 @@
 <template id="tpl-script">
   <article class="script-card panel">
     <div class="script-head">
-      <h4 class="script-topic"></h4>
+      <h3 class="script-topic"></h3>
       <button type="button" class="link-btn script-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
     </div>
     <p class="err script-err" role="alert" hidden></p>
@@ -579,6 +580,7 @@
       <span class="chip m-kind"></span>
       <button type="button" class="link-btn m-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
     </div>
+    <p class="m-text" role="button" tabindex="0" aria-expanded="false" hidden></p>
     <video class="m-video" controls playsinline preload="none" data-i18n-aria="moment.preview" aria-label='{{ t("moment.preview") }}'></video>
     <div class="moment-fields">
       <div class="field wide">

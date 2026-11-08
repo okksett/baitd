@@ -1038,10 +1038,17 @@
     });
   }
 
+  const reviewSignature = (r) => JSON.stringify(r.moments.map((m) => [m.orig, m.pick, m.title, m.start, m.end, m.framing, m.credit]));
+  const reviewEdited = (r) => reviewSignature(r) !== r.baseline;
+
   async function openReview(job, userAsked) {
     const errBox = userAsked ? $("#queue-error") : $("#clip-error");
     const open = state.clip.review;
     if (!open || open.analysisId !== job.analysis_id) {
+      if (open && userAsked && reviewEdited(open)) {
+        const yes = await ask({ title: tr("clip.switch_title"), text: tr("clip.switch_confirm"), ok: tr("queue.review") });
+        if (!yes) return;
+      }
       try {
         const data = await api("GET", `/api/analyses/${encodeURIComponent(job.analysis_id)}`);
         const profileId = analysisProfileId(job);
@@ -1053,10 +1060,14 @@
           moments: ranked.map((m, i) => ({ ...m, title: m.title || "", framing: m.framing || "cara",
             credit: m.credit || "", pick: i < count, raw: {} })),
         };
+        state.clip.review.baseline = reviewSignature(state.clip.review);
       } catch (e) {
         showError(errBox, e.status === 404 ? new Error(tr("err.analysis_gone")) : e);
         return;
       }
+      try {
+        state.clip.keepSources = (await api("GET", "/api/settings")).keep_sources === true;
+      } catch (_) { /* the note then stays visible: the default is to delete */ }
       showError(errBox, null);
       showError($("#clip-review-error"), null);
       $("#clip-status").textContent = "";
@@ -1102,6 +1113,7 @@
       return;
     }
     $("#clip-review").hidden = false;
+    $("#clip-keep-note").hidden = state.clip.keepSources === true;
     $("#clip-review-source").textContent = `${r.source.title} · ${fmtTime(r.source.duration, false)}`;
     $("#moment-list").replaceChildren(...r.moments.map((m, i) => momentCard(m, i)));
     renderExportState();
@@ -1141,6 +1153,20 @@
     framing.addEventListener("change", () => { m.framing = framing.value; });
     credit.value = m.credit;
     credit.addEventListener("input", () => { m.credit = credit.value; });
+
+    const text = $(".m-text", node);
+    if (m.text) {
+      text.textContent = m.text;
+      text.hidden = false;
+      const toggle = () => {
+        const open = text.classList.toggle("open");
+        text.setAttribute("aria-expanded", String(open));
+      };
+      text.addEventListener("click", toggle);
+      text.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+      });
+    }
 
     // the preview plays only the moment: the media fragment starts it, timeupdate stops it at the end
     const video = $(".m-video", node);
@@ -1439,6 +1465,7 @@
       showError($("#settings-error"), e);
       return;
     }
+    state.clip.keepSources = body.keep_sources;
     if (body.theme) {
       document.documentElement.dataset.theme = body.theme;
       renderTheme();

@@ -1,6 +1,7 @@
 import json
 import shutil
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -278,3 +279,17 @@ def test_export_with_edited_bounds_keeps_the_moment_texts(client, profile_id, qu
                                       lambda *a: None)
     text = (folder / "publicacion.txt").read_text(encoding="utf-8")
     assert "Nuevo" in text and "Descripción" in text and "#risa #clip" in text
+
+
+def test_review_ui_strings():
+    """String checks on the shipped UI (no browser): headings, candidate text, keep note, switch guard."""
+    from baitd.web import server
+    web = Path(server.__file__).resolve().parent
+    html = (web / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (web / "static" / "app.js").read_text(encoding="utf-8")
+    css = (web / "static" / "app.css").read_text(encoding="utf-8")
+    assert "<h4" not in html and '<h3 class="script-topic">' in html
+    assert ".review .script-topic" in css and "-webkit-line-clamp: 3" in css
+    assert 'class="m-text"' in html and "text.textContent = m.text" in js and "innerHTML" not in js
+    assert 'id="clip-keep-note"' in html and "clip-keep-note" in js
+    assert "reviewEdited(open)" in js and 'tr("clip.switch_confirm")' in js

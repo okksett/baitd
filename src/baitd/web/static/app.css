@@ -227,7 +227,7 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 .review-head, .queue-head, .script-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .review h3, .queue h3 { font: 400 20px/1.1 Anton, sans-serif; text-transform: uppercase; letter-spacing: .3px; }
 .script-card { margin-top: 14px; }
-.script-topic { font-size: 15px; }
+.review .script-topic { font-family: inherit; font-size: 15px; font-weight: 600; line-height: normal; text-transform: none; letter-spacing: normal; }
 .script-retry { margin-top: 8px; }
 .scenes { list-style: none; margin: 0; padding: 0; }
 .scene { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -264,6 +264,8 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 .moment-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .moment-head .check { margin: 0 4px 0 0; font-weight: 500; }
 .moment-head .m-remove { margin-left: auto; }
+.m-text { margin: 10px 0 0; font-size: 14px; line-height: 1.45; cursor: pointer; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.m-text.open { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
 .m-video { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 260px; margin-top: 10px; border-radius: 10px; background: #000; }
 .moment-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
 .moment-fields .wide { grid-column: 1 / -1; }
