@@ -185,17 +185,51 @@ class JobQueue:
     def remove(self, id: str) -> None:
         """Delete one finished (done/error/cancelled) item; other statuses are left alone."""
         with self._lock:
-            before = len(self._items)
-            self._items = [i for i in self._items if not (i["id"] == id and i["status"] in _FINISHED)]
-            if len(self._items) != before:
+            gone = [i for i in self._items if i["id"] == id and i["status"] in _FINISHED]
+            if gone:
+                self._items = [i for i in self._items if i not in gone]
                 self._save()
+        self._release(gone)
 
     def clear_finished(self) -> None:
         with self._lock:
-            before = len(self._items)
-            self._items = [i for i in self._items if i["status"] not in _FINISHED]
-            if len(self._items) != before:
+            gone = [i for i in self._items if i["status"] in _FINISHED]
+            if gone:
+                self._items = [i for i in self._items if i["status"] not in _FINISHED]
                 self._save()
+        self._release(gone)
+
+    def _release(self, gone: list[dict]) -> None:
+        """Removed clip items free what they held: a finished analysis and its source, or the uploaded source
+        of a failed run, unless kept or still needed by an unfinished item (ruling T8c). Called unlocked."""
+        clip = [i for i in gone if i["kind"] != "short"]
+        if not clip:
+            return
+        settings = config.load_settings()
+        busy = lambda: self._unfinished_refs("")  # noqa: E731
+        for i in clip:
+            if i["kind"] == "clip_analyze" and i["analysis_id"]:
+                clip_pipeline.release_analysis(i["analysis_id"], settings, busy)
+            src = i["payload"].get("source")
+            if isinstance(src, dict) and isinstance(src.get("source_id"), str):
+                clip_pipeline.release_source_id(src["source_id"], settings, busy)
+
+    def sweep_clip_data(self, keep_sources: bool) -> None:
+        """Startup: drop analyses no queue item lists and sources nothing needs (see clip.pipeline.sweep)."""
+        analyses, sources_ = set(), set()
+        with self._lock:
+            for i in self._items:
+                if i["kind"] == "short":
+                    continue
+                if i["kind"] == "clip_analyze" and i["analysis_id"]:
+                    analyses.add(i["analysis_id"])
+                if i["status"] in ("pending", "running"):
+                    if isinstance(i["payload"].get("analysis_id"), str):
+                        analyses.add(i["payload"]["analysis_id"])
+                    src = i["payload"].get("source")
+                    if isinstance(src, dict) and isinstance(src.get("source_id"), str):
+                        sources_.add(src["source_id"])
+        clip_pipeline.sweep(analyses, sources_, keep_sources)
 
     def start(self) -> None:
         with self._lock:

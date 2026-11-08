@@ -874,12 +874,22 @@
     $("#c-url").disabled = false;
   }
 
+  // An upload no job has used yet is also deleted on the server; the server refuses (409) if something needs it.
+  function dropSource() {
+    const s = state.clip.source;
+    clearSource();
+    if (!s || !s.unused) return;
+    api("DELETE", `/api/sources/${encodeURIComponent(s.source_id)}`, {}).catch((e) => {
+      if (e.status !== 404 && e.status !== 409) showError($("#clip-error"), e);
+    });
+  }
+
   // Raw bytes over XMLHttpRequest (fetch has no upload progress); the server streams them to disk.
   function startUpload(file) {
     if (!file || state.busy || state.clip.xhr) return;
     showError($("#clip-error"), null);
     $("#clip-status").textContent = "";
-    clearSource();
+    dropSource();
     const xhr = new XMLHttpRequest();
     state.clip.xhr = xhr;
     xhr.open("POST", `/api/uploads?name=${encodeURIComponent(file.name)}`);
@@ -897,7 +907,7 @@
     xhr.addEventListener("load", () => {
       finish();
       const data = xhr.response;
-      if (xhr.status >= 200 && xhr.status < 300 && data && data.source_id) setSource(data);
+      if (xhr.status >= 200 && xhr.status < 300 && data && data.source_id) setSource({ ...data, unused: true });
       else showError($("#clip-error"), new Error((data && data.error) || tr("err.upload")));
     });
     xhr.addEventListener("error", () => {
@@ -1514,7 +1524,7 @@
       startUpload(file);
     });
     $("#upload-cancel").addEventListener("click", () => { if (state.clip.xhr) state.clip.xhr.abort(); });
-    $("#c-source-remove").addEventListener("click", () => { clearSource(); $("#c-url").focus(); });
+    $("#c-source-remove").addEventListener("click", () => { dropSource(); $("#c-url").focus(); });
     bindDrop();
     $("#c-url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !state.busy) onClipRun("auto"); });
     $("#clip-find").addEventListener("click", () => onClipRun("review"));

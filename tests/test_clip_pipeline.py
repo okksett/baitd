@@ -386,3 +386,98 @@ def test_selftest_includes_clips(tmp_data, tmp_path_factory):
         info = probe(folder / name)
         assert (info["width"], info["height"]) == (1080, 1920)
         assert abs(info["fps"] - 30) < 0.01
+
+
+# ---- lifecycle: startup sweep and releasing what a removed queue item held ----
+
+def _clip_row(id, kind, status, payload, analysis_id=""):
+    return _old_item(id=id, kind=kind, status=status, payload=payload, analysis_id=analysis_id)
+
+
+def _fake_source(sid):
+    d = sources.sources_dir() / sid
+    d.mkdir(parents=True)
+    (d / "source.mp4").write_bytes(b"x")
+    return d
+
+
+def _fake_analysis(aid, sid):
+    f = pipeline.analyses_dir() / f"{aid}.json"
+    f.write_text(json.dumps({"source_id": sid}), encoding="utf-8")
+    return f
+
+
+def _sweep_fixture(tmp_data):
+    s = {k: _fake_source(k * 12) for k in "abcdef"}  # a: listed analysis, b: pending job, c: pending export's
+    partial = sources.sources_dir() / ("9" * 12)  # an upload cut by a crash: no meta.json
+    partial.mkdir()
+    an = {"listed": _fake_analysis("1" * 12, "a" * 12), "export": _fake_analysis("2" * 12, "c" * 12),
+          "orphan": _fake_analysis("3" * 12, "d" * 12), "of_removed": _fake_analysis("4" * 12, "e" * 12)}
+    path = tmp_data / "queue.json"
+    _write_queue(path, [
+        _clip_row("q1" + "0" * 10, "clip_analyze", "done", {"source": {"source_id": "a" * 12}}, "1" * 12),
+        _clip_row("q2" + "0" * 10, "clip_auto", "pending", {"source": {"source_id": "b" * 12}}),
+        _clip_row("q3" + "0" * 10, "clip_export", "pending", {"analysis_id": "2" * 12, "moments": []}, "2" * 12),
+        _clip_row("q4" + "0" * 10, "clip_auto", "error", {"source": {"source_id": "f" * 12}}),
+    ])
+    return JobQueue(path), s, an, partial
+
+
+def test_startup_sweep_removes_what_nothing_needs(tmp_data):
+    q, s, an, partial = _sweep_fixture(tmp_data)
+    q.sweep_clip_data(keep_sources=False)
+    assert an["listed"].exists() and an["export"].exists()
+    assert not an["orphan"].exists() and not an["of_removed"].exists()
+    assert sorted(p.name for p in sources.sources_dir().iterdir()) == ["a" * 12, "b" * 12, "c" * 12]
+    assert not partial.exists()
+
+
+def test_startup_sweep_keeps_sources_when_asked(tmp_data):
+    q, s, an, partial = _sweep_fixture(tmp_data)
+    q.sweep_clip_data(keep_sources=True)
+    assert not an["orphan"].exists()  # analyses no item lists cannot be reached: they go anyway
+    assert all(d.exists() for d in s.values()) and partial.exists()
+
+
+def _analyze_done_queue(tmp_data, *extra):
+    _fake_source("a" * 12)
+    aid = "1" * 12
+    f = _fake_analysis(aid, "a" * 12)
+    path = tmp_data / "queue.json"
+    rows = [_clip_row("q1" + "0" * 10, "clip_analyze", "done", {"source": {"url": "https://x.test/v"}}, aid), *extra]
+    _write_queue(path, rows)
+    return JobQueue(path), f
+
+
+def test_removing_a_done_analysis_releases_it_and_its_source(tmp_data):
+    q, f = _analyze_done_queue(tmp_data)
+    q.remove("q1" + "0" * 10)
+    assert q.list() == [] and not f.exists()
+    assert not list(sources.sources_dir().iterdir())
+
+
+def test_clearing_finished_releases_analysis_but_honours_keep_sources(tmp_data):
+    config.save_settings({"keep_sources": True})
+    q, f = _analyze_done_queue(tmp_data)
+    q.clear_finished()
+    assert not f.exists()
+    assert [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
+
+
+def test_removing_a_done_analysis_keeps_what_an_unfinished_export_needs(tmp_data):
+    export = _clip_row("q2" + "0" * 10, "clip_export", "pending", {"analysis_id": "1" * 12, "moments": []}, "1" * 12)
+    q, f = _analyze_done_queue(tmp_data, export)
+    q.remove("q1" + "0" * 10)
+    assert f.exists() and [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
+
+
+def test_removing_a_failed_run_releases_its_unused_upload(tmp_data):
+    _fake_source("b" * 12)
+    _fake_source("c" * 12)
+    _fake_analysis("5" * 12, "c" * 12)  # another analysis still needs source c
+    path = tmp_data / "queue.json"
+    _write_queue(path, [_clip_row("q1" + "0" * 10, "clip_auto", "error", {"source": {"source_id": "b" * 12}}),
+                        _clip_row("q2" + "0" * 10, "clip_auto", "cancelled", {"source": {"source_id": "c" * 12}})])
+    q = JobQueue(path)
+    q.clear_finished()
+    assert [p.name for p in sources.sources_dir().iterdir()] == ["c" * 12]

@@ -565,6 +565,18 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         clip_pipeline.delete_analysis(analysis_id)
         return jsonify(ok=True)
 
+    @app.delete("/api/sources/<source_id>")
+    def delete_source(source_id: str):
+        """The "Quitar archivo" button: an upload no job has used yet, never one still needed."""
+        _body()
+        if not clip_sources.valid_id(source_id) or not (clip_sources.sources_dir() / source_id).is_dir():
+            abort(404)
+        if clip_pipeline.source_needed(source_id, queue.unfinished_refs):
+            return jsonify(error=str(UserError("Ese video lo usa un trabajo de la cola o un análisis",
+                                               "Espera a que termine o descarta el análisis"))), 409
+        clip_sources.delete_source(source_id)
+        return jsonify(ok=True)
+
     @app.get("/api/sources/<source_id>/media")
     def source_media(source_id: str):
         if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites

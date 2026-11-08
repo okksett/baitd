@@ -169,6 +169,10 @@ def main(argv: list[str] | None = None) -> None:
 def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     handlers = _setup_logging()
     queue = JobQueue(config.data_dir() / "queue.json")
+    try:  # before the server can accept an upload: nothing in flight can be mistaken for a leftover
+        queue.sweep_clip_data(keep_sources=bool(config.load_settings().get("keep_sources")))
+    except OSError:
+        log.exception("No se pudo limpiar fuentes/ y analisis/")
     global _server
     try:
         port = args.port or find_free_port()

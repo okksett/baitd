@@ -231,8 +231,12 @@ def load_source(source_id: str) -> SourceInfo:
     return src
 
 
+def valid_id(source_id) -> bool:
+    return isinstance(source_id, str) and bool(_ID.fullmatch(source_id))
+
+
 def delete_source(source_id: str) -> None:
-    if isinstance(source_id, str) and _ID.fullmatch(source_id):
+    if valid_id(source_id):
         shutil.rmtree(_folder(source_id), ignore_errors=True)
 
 

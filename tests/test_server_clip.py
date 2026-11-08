@@ -217,3 +217,25 @@ def test_settings_keep_sources(client):
     assert client.post("/api/settings", json={"keep_sources": True}).get_json()["keep_sources"] is True
     assert client.post("/api/settings", json={"keep_sources": "yes"}).status_code == 400
     assert config.load_settings()["keep_sources"] is True
+
+
+def test_delete_unused_upload(client, profile_id, queue, make_mp4):
+    src = _source(make_mp4, seconds=2)
+    assert client.delete(f"/api/sources/{src.id}", data=b"{}", headers=UP).status_code == 415  # JSON only
+    r = client.delete(f"/api/sources/{src.id}", json={})
+    assert r.status_code == 200 and r.get_json() == {"ok": True}
+    assert not (sources.sources_dir() / src.id).exists()
+    assert client.delete(f"/api/sources/{src.id}", json={}).status_code == 404
+    for bad in ("ABCDEF012345", "0123456789a", "..%2Fx"):
+        assert client.delete(f"/api/sources/{bad}", json={}).status_code == 404
+
+
+def test_delete_source_in_use_is_409(client, profile_id, queue, make_mp4):
+    used = _source(make_mp4, seconds=2)
+    client.post("/api/clips", json={"profile_id": profile_id, "mode": "review", "source_id": used.id})  # pending job
+    analysed = _source(make_mp4, seconds=2)
+    _analysis(analysed)
+    for src in (used, analysed):
+        r = client.delete(f"/api/sources/{src.id}", json={})
+        assert r.status_code == 409 and "→" in r.get_json()["error"]
+        assert sources.load_source(src.id).id == src.id

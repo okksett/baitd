@@ -338,6 +338,55 @@ def _release_source(src: SourceInfo, settings: dict, busy: Busy | None = None) -
         _delete_analyses_of(src.id)
 
 
+def _source_of(analysis_file: Path) -> str | None:
+    try:
+        sid = json.loads(analysis_file.read_text(encoding="utf-8")).get("source_id")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return sid if isinstance(sid, str) else None
+
+
+def source_needed(source_id: str, busy: Busy | None) -> bool:
+    """An unfinished queue item or any saved analysis still needs this source."""
+    if busy is not None and source_id in busy()[0]:
+        return True
+    return any(_source_of(f) == source_id for f in analyses_dir().glob("*.json"))
+
+
+def release_source_id(source_id, settings: dict, busy: Busy | None) -> None:
+    """A finished queue item no longer needs this source: it goes unless kept or still needed (ruling T8c)."""
+    if sources.valid_id(source_id) and not settings.get("keep_sources") and not source_needed(source_id, busy):
+        sources.delete_source(source_id)
+
+
+def release_analysis(analysis_id, settings: dict, busy: Busy | None) -> None:
+    """The finished analyze item that owns this analysis left the queue: the analysis goes unless an unfinished
+    item still needs it, then its source under the same rule as release_source_id."""
+    if not _valid_id(analysis_id) or (busy is not None and analysis_id in busy()[1]):
+        return
+    file = analyses_dir() / f"{analysis_id}.json"
+    source_id = _source_of(file) if file.is_file() else None
+    delete_analysis(analysis_id)
+    if source_id is not None:
+        release_source_id(source_id, settings, busy)
+
+
+def sweep(analysis_ids: set[str], source_ids: set[str], keep_sources: bool) -> None:
+    """Startup clean-up of what a crash or a removed queue item left behind: every analysis not in
+    `analysis_ids` goes, then (unless sources are kept) every source folder that neither `source_ids` nor a
+    remaining analysis needs, partial uploads and downloads included."""
+    for f in analyses_dir().glob("*.json"):
+        if _valid_id(f.stem) and f.stem not in analysis_ids:
+            delete_analysis(f.stem)
+    if keep_sources:
+        return
+    needed = set(source_ids) | {_source_of(f) for f in analyses_dir().glob("*.json")}
+    for d in sources.sources_dir().iterdir():
+        if sources.valid_id(d.name) and d.name not in needed:
+            log.info("Borrando el video sin usar %s", d.name)
+            sources.delete_source(d.name)
+
+
 def _discard(folder: Path | None, fetched: SourceInfo | None) -> None:
     if folder is not None:
         shutil.rmtree(folder, ignore_errors=True)
