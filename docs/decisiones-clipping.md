@@ -41,7 +41,7 @@ Durante la construcción de Clipping tuve que decidir cosas que ni el diseño ni
 | T5b | La "energía" de un momento sale del volumen percibido y suma hasta 15 puntos. No detecta risas por sí sola. | Los momentos más ruidosos pesan un poco más. |
 | T6a, T7a | El encuadre se calcula sobre el clip antes de quitar silencios y luego se ajusta a los cortes. | Ninguno conocido. |
 | T7b, T7c | El audio se arma en dos pasos y se quitan silencios largos dejando 0.15 s. | Un paso extra de FFmpeg por clip. |
-| P1–P3 | Detalles del renombre a Baitd: tus datos de Baitd se copian una vez a la carpeta nueva, incluida la música elegida. | La app olvida una vez la pestaña y el idioma que tenías. |
+| P1–P3 | Detalles internos de cómo se organizan los módulos y las claves guardadas en el navegador. | Ninguno conocido. |
 
 ## Lo que dejé para una versión siguiente
 

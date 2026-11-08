@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import tempfile
 import threading
 import unicodedata
@@ -31,85 +30,10 @@ _LOCK = threading.RLock()
 
 
 def data_dir() -> Path:
-    # BAITD_DATA wins; BAITD_DATA is the pre-rename name, still honoured for old setups.
-    env = os.environ.get("BAITD_DATA") or os.environ.get("BAITD_DATA")
+    env = os.environ.get("BAITD_DATA")
     d = Path(env) if env else Path(user_data_dir("Baitd"))
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def legacy_data_dir() -> Path:
-    """Where the app (then called Baitd) kept its data before the rename."""
-    return Path(user_data_dir("Baitd"))
-
-
-# What carries over from the old folder: settings, profiles and the user's own music. The queue,
-# clip cache, outputs and log stay behind.
-_MIGRATED = ("settings.json", "profiles.json", "musica")
-
-
-def migrate_legacy_data(old: Path, new: Path) -> bool:
-    """Copy settings, profiles and user music from `old` to `new`, once.
-
-    Only when `old` exists and `new` does not; returns whether anything was copied."""
-    if not old.is_dir() or new.exists():
-        return False
-    copied = False
-    for name in _MIGRATED:
-        src = old / name
-        try:
-            if src.is_dir():
-                shutil.copytree(src, new / name)
-            elif src.is_file():
-                new.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, new / name)
-            else:
-                continue
-        except OSError:  # a half-readable old folder must not stop the app from starting
-            continue
-        copied = True
-    if (new / "profiles.json").is_file():
-        try:
-            _migrate_music(old, new)
-        except OSError:
-            pass
-    return copied
-
-
-def _same_path(a: Path, b: Path) -> bool:
-    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
-
-
-def _migrate_music(old: Path, new: Path) -> None:
-    """Profile `music` paths point into the old package or the old data folder: rewrite them to the new
-    ones, and any other path the new app cannot offer to the default (the profile could not be saved)."""
-    from .audio import MOODS, MUSIC_DIR  # lazy: audio imports this module
-
-    def valid(p: Path) -> bool:
-        return p.is_file() and any(_same_path(p.parent, d) for d in (*(MUSIC_DIR / m for m in MOODS), new / "musica"))
-
-    def rewrite(value):
-        if not isinstance(value, str) or value in ("none", *MOODS) or valid(Path(value)):
-            return value
-        p = Path(value)
-        if len(p.parts) >= 3 and p.parts[-3] == "music" and p.parts[-2] in MOODS:
-            candidate = MUSIC_DIR / p.parts[-2] / p.name
-        elif _same_path(p.parent, old / "musica"):
-            candidate = new / "musica" / p.name
-        else:
-            candidate = None
-        return str(candidate) if candidate is not None and valid(candidate) else default_profile().music
-
-    path = new / "profiles.json"
-    raw = _read_json(path, [], list)
-    changed = False
-    for d in raw:
-        if isinstance(d, dict) and "music" in d:
-            music = rewrite(d["music"])
-            changed |= music != d["music"]
-            d["music"] = music
-    if changed:
-        _write_json(path, raw)
 
 
 def _write_json(path: Path, obj) -> None:

@@ -116,62 +116,10 @@ def test_slugify_all_emoji_fallback():
     assert slugify("🔥🔥") == "video"
 
 
-def test_migrate_copies_profiles_settings_music_once(tmp_path):
+def test_data_dir_from_env(tmp_path, monkeypatch):
     from baitd import config
-    old, new = tmp_path / "Baitd", tmp_path / "Baitd"
-    (old / "musica").mkdir(parents=True)
-    (old / "cache").mkdir()
-    (old / "settings.json").write_text('{"openai_key": "sk-x"}', encoding="utf-8")
-    (old / "profiles.json").write_text("[]", encoding="utf-8")
-    (old / "musica" / "a.mp3").write_bytes(b"x")
-    (old / "queue.json").write_text("[]", encoding="utf-8")
-    (old / "cache" / "c.bin").write_bytes(b"x")
-    assert config.migrate_legacy_data(old, new) is True
-    assert (new / "settings.json").read_text(encoding="utf-8") == '{"openai_key": "sk-x"}'
-    assert (new / "profiles.json").exists()
-    assert (new / "musica" / "a.mp3").exists()
-    assert not (new / "queue.json").exists() and not (new / "cache").exists()
-    assert config.migrate_legacy_data(old, new) is False  # new already exists -> no-op
-
-
-def test_migrate_noop_without_old(tmp_path):
-    from baitd import config
-    assert config.migrate_legacy_data(tmp_path / "Baitd", tmp_path / "Baitd") is False
-    assert not (tmp_path / "Baitd").exists()
-
-
-def test_data_dir_prefers_baitd_then_legacy_env(tmp_path, monkeypatch):
-    from baitd import config
-    monkeypatch.delenv("BAITD_DATA", raising=False)
-    monkeypatch.setenv("BAITD_DATA", str(tmp_path / "legacy"))
-    assert config.data_dir() == tmp_path / "legacy"
-    monkeypatch.setenv("BAITD_DATA", str(tmp_path / "new"))
-    assert config.data_dir() == tmp_path / "new"
-
-
-def test_migrate_rewrites_music_paths(tmp_path):
-    import json
-    from baitd import audio, config
-    old, new = tmp_path / "Baitd", tmp_path / "Baitd"
-    (old / "musica").mkdir(parents=True)
-    (old / "musica" / "mia.mp3").write_bytes(b"x")
-    bundled = next((audio.MUSIC_DIR / "lofi").glob("*.mp3"))
-    old_pkg = tmp_path / "site-packages" / "baitd" / "assets" / "music"
-
-    def prof(pid, music):
-        return {**default_profile().to_dict(), "id": pid, "name": pid, "music": music}
-
-    profiles = [prof("a", str(old_pkg / "lofi" / bundled.name)),     # old bundled track -> new bundled path
-                prof("b", str(old / "musica" / "mia.mp3")),           # old user track -> new musica/
-                prof("c", str(old_pkg / "lofi" / "borrada.mp3")),     # bundled track that no longer exists
-                prof("d", str(tmp_path / "otra" / "x.mp3")),          # anything else unresolvable
-                prof("e", "epico"), prof("f", "none"), prof("g", str(bundled))]  # already valid: unchanged
-    (old / "profiles.json").write_text(json.dumps(profiles), encoding="utf-8")
-    assert config.migrate_legacy_data(old, new) is True
-    music = {p["id"]: p["music"] for p in json.loads((new / "profiles.json").read_text(encoding="utf-8"))}
-    default = default_profile().music
-    assert music == {"a": str(bundled), "b": str(new / "musica" / "mia.mp3"), "c": default, "d": default,
-                     "e": "epico", "f": "none", "g": str(bundled)}
+    monkeypatch.setenv("BAITD_DATA", str(tmp_path / "datos"))
+    assert config.data_dir() == tmp_path / "datos" and (tmp_path / "datos").is_dir()
 
 
 def test_bad_clipping_block_keeps_the_profile(tmp_data, caplog):
