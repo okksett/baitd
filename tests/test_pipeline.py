@@ -36,7 +36,7 @@ def prof():
 def fakes(monkeypatch, media_dir, tmp_data):
     state = {"llm": 0, "counter": 0, "used_seen": []}
 
-    def gen(topic, profile, settings):
+    def gen(topic, profile, settings, cancel=None):
         state["llm"] += 1
         return SCRIPT
 
@@ -211,3 +211,35 @@ def test_render_failure_is_a_user_error_and_logged(tmp_data, fakes, prof, monkey
             pipeline.run_job("tema", prof, {}, SCRIPT, threading.Event(), Rec())
     assert str(e.value) == "No se pudo renderizar el video → Comprueba el espacio en disco y vuelve a intentarlo"
     assert "No space left on device" in caplog.text
+
+
+def test_cancel_during_ai_retry_wait_ends_cancelled(tmp_data, monkeypatch, prof):
+    import requests
+    from baitd.jobqueue import JobQueue
+    from baitd.llm import _http
+
+    class Busy:
+        status_code = 503
+        text = "{}"
+
+        def json(self):
+            return {}
+
+    waits = []
+    holder = {}
+
+    def sleep(seconds, cancel=None):  # the user clicks Cancelar while the app waits to retry
+        waits.append(seconds)
+        holder["cancel"].set()
+        if cancel is not None and cancel.is_set():
+            raise JobCancelled()
+
+    monkeypatch.setattr(_http, "_sleep", sleep)
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Busy())
+    settings = {"llm_provider": "gemini", "gemini_key": "k"}
+    cancel = threading.Event()
+    holder["cancel"] = cancel
+    with pytest.raises(JobCancelled):
+        pipeline.run_job("tema", prof, settings, None, cancel, Rec())
+    assert waits == [5]  # one wait, then cancelled: no further attempts
+    assert not (tmp_data / "salidas").exists() or list((tmp_data / "salidas").iterdir()) == []

@@ -118,6 +118,7 @@ def complete(prompt: str, profile: Profile, settings: dict, cancel: threading.Ev
 
 _OPENAI_KEEP = ("gpt-", "o1", "o3", "o4", "chatgpt-")
 _OPENAI_DROP = ("audio", "realtime", "transcribe", "tts", "image", "search", "embedding")
+_GEMINI_DROP = ("tts", "image", "audio", "live", "embedding")  # generateContent models that cannot write a script
 
 
 def list_models(provider: str, settings: dict) -> list[str]:
@@ -135,7 +136,8 @@ def list_models(provider: str, settings: dict) -> list[str]:
                      if "generateContent" in m.get("supportedGenerationMethods", [])]
         except (KeyError, TypeError, AttributeError):
             raise unexpected("Gemini") from None
-        return sorted(n.removeprefix("models/") for n in names if n.startswith("models/gemini"))
+        return sorted(n.removeprefix("models/") for n in names
+                      if n.startswith("models/gemini") and not any(w in n for w in _GEMINI_DROP))
     headers = {}
     if provider == "openai":
         label, base, key = "OpenAI", openai_compat.OPENAI_BASE, settings.get("openai_key", "")
@@ -161,9 +163,10 @@ def list_models(provider: str, settings: dict) -> list[str]:
     return sorted(set(ids))
 
 
-def generate_script(topic: str, profile: Profile, settings: dict) -> Script:
+def generate_script(topic: str, profile: Profile, settings: dict,
+                    cancel: threading.Event | None = None) -> Script:
     def _complete(prompt: str) -> str:
-        return complete(prompt, profile, settings)
+        return complete(prompt, profile, settings, cancel)
 
     prompt = build_prompt(topic, profile)
     try:

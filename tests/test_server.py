@@ -812,6 +812,35 @@ def test_install_failed_verification_does_not_launch(client, monkeypatch):
     assert r.status_code == 400 and "verificar" in r.json["error"]
 
 
+def test_install_disk_error_is_a_user_error(client, monkeypatch):
+    from baitd import updater
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+    monkeypatch.setattr(updater, "download_and_verify", lambda *a, **k: (_ for _ in ()).throw(
+        UserError("No se pudo guardar la actualización",
+                  "Libera espacio en el disco o descárgala desde la página de Baitd")))
+    r = client.post("/api/update/install", json={})
+    assert r.status_code == 400
+    assert r.json["error"] == ("No se pudo guardar la actualización → "
+                               "Libera espacio en el disco o descárgala desde la página de Baitd")
+
+
+def test_install_after_successful_launch_gets_409(queue, monkeypatch, tmp_data):
+    from baitd import updater
+    calls = []
+    monkeypatch.setattr(updater, "installing", False)
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+    monkeypatch.setattr(updater, "download_and_verify", lambda l, dest, **k: calls.append("download") or dest / "s.exe")
+    monkeypatch.setattr(updater, "launch_installer", lambda p: calls.append("launch"))
+    app = server.create_app(queue, shutdown=lambda: None)
+    app.test_client_class = LocalClient
+    assert app.test_client().post("/api/update/install", json={}).status_code == 200
+    r2 = app.test_client().post("/api/update/install", json={})  # inside the 0.3 s before shutdown
+    assert r2.status_code == 409 and "Ya se está descargando la actualización" in r2.json["error"]
+    assert calls == ["download", "launch"]
+
+
 def test_second_concurrent_install_gets_409(queue, monkeypatch, tmp_data):
     from baitd import updater
     started, release = threading.Event(), threading.Event()

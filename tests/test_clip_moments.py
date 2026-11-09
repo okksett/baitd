@@ -240,7 +240,7 @@ def test_generate_script_still_uses_complete(monkeypatch):
         "scenes": [{"text": "Hola mundo ya.", "keywords": ["a"]}, {"text": "Dos.", "keywords": ["b"]}],
         "description": "d", "hashtags": ["#x"],
     })
-    monkeypatch.setattr(llm, "complete", lambda prompt, profile, settings: prompts.append(prompt) or valid)
+    monkeypatch.setattr(llm, "complete", lambda prompt, profile, settings, cancel=None: prompts.append(prompt) or valid)
     script = llm.generate_script("tema", default_profile(), {})
     assert script.title == "T" and len(prompts) == 1 and "tema" in prompts[0]
 

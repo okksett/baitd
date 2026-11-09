@@ -7,6 +7,12 @@ def no_real_waits(monkeypatch):
     monkeypatch.setattr("baitd.llm._http._sleep", lambda seconds, cancel=None: None)
 
 
+@pytest.fixture(autouse=True)
+def installer_not_launched(monkeypatch):
+    """A test that launches the (fake) installer must not leave later tests with a 409."""
+    monkeypatch.setattr("baitd.updater.installing", False)
+
+
 @pytest.fixture
 def tmp_data(tmp_path, monkeypatch):
     monkeypatch.setenv("BAITD_DATA", str(tmp_path))

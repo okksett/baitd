@@ -88,8 +88,10 @@ def test_check_drops_foreign_asset_urls_and_page():
     assert latest["page"].startswith("https://github.com/okksett/baitd/")
 
 
-def test_can_install(monkeypatch):
+def test_can_install(monkeypatch, tmp_path):
     latest = {"setup_url": SETUP, "sums_url": SUMS}
+    (tmp_path / "unins000.exe").write_bytes(b"x")  # Inno Setup's uninstaller: a real install
+    monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "Baitd.exe"))
     monkeypatch.setattr(updater.sys, "platform", "win32")
     monkeypatch.delattr(updater.sys, "frozen", raising=False)
     assert updater.can_install(latest) is False  # not frozen
@@ -99,6 +101,13 @@ def test_can_install(monkeypatch):
     assert updater.can_install(None) is False
     monkeypatch.setattr(updater.sys, "platform", "linux")
     assert updater.can_install(latest) is False
+
+
+def test_can_install_false_for_portable_zip(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "Baitd.exe"))  # no unins000.exe beside it
+    monkeypatch.setattr(updater.sys, "platform", "win32")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    assert updater.can_install({"setup_url": SETUP, "sums_url": SUMS}) is False
 
 
 INSTALLER = b"MZ-fake-installer" * 10000
@@ -138,6 +147,32 @@ def test_download_network_error_is_user_error(tmp_path):
         updater.download_and_verify(LATEST, tmp_path, get=boom)
     assert "No se pudo descargar la actualización" in str(e.value)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_download_disk_error_is_user_error(tmp_path, monkeypatch):
+    good = hashlib.sha256(INSTALLER).hexdigest()
+    real_open = open
+
+    def full_disk(path, mode="r", *a, **k):
+        if "w" in mode:
+            raise OSError(28, "No space left on device")
+        return real_open(path, mode, *a, **k)
+
+    monkeypatch.setattr("builtins.open", full_disk)
+    with pytest.raises(UserError) as e:
+        updater.download_and_verify(LATEST, tmp_path, get=fake_get(f"{good}  Baitd-Setup.exe"))
+    assert e.value.cause == "No se pudo guardar la actualización"
+    assert e.value.fix == "Libera espacio en el disco o descárgala desde la página de Baitd"
+
+
+def test_launch_installer_os_error_is_user_error(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise OSError(5, "Access denied")
+
+    monkeypatch.setattr(updater.subprocess, "Popen", boom)
+    with pytest.raises(UserError) as e:
+        updater.launch_installer(tmp_path / "s.exe")
+    assert e.value.cause == "No se pudo guardar la actualización"
 
 
 def test_download_refuses_foreign_urls_without_fetching(tmp_path):

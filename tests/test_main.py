@@ -78,6 +78,23 @@ def test_busy_port_reported_before_server_starts(tmp_data, monkeypatch):
     assert "→ Cierra la otra ventana de Baitd o inicia con --port <otro número>" in msg
 
 
+def test_busy_port_probe_is_skipped_off_windows(tmp_data, monkeypatch):
+    # POSIX: waitress binds with SO_REUSEADDR and reports a busy port itself; the probe would fail
+    # on ports still in TIME_WAIT
+    monkeypatch.setattr(app_main.sys, "platform", "linux")
+    monkeypatch.setattr(app_main, "port_is_free", lambda port: pytest.fail("probe must not run"))
+
+    class Reached(Exception):
+        pass
+
+    def build(port, queue):
+        raise Reached
+
+    monkeypatch.setattr(app_main, "build_server", build)
+    with pytest.raises(Reached):
+        app_main.main(["--no-browser", "--port", "5123"])
+
+
 def test_port_out_of_range_rejected(tmp_data):
     with pytest.raises(SystemExit) as exc:
         app_main.main(["--no-browser", "--port", "80"])

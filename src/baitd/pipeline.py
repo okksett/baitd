@@ -145,7 +145,10 @@ def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
 
     begin(1)
     if script is None:
-        script = (providers.generate_script or llm.generate_script)(topic, profile, settings)
+        if providers.generate_script:
+            script = providers.generate_script(topic, profile, settings)
+        else:  # the real call can wait out an overloaded AI for minutes: Cancelar must interrupt it
+            script = llm.generate_script(topic, profile, settings, cancel=cancel)
     end(1)
 
     begin(2)

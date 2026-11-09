@@ -414,6 +414,11 @@ def test_list_models_gemini_filters_and_strips(monkeypatch):
         {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
         {"name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"]},
         {"name": "models/gemma-3-27b", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-preview-tts", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-image", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-native-audio", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-live", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-embedding-exp", "supportedGenerationMethods": ["generateContent"]},
     ]})
     out = llm.list_models("gemini", {"gemini_key": "g-secret"})
     assert out == ["gemini-3.5-flash-lite", "gemini-3.6-flash"]

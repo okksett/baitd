@@ -30,6 +30,10 @@ _CHUNK = 64 * 1024
 
 state: dict = {"latest": None}
 install_lock = threading.Lock()  # one download/verify/launch at a time
+installing = False  # set once the installer has been launched: Baitd is about to close, no second run
+INSTALLER_UNINSTALLER = "unins000.exe"  # Inno Setup's uninstaller: present only in a real install
+_SAVE_FAILED = UserError("No se pudo guardar la actualización",
+                         "Libera espacio en el disco o descárgala desde la página de Baitd")
 
 _ASSET_PATH = re.compile(rf"/{re.escape(REPO)}/releases/download/([^/%]+)/(?:{re.escape(SETUP_NAME)}|{re.escape(SUMS_NAME)})")
 
@@ -101,8 +105,10 @@ def start_background_check(current: str) -> threading.Thread:
 
 
 def can_install(latest: dict | None) -> bool:
+    """True only for the installed app: the portable zip has no uninstaller and cannot be updated in place."""
     return bool(latest and sys.platform == "win32" and getattr(sys, "frozen", False)
-                and latest.get("setup_url") and latest.get("sums_url"))
+                and latest.get("setup_url") and latest.get("sums_url")
+                and (Path(sys.executable).parent / INSTALLER_UNINSTALLER).is_file())
 
 
 def _expected_hash(sums: str, name: str) -> str | None:
@@ -124,6 +130,14 @@ def _file_digest(path: Path) -> str:
 def download_and_verify(latest: dict, dest_dir: Path, get=requests.get) -> Path:
     """Download the installer into dest_dir and return it once its SHA-256 matches the release's
     SHA256SUMS. Earlier downloads in dest_dir are removed first."""
+    try:
+        return _download_and_verify(latest, dest_dir, get)
+    except OSError as e:  # full disk, folder not writable, file locked
+        log.warning("No se pudo guardar la actualización: %s", e)
+        raise UserError(_SAVE_FAILED.cause, _SAVE_FAILED.fix) from e
+
+
+def _download_and_verify(latest: dict, dest_dir: Path, get) -> Path:
     bad_verify = UserError("No se pudo verificar la actualización", "Descárgala desde la página de Baitd")
     setup_url, sums_url = latest.get("setup_url") or "", latest.get("sums_url") or ""
     if not (is_release_asset_url(setup_url) and is_release_asset_url(sums_url)):
@@ -166,5 +180,9 @@ def launch_installer(path: Path) -> None:
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"],
-                     close_fds=True, creationflags=flags)
+    try:
+        subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"],
+                         close_fds=True, creationflags=flags)
+    except OSError as e:  # the file vanished, antivirus blocked it, no permission
+        log.warning("No se pudo iniciar el instalador: %s", e)
+        raise UserError(_SAVE_FAILED.cause, _SAVE_FAILED.fix) from e

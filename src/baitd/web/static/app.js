@@ -1454,7 +1454,10 @@
   }
 
   // The finished videos of a job, playable inside the app.
+  let clipsSeq = 0; // two quick "Ver videos" clicks (or a close meanwhile): only the latest call adds tiles
+
   async function openClips(id) {
+    const seq = ++clipsSeq;
     const dlg = $("#clips-view");
     const grid = $("#clips-grid");
     grid.replaceChildren();
@@ -1463,6 +1466,7 @@
     dlg.dataset.job = id;
     try {
       const r = await api("GET", `/api/jobs/${encodeURIComponent(id)}/clips`);
+      if (seq !== clipsSeq) return;
       grid.classList.toggle("wide", r.aspect === "16:9");
       for (const c of r.clips) {
         const tile = document.createElement("figure");
@@ -1478,16 +1482,21 @@
       }
       $("#clips-empty").hidden = r.clips.length > 0;
     } catch (err) {
+      if (seq !== clipsSeq) return;
       showError($("#clips-error"), err);
     }
     if (!dlg.open) dlg.showModal();
   }
 
-  function closeClips() {
-    const dlg = $("#clips-view");
-    $$("video", dlg).forEach((v) => { v.pause(); v.removeAttribute("src"); v.load(); }); // stop playing and downloading
+  function unloadClips() { // also what Esc does: the videos stop playing and downloading
+    clipsSeq++; // a reply still on its way must not reopen or fill the dialog
+    $$("#clips-view video").forEach((v) => { v.pause(); v.removeAttribute("src"); v.load(); });
     $("#clips-grid").replaceChildren();
-    dlg.close();
+  }
+
+  function closeClips() {
+    unloadClips();
+    $("#clips-view").close();
   }
 
   async function onJobAction(e) {
@@ -1568,6 +1577,7 @@
     const input = $("#s-llm_model");
     if (pick !== MODEL_OTHER) input.value = pick;
     input.hidden = pick !== MODEL_OTHER;
+    input.closest(".field").hidden = input.hidden; // the label goes with the input
     if (fromUser && pick === MODEL_OTHER) input.focus();
   }
 
@@ -1668,6 +1678,7 @@
       await api("POST", "/api/update/install", {});
     } catch (e) {
       btn.disabled = false;
+      $("#update-download").hidden = false; // a way forward: the release page
       $("#update-text").textContent = tr("update.available", { v });
       showError($("#top-error"), e);
       return;
@@ -1819,7 +1830,7 @@
     $("#queue-list").addEventListener("click", onJobAction);
     $("#clips-close").addEventListener("click", closeClips);
     for (const ev of ["cancel", "close"]) { // Esc fires both; the close button runs closeClips
-      $("#clips-view").addEventListener(ev, () => $$("#clips-view video").forEach((v) => v.pause()));
+      $("#clips-view").addEventListener(ev, unloadClips);
     }
     $("#clips-open").addEventListener("click", async () => {
       try {

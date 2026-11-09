@@ -64,12 +64,12 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 
 ## Modelo de IA
 
-El modelo se elige en **⚙ Ajustes → Inteligencia artificial**, junto a las claves, y vale para todos los perfiles y para las dos pestañas (Crear short y Clipping). Eliges el proveedor, y el modelo en una lista desplegable; el botón **Actualizar lista** la rellena con los modelos que tu clave puede usar. Con **Otro…** escribes el nombre a mano (por ejemplo, para Ollama). Ya no se elige por perfil: si un perfil antiguo tenía un modelo escrito, se pasa a Ajustes una sola vez. Si la IA está saturada (errores 500 o 503), Baitd reintenta unas veces con espera creciente antes de dar error.
+El modelo se elige en **⚙ Ajustes → Inteligencia artificial**, junto a las claves, y vale para todos los perfiles y para las dos pestañas (Crear short y Clipping). Eliges el proveedor, y el modelo en una lista desplegable; el botón **Actualizar lista** la rellena con los modelos que tu clave puede usar. Con **Otro…** escribes el nombre a mano (por ejemplo, para Ollama). Ya no se elige por perfil: si un perfil antiguo tenía un modelo escrito, se pasa a Ajustes una sola vez. Si la IA está saturada o con errores temporales del servidor, Baitd reintenta unas veces con espera creciente antes de dar error.
 
 ## Ver el resultado y reintentar
 
 - **Vista previa:** cuando un trabajo termina, el botón **Ver videos** reproduce los resultados dentro de la app (el short, o los clips de Clipping).
-- **Reintentar:** si un trabajo falla o se cancela, el botón **Reintentar** lo vuelve a lanzar sin volver a descargar ni a transcribir el video. Mientras el trabajo siga en la lista, Baitd conserva el video original, incluso si reinicias la app; si lo quitas de la lista, se libera.
+- **Reintentar:** si un trabajo falla o se cancela, el botón **Reintentar** lo vuelve a lanzar sin volver a descargar ni a transcribir el video. En los trabajos de Clipping, mientras el trabajo siga en la lista, Baitd conserva el video original, incluso si reinicias la app; si lo quitas de la lista, se libera.
 
 ## Clipping: sacar clips de un video largo
 
@@ -173,12 +173,12 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 
 ## AI model
 
-The model is chosen in **⚙ Settings → Artificial intelligence**, next to the keys, and applies to every profile and to both tabs (Create short and Clipping). Pick the provider, then the model from a dropdown; the **Refresh list** button fills it with the models your key can use. **Other…** lets you type a name by hand (for example for Ollama). It is no longer set per profile: if an old profile had a model typed in, it is moved to Settings once. When the AI is overloaded (500 or 503 errors), Baitd retries a few times with growing waits before giving up.
+The model is chosen in **⚙ Settings → Artificial intelligence**, next to the keys, and applies to every profile and to both tabs (Create short and Clipping). Pick the provider, then the model from a dropdown; the **Refresh list** button fills it with the models your key can use. **Other…** lets you type a name by hand (for example for Ollama). It is no longer set per profile: if an old profile had a model typed in, it is moved to Settings once. When the AI is overloaded or returning temporary server errors, Baitd retries a few times with growing waits before giving up.
 
 ## Viewing results and retrying
 
 - **Preview:** when a job finishes, the **View videos** button plays the results inside the app (the short, or the Clipping clips).
-- **Retry:** if a job fails or is cancelled, the **Retry** button runs it again without downloading or transcribing the video again. While the job stays in the list, Baitd keeps the original video, even across app restarts; removing it from the list releases it.
+- **Retry:** if a job fails or is cancelled, the **Retry** button runs it again without downloading or transcribing the video again. For Clipping jobs, while the job stays in the list, Baitd keeps the original video, even across app restarts; removing it from the list releases it.
 
 ## Clipping: cut clips from a long video
 

@@ -190,7 +190,9 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         log.exception("No se pudo limpiar fuentes/ y analisis/")
     global _server
     try:
-        if args.port is not None and not port_is_free(args.port):  # waitress would share it silently
+        # Windows only: waitress would share the port silently there. Elsewhere the probe fails on ports in
+        # TIME_WAIT, while waitress binds fine and its OSError below already reports a busy port.
+        if sys.platform == "win32" and args.port is not None and not port_is_free(args.port):
             log.error("No se pudo abrir el puerto %s: está en uso", args.port)
             raise SystemExit(
                 f"No se pudo abrir el puerto {args.port} (está en uso) → Cierra la otra ventana de "
