@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Callable
@@ -19,7 +20,17 @@ from .models import SourceInfo
 
 MAX_SECONDS = 4 * 3600
 UPLOAD_EXTS = ("mp4", "mov", "mkv", "webm", "m4v", "avi", "mp3", "wav", "m4a", "aac", "ogg", "opus", "flac")
-FORMAT = "bv*[height<=2160]+ba/b[height<=2160]/b"
+QUALITIES = (1080, 1440, 2160)  # download height caps offered in Ajustes
+DEFAULT_QUALITY = 1440
+
+
+def format_for(height: int) -> str:
+    return f"bv*[height<={height}]+ba/b[height<={height}]/b"
+
+
+def _quality(settings: dict) -> int:
+    value = settings.get("clip_max_height")
+    return value if type(value) is int and value in QUALITIES else DEFAULT_QUALITY
 _DEFAULT_BYTES_PER_S = 2_000_000
 _ID = re.compile(r"[0-9a-f]{12}")
 _PARTIAL = "upload.json"  # in a source folder while a chunked upload is still arriving
@@ -90,6 +101,85 @@ def _short_reason(err: Exception, url: str) -> str:
     return msg if len(msg) <= 120 else msg[:119].rstrip() + "…"
 
 
+# ---- YouTube session (cookies), for "Sign in to confirm you're not a bot" ----
+
+COOKIE_BROWSERS = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "safari")
+_BROWSER_NAMES = {"firefox": "Firefox", "chrome": "Chrome", "edge": "Edge", "brave": "Brave", "opera": "Opera",
+                  "vivaldi": "Vivaldi", "safari": "Safari"}
+MAX_COOKIE_BYTES = 5 * 1024 * 1024
+_COOKIE_HEADERS = ("# netscape http cookie file", "# http cookie file")
+
+
+def _not_cookies() -> UserError:
+    return UserError("Ese archivo no es un cookies.txt válido",
+                     "Expórtalo en formato Netscape, por ejemplo con la extensión «Get cookies.txt LOCALLY»")
+
+
+def check_cookie_file(value: str) -> Path:
+    """The cookies.txt at `value` (quotes from "Copy as path" removed), if it is a Netscape cookie file."""
+    path = Path(value.strip().strip('"').strip())
+    if not path.is_file():
+        raise UserError("No se encontró el archivo de cookies", "Revisa la ruta en Ajustes, sección Clipping")
+    if path.stat().st_size > MAX_COOKIE_BYTES:
+        raise _not_cookies()
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        head = fh.read(64 * 1024)
+    lines = [ln.strip("\r") for ln in head.splitlines() if ln.strip()]
+    if lines and lines[0].lower().startswith(_COOKIE_HEADERS):
+        return path
+    if any(not ln.startswith("#") and len(ln.split("\t")) == 7 for ln in lines):
+        return path
+    raise _not_cookies()
+
+
+def _cookie_error(err: BaseException, browser: str) -> UserError | None:
+    """A clear message when yt-dlp could not read `browser`'s cookies; None for any other error."""
+    if not browser:
+        return None
+    msg = str(err).lower()
+    name = _BROWSER_NAMES.get(browser, browser)
+    if "cookie" not in msg and "dpapi" not in msg:
+        return None
+    if "could not find" in msg:
+        return UserError(f"No se encontró {name} en este ordenador",
+                         "Elige otro navegador en Ajustes, sección Clipping, o usa un archivo cookies.txt")
+    if "dpapi" in msg or "decrypt" in msg:
+        return UserError(f"No se pudieron leer las cookies de {name}",
+                         "En Windows, Chrome y Edge no dejan leer sus cookies: usa un archivo cookies.txt o Firefox")
+    if "could not copy" in msg:
+        return UserError(f"No se pudieron leer las cookies de {name}",
+                         f"Cierra {name} por completo y vuelve a intentarlo, o usa un archivo cookies.txt")
+    return UserError(f"No se pudieron leer las cookies de {name}",
+                     "Usa un archivo cookies.txt en Ajustes, sección Clipping")
+
+
+def _bot_check(err: BaseException, cookies_set: bool) -> UserError | None:
+    msg = str(err).lower()
+    if "not a bot" not in msg and "sign in to confirm" not in msg:
+        return None
+    if cookies_set:
+        return UserError("YouTube pide confirmar que no eres un bot",
+                         "Tu sesión de YouTube caducó: entra a YouTube en el navegador y vuelve a exportar cookies.txt")
+    return UserError("YouTube pide confirmar que no eres un bot",
+                     "En Ajustes, sección Clipping, elige tu navegador o un archivo cookies.txt con tu sesión de YouTube")
+
+
+def _cookie_opts(settings: dict, tmp_dir: Path) -> tuple[dict, str]:
+    """yt-dlp options for the user's YouTube session and the browser in use ("" when none).
+
+    A cookies.txt wins over a browser and is passed as a private copy: yt-dlp writes its whole cookie
+    jar back to `cookiefile` on close, which would rewrite the user's export."""
+    file_value = str(settings.get("yt_cookies_file") or "").strip()
+    if file_value:
+        copy = tmp_dir / "cookies.txt"
+        shutil.copyfile(check_cookie_file(file_value), copy)
+        return {"cookiefile": str(copy)}, ""
+    browser = str(settings.get("yt_cookies_browser") or "")
+    if browser in COOKIE_BROWSERS:
+        return {"cookiesfrombrowser": (browser,)}, browser
+    return {}, ""
+
+
 def _estimate_bytes(info: dict) -> float:
     def size(d: dict) -> float:
         return d.get("filesize") or d.get("filesize_approx") or 0
@@ -123,49 +213,57 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
             if total:
                 on_progress(min(0.99, d.get("downloaded_bytes", 0) / total))
 
+    settings = config.load_settings()
     opts = {
-        "format": FORMAT, "merge_output_format": "mp4", "ffmpeg_location": ffmpeg.ffmpeg_exe(),
+        "format": format_for(_quality(settings)), "merge_output_format": "mp4", "ffmpeg_location": ffmpeg.ffmpeg_exe(),
         "outtmpl": str(folder / "source.%(ext)s"), "noplaylist": True, "playlist_items": "1",
         "quiet": True, "no_warnings": True, "noprogress": True, "socket_timeout": 20, "retries": 3,
         "progress_hooks": [hook],
     }
     failures = (ytdlp.utils.DownloadError, getattr(ytdlp.utils, "YoutubeDLError", ytdlp.utils.DownloadError))
-    try:
-        if cancel.is_set():
-            raise JobCancelled()
-        with ytdlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False) or {}
-            if info.get("entries"):
-                info = next(iter(info["entries"]), None) or {}
-            if _is_live(info):
-                raise UserError("Ese video es una transmisión en vivo", "Espera a que termine y usa la grabación")
-            if (info.get("duration") or 0) > MAX_SECONDS:
-                raise _too_long()
-            need = _estimate_bytes(info) * 1.2
-            if need > free_bytes(sources_dir()):
-                raise UserError(f"No hay espacio suficiente para descargar el video (~{need / 1e9:.1f} GB)",
-                                "Libera espacio en el disco")
-            folder.mkdir(parents=True, exist_ok=True)
-            ydl.download([url])
-        path = _find_download(folder)
-        if path is None:
-            raise UserError("No se pudo descargar el video: no se creó ningún archivo",
-                            "Actualiza yt-dlp en Ajustes o sube el archivo")
-        src = _build_info(source_id, path, title=info.get("title") or "Video",
-                          channel=_channel_credit(info), url=url)
-        _write_meta(folder, src)
-        on_progress(1.0)
-        return src
-    except BaseException as e:
-        shutil.rmtree(folder, ignore_errors=True)
-        if isinstance(e, JobCancelled):
+    with tempfile.TemporaryDirectory(prefix="baitd-cookies-") as cookie_tmp:
+        cookie_opts, browser = _cookie_opts(settings, Path(cookie_tmp))
+        opts.update(cookie_opts)
+        try:
+            if cancel.is_set():
+                raise JobCancelled()
+            with ytdlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False) or {}
+                if info.get("entries"):
+                    info = next(iter(info["entries"]), None) or {}
+                if _is_live(info):
+                    raise UserError("Ese video es una transmisión en vivo", "Espera a que termine y usa la grabación")
+                if (info.get("duration") or 0) > MAX_SECONDS:
+                    raise _too_long()
+                need = _estimate_bytes(info) * 1.2
+                if need > free_bytes(sources_dir()):
+                    raise UserError(f"No hay espacio suficiente para descargar el video (~{need / 1e9:.1f} GB)",
+                                    "Libera espacio en el disco")
+                folder.mkdir(parents=True, exist_ok=True)
+                ydl.download([url])
+            path = _find_download(folder)
+            if path is None:
+                raise UserError("No se pudo descargar el video: no se creó ningún archivo",
+                                "Actualiza yt-dlp en Ajustes o sube el archivo")
+            src = _build_info(source_id, path, title=info.get("title") or "Video",
+                              channel=_channel_credit(info), url=url)
+            _write_meta(folder, src)
+            on_progress(1.0)
+            return src
+        except BaseException as e:
+            shutil.rmtree(folder, ignore_errors=True)
+            if isinstance(e, JobCancelled):
+                raise
+            if cancel.is_set():  # yt-dlp may have wrapped the hook's JobCancelled in its own error
+                raise JobCancelled() from e
+            if isinstance(e, (*failures, OSError)):
+                friendly = _cookie_error(e, browser) or _bot_check(e, bool(cookie_opts))
+                if friendly is not None:
+                    raise friendly from None
+            if isinstance(e, failures):
+                raise UserError(f"No se pudo descargar el video: {_short_reason(e, url)}",
+                                "Actualiza yt-dlp en Ajustes o sube el archivo") from None
             raise
-        if cancel.is_set():  # yt-dlp may have wrapped the hook's JobCancelled in its own error
-            raise JobCancelled() from e
-        if isinstance(e, failures):
-            raise UserError(f"No se pudo descargar el video: {_short_reason(e, url)}",
-                            "Actualiza yt-dlp en Ajustes o sube el archivo") from None
-        raise
 
 
 def _channel_credit(info: dict) -> str:

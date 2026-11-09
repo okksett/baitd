@@ -54,6 +54,49 @@ def test_port_in_use_exits_with_message(tmp_data):
     assert f"puerto {port}" in str(exc.value.code) and "--port" in str(exc.value.code)
 
 
+def test_port_is_free_detects_reuseaddr_listener():
+    # python -m http.server style listener: SO_REUSEADDR lets a plain bind() succeed on Windows,
+    # so the probe must not rely on that
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        port = s.getsockname()[1]
+        assert app_main.port_is_free(port) is False
+    assert app_main.port_is_free(app_main.find_free_port()) is True
+
+
+def test_busy_port_reported_before_server_starts(tmp_data, monkeypatch):
+    # a port taken by another program is reported with the Spanish message, and no server is built
+    # (the probe runs only on Windows; pin the platform so this passes on the macOS/Linux CI runners)
+    monkeypatch.setattr(app_main.sys, "platform", "win32")
+    monkeypatch.setattr(app_main, "port_is_free", lambda port: False)
+    monkeypatch.setattr(app_main, "build_server",
+                        lambda *a, **k: pytest.fail("build_server must not run on a busy port"))
+    with pytest.raises(SystemExit) as exc:
+        app_main.main(["--no-browser", "--port", "5123"])
+    msg = str(exc.value.code)
+    assert "No se pudo abrir el puerto 5123 (está en uso)" in msg
+    assert "→ Cierra la otra ventana de Baitd o inicia con --port <otro número>" in msg
+
+
+def test_busy_port_probe_is_skipped_off_windows(tmp_data, monkeypatch):
+    # POSIX: waitress binds with SO_REUSEADDR and reports a busy port itself; the probe would fail
+    # on ports still in TIME_WAIT
+    monkeypatch.setattr(app_main.sys, "platform", "linux")
+    monkeypatch.setattr(app_main, "port_is_free", lambda port: pytest.fail("probe must not run"))
+
+    class Reached(Exception):
+        pass
+
+    def build(port, queue):
+        raise Reached
+
+    monkeypatch.setattr(app_main, "build_server", build)
+    with pytest.raises(Reached):
+        app_main.main(["--no-browser", "--port", "5123"])
+
+
 def test_port_out_of_range_rejected(tmp_data):
     with pytest.raises(SystemExit) as exc:
         app_main.main(["--no-browser", "--port", "80"])

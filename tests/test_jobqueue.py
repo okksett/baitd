@@ -166,6 +166,7 @@ def test_snapshot_script_settings_and_progress(tmp_path):
     item = q.list()[0]
     assert (item["status"], item["step"], item["step_index"], item["percent"]) == ("running", "voice", 3, 41.7)
     assert item["profile_name"] == "Por defecto" and item["created_at"]
+    assert item["step_percent"] == 50
     proceed.set()
     assert wait_for(lambda: statuses(q) == ["done"])
     q.stop()
@@ -275,3 +276,75 @@ def test_load_removes_partial_folder_of_a_killed_job(tmp_path):
     assert statuses(q2) == ["pending", "pending"]
     assert [i["output"] for i in q2.list()] == ["", ""]
     assert [i["output"] for i in json.loads(path.read_text(encoding="utf-8"))] == ["", ""]
+
+
+# ---- Reintentar ----
+
+def _stored(path, id):
+    return next(i for i in json.loads(path.read_text(encoding="utf-8")) if i["id"] == id)
+
+
+def test_retry_resets_error_job_keeping_payload(tmp_path):
+    path = tmp_path / "queue.json"
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
+    ids = q.add(["a"], config.default_profile(), {"a": SCRIPT})
+    cid = q.add_clip_job("clip_auto", {"source": {"url": "https://x.test/v"}, "overrides": {"count": 3}},
+                         config.default_profile())
+    q.cancel(cid)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data[0].update(status="error", error="Falló → Otra vez", step="voice", step_index=3, percent=40.0,
+                   output=str(tmp_path / "x"))
+    path.write_text(json.dumps(data), encoding="utf-8")
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
+    before = _stored(path, ids[0])
+    for id in (ids[0], cid):
+        q.retry(id)
+    row = q.list()[0]
+    assert (row["status"], row["error"], row["step"], row["step_index"], row["percent"], row["output"]) == \
+        ("pending", "", "", 0, 0, "")
+    assert q.list()[1]["status"] == "pending"
+    after = _stored(path, ids[0])  # persisted, and the snapshot is untouched
+    assert after["status"] == "pending"
+    assert (after["profile"], after["script"]) == (before["profile"], before["script"])
+    assert _stored(path, cid)["payload"] == {"source": {"url": "https://x.test/v"}, "overrides": {"count": 3}}
+
+
+def test_retry_rejects_running_and_done(tmp_path):
+    release = threading.Event()
+
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
+        if topic == "b":
+            release.wait(WAIT)
+        return tmp_path / topic
+
+    q = make_queue(tmp_path, runner)
+    ids = q.add(["a", "b", "c"], config.default_profile())
+    with pytest.raises(ValueError):
+        q.retry(ids[0])  # pending
+    q.start()
+    assert wait_for(lambda: statuses(q)[:2] == ["done", "running"])
+    for id in ids[:2]:
+        with pytest.raises(ValueError):
+            q.retry(id)
+    with pytest.raises(ValueError):
+        q.retry("nope")
+    release.set()
+    assert wait_for(lambda: statuses(q) == ["done"] * 3)
+    q.stop()
+
+
+def test_step_percent_exposed_reset_and_defaults_for_old_items(tmp_path):
+    q = make_queue(tmp_path, lambda *a, **k: tmp_path)
+    q.add(["a"], config.default_profile())
+    assert q.list()[0]["step_percent"] == 0
+    item = q._items[0]
+    item["status"] = "running"
+    q._progress(item["id"], "source", 1, 6, 45)
+    assert q.list()[0]["step_percent"] == 45
+    q._progress(item["id"], "transcribe", 2, 6, 0)  # a new step starts from zero
+    assert q.list()[0]["step_percent"] == 0
+    q._progress(item["id"], "transcribe", 2, 6, 30)
+    q._reset_pending(item)
+    assert q.list()[0]["step_percent"] == 0
+    old = {k: v for k, v in item.items() if k != "step_percent"}
+    assert q._normalize(old)["step_percent"] == 0

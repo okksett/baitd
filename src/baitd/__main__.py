@@ -6,13 +6,14 @@ import logging
 import logging.handlers
 import signal
 import socket
+import sys
 import threading
 import time
 import webbrowser
 
 from waitress import create_server
 
-from . import config, instance
+from . import __version__, config, instance, updater
 from .jobqueue import JobQueue
 from .web.server import UPLOAD_CHUNK_MAX, create_app
 
@@ -30,6 +31,21 @@ def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, 0))
         return s.getsockname()[1]
+
+
+def port_is_free(port: int) -> bool:
+    """False when another program already holds the port. waitress sets SO_REUSEADDR, which on
+    Windows lets it bind a port that another SO_REUSEADDR socket already listens on, so the probe
+    takes the port exclusively there (SO_EXCLUSIVEADDRUSE) and uses a plain bind elsewhere."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if sys.platform == "win32" and exclusive is not None:
+            s.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        try:
+            s.bind((HOST, port))
+        except OSError:
+            return False
+    return True
 
 
 def build_server(port: int, queue: JobQueue):
@@ -163,6 +179,10 @@ def main(argv: list[str] | None = None) -> None:
 
 def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     handlers = _setup_logging()
+    try:  # 0.3: the AI provider/model moved from the profiles to the settings
+        config.migrate_llm_settings()
+    except OSError:
+        log.exception("No se pudo migrar el proveedor de IA a los ajustes")
     queue = JobQueue(config.data_dir() / "queue.json")
     try:  # before the server can accept an upload: nothing in flight can be mistaken for a leftover
         queue.sweep_clip_data(keep_sources=bool(config.load_settings().get("keep_sources")))
@@ -170,6 +190,13 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         log.exception("No se pudo limpiar fuentes/ y analisis/")
     global _server
     try:
+        # Windows only: waitress would share the port silently there. Elsewhere the probe fails on ports in
+        # TIME_WAIT, while waitress binds fine and its OSError below already reports a busy port.
+        if sys.platform == "win32" and args.port is not None and not port_is_free(args.port):
+            log.error("No se pudo abrir el puerto %s: está en uso", args.port)
+            raise SystemExit(
+                f"No se pudo abrir el puerto {args.port} (está en uso) → Cierra la otra ventana de "
+                "Baitd o inicia con --port <otro número>")
         port = args.port or find_free_port()
         try:
             server = build_server(port, queue)
@@ -190,6 +217,8 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         print("Pulsa Ctrl+C para cerrar", flush=True)
         if not args.no_browser:
             webbrowser.open(url)
+        if config.load_settings().get("check_updates", True):
+            updater.start_background_check(__version__)
         try:
             server.run()
         except KeyboardInterrupt:

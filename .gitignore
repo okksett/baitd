@@ -1,5 +1,6 @@
 .venv/
 dist/
+dist-installer/
 build/
 .superpowers/
 __pycache__/

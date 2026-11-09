@@ -8,6 +8,7 @@
   const KNOWN_LANGS = ["es", "en", "fr", "de"];
   const ACTIVE = ["pending", "running"];
   const FINISHED = ["done", "error", "cancelled"];
+  const RETRYABLE = ["error", "cancelled"];
   const SAVE_DELAY = 500;
   const POLL_MS = 1000;
   const MIN_CLIP_S = 10; // clip length limits and clips per run, as the server checks them
@@ -65,6 +66,10 @@
     each("data-i18n-placeholder", (el) => { el.placeholder = tr(el.dataset.i18nPlaceholder); });
     each("data-i18n-aria", (el) => { el.setAttribute("aria-label", tr(el.dataset.i18nAria)); });
     each("data-i18n-title", (el) => { el.title = tr(el.dataset.i18nTitle); });
+  }
+
+  function renderVersion() {
+    $("#app-version").textContent = tr("settings.version", { v: BOOT.version });
   }
 
   async function loadStrings(lang) {
@@ -346,8 +351,6 @@
     fillSubtitle("f");
     renderMusicSelect();
     $("#f-volume").value = String(Math.round(p.music_volume * 100));
-    $("#f-llm").value = p.llm_provider;
-    $("#f-model").value = p.llm_model;
     $("#f-tone").value = p.tone;
     renderDerived();
   }
@@ -366,8 +369,6 @@
     readSubtitle("f", target);
     p.music = $("#f-music").value || "none";
     p.music_volume = Math.round(Number($("#f-volume").value)) / 100;
-    p.llm_provider = $("#f-llm").value;
-    p.llm_model = $("#f-model").value.trim();
     p.tone = $("#f-tone").value;
   }
 
@@ -449,7 +450,7 @@
     }
     $("#sum-subs").textContent = `${tr(`preset.${p.subtitle.preset}`)} · ${tr(`pos.${p.subtitle.position}`)}`;
     $("#sum-music").textContent = `${musicLabel(p.music)} · ${Math.round(p.music_volume * 100)} %`;
-    $("#sum-ai").textContent = p.llm_model ? `${tr(`llm.${p.llm_provider}`)} · ${p.llm_model}` : tr(`llm.${p.llm_provider}`);
+    $("#sum-ai").textContent = p.tone.trim() || tr("ai.sum_default");
   }
 
   function renderSampleSub() {
@@ -1349,7 +1350,24 @@
 
   function stepLabel(job) {
     if (job.status === "pending" || !job.step) return tr("step.waiting");
-    return tr(`step.${job.step}`);
+    const step = tr(`step.${job.step}`);
+    const n = Math.round(job.step_percent || 0);
+    // a step with its own fraction (e.g. the source download) shows it next to the name while it runs
+    if (job.status === "running" && n > 0 && n < 100) return tr("progress.step_pct", { step, n });
+    return step;
+  }
+
+  // "?" buttons: each shows/hides the hint it controls (aria-controls), keeping aria-expanded in sync
+  function bindHelpToggles() {
+    $$("button.help[aria-controls]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const panel = document.getElementById(btn.getAttribute("aria-controls"));
+        if (!panel) return;
+        const open = btn.getAttribute("aria-expanded") !== "true";
+        btn.setAttribute("aria-expanded", String(open));
+        panel.hidden = !open;
+      });
+    });
   }
 
   const isClipJob = (job) => Boolean(job.kind) && job.kind !== "short";
@@ -1398,7 +1416,9 @@
     showError($(".job-err", li), job.error ? new Error(job.error) : null);
     // a finished analysis has no folder: it opens its review list instead
     $('[data-job-act="review"]', li).hidden = !(job.kind === "clip_analyze" && job.status === "done" && job.analysis_id);
+    $('[data-job-act="clips"]', li).hidden = !(job.status === "done" && job.output);
     $('[data-job-act="open"]', li).hidden = !(job.status === "done" && job.output);
+    $('[data-job-act="retry"]', li).hidden = !RETRYABLE.includes(job.status);
     $('[data-job-act="cancel"]', li).hidden = !ACTIVE.includes(job.status);
     $('[data-job-act="remove"]', li).hidden = !FINISHED.includes(job.status);
   }
@@ -1433,6 +1453,52 @@
     }
   }
 
+  // The finished videos of a job, playable inside the app.
+  let clipsSeq = 0; // two quick "Ver videos" clicks (or a close meanwhile): only the latest call adds tiles
+
+  async function openClips(id) {
+    const seq = ++clipsSeq;
+    const dlg = $("#clips-view");
+    const grid = $("#clips-grid");
+    grid.replaceChildren();
+    $("#clips-empty").hidden = true;
+    showError($("#clips-error"), null);
+    dlg.dataset.job = id;
+    try {
+      const r = await api("GET", `/api/jobs/${encodeURIComponent(id)}/clips`);
+      if (seq !== clipsSeq) return;
+      grid.classList.toggle("wide", r.aspect === "16:9");
+      for (const c of r.clips) {
+        const tile = document.createElement("figure");
+        tile.className = "clip-tile";
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.src = `/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(c.file)}`;
+        const cap = document.createElement("figcaption");
+        cap.textContent = c.title || c.file;
+        tile.append(video, cap);
+        grid.append(tile);
+      }
+      $("#clips-empty").hidden = r.clips.length > 0;
+    } catch (err) {
+      if (seq !== clipsSeq) return;
+      showError($("#clips-error"), err);
+    }
+    if (!dlg.open) dlg.showModal();
+  }
+
+  function unloadClips() { // also what Esc does: the videos stop playing and downloading
+    clipsSeq++; // a reply still on its way must not reopen or fill the dialog
+    $$("#clips-view video").forEach((v) => { v.pause(); v.removeAttribute("src"); v.load(); });
+    $("#clips-grid").replaceChildren();
+  }
+
+  function closeClips() {
+    unloadClips();
+    $("#clips-view").close();
+  }
+
   async function onJobAction(e) {
     const btn = e.target.closest("[data-job-act]");
     if (!btn) return;
@@ -1443,9 +1509,14 @@
       if (job) await openReview(job, true);
       return;
     }
+    if (act === "clips") {
+      await openClips(id);
+      return;
+    }
     const url = {
       open: [`/api/jobs/${encodeURIComponent(id)}/open-folder`, "POST"],
       cancel: [`/api/jobs/${encodeURIComponent(id)}/cancel`, "POST"],
+      retry: [`/api/jobs/${encodeURIComponent(id)}/retry`, "POST"],
       remove: [`/api/jobs/${encodeURIComponent(id)}`, "DELETE"],
     }[act];
     try {
@@ -1468,7 +1539,9 @@
     try {
       const s = await api("GET", "/api/settings");
       $$("[data-setting]", dlg).forEach((el) => { el.value = s[el.dataset.setting] || ""; });
+      loadModels(); // fills the model list for the saved provider; does not block the dialog
       $("#s-keep_sources").checked = s.keep_sources === true;
+      $("#s-check_updates").checked = s.check_updates !== false;
       $("#ytdlp-status").textContent = "";
       showError($("#ytdlp-error"), null);
       $("#s-theme").value = effectiveTheme();
@@ -1479,6 +1552,64 @@
       return;
     }
     dlg.showModal();
+  }
+
+  // AI model picker: "Por defecto ({model})", the models the saved key can use, "Otro…" (free text).
+  const MODEL_OTHER = "__other__";
+  let modelsSeq = 0; // a late reply for a provider that is no longer selected is dropped
+
+  // Fills the select from `models` and selects `current` ("" = default, unlisted = Otro…).
+  function fillModelPicker(models, def, current) {
+    const pick = $("#s-llm_model_pick");
+    const opt = (value, text) => Object.assign(document.createElement("option"), { value, textContent: text });
+    pick.replaceChildren(
+      opt("", def ? tr("ai.model_default", { model: def }) : tr("ai.model_default_plain")),
+      ...models.map((m) => opt(m, m)),
+      opt(MODEL_OTHER, tr("ai.model_other")),
+    );
+    pick.value = current === "" ? "" : (models.includes(current) ? current : MODEL_OTHER);
+    syncModelInput(false);
+  }
+
+  // Keeps the text input (the saved setting) in step with the select; it shows only for "Otro…".
+  function syncModelInput(fromUser) {
+    const pick = $("#s-llm_model_pick").value;
+    const input = $("#s-llm_model");
+    if (pick !== MODEL_OTHER) input.value = pick;
+    input.hidden = pick !== MODEL_OTHER;
+    input.closest(".field").hidden = input.hidden; // the label goes with the input
+    if (fromUser && pick === MODEL_OTHER) input.focus();
+  }
+
+  function setModelHint(message) {
+    const hint = $("#llm-hint");
+    if (message) {
+      hint.removeAttribute("data-i18n");
+      hint.textContent = message;
+    } else {
+      hint.dataset.i18n = "ai.hint";
+      hint.textContent = tr("ai.hint");
+    }
+  }
+
+  async function loadModels() {
+    const seq = ++modelsSeq;
+    const provider = $("#s-llm_provider").value;
+    const current = $("#s-llm_model").value.trim();
+    const btn = $("#llm-models-refresh");
+    btn.disabled = true;
+    let models = [], def = "", message = "";
+    try {
+      const r = await api("GET", `/api/llm/models?provider=${encodeURIComponent(provider)}`);
+      models = r.models;
+      def = r.default;
+    } catch (e) {
+      message = e.message; // no key yet, no connection...: "Por defecto" and "Otro…" still work
+    }
+    if (seq !== modelsSeq) return;
+    btn.disabled = false;
+    setModelHint(message);
+    fillModelPicker(models, def, current);
   }
 
   function setShown(btn, shown) {
@@ -1503,11 +1634,76 @@
     document.body.className = "quit-done";
   }
 
+  // ---------- update notice ----------
+
+  const updateInfo = { latest: null, canInstall: false };
+
+  function renderUpdateBar() {
+    const bar = $("#update-bar");
+    const v = updateInfo.latest && updateInfo.latest.version;
+    if (!v || remembered("updateDismissed") === v) { bar.hidden = true; return; }
+    $("#update-text").textContent = tr("update.available", { v });
+    $("#update-install").hidden = !updateInfo.canInstall;
+    $("#update-download").hidden = updateInfo.canInstall;
+    bar.hidden = false;
+  }
+
+  async function loadUpdate() {
+    try {
+      const u = await api("GET", "/api/update");
+      updateInfo.latest = u.latest || null;
+      updateInfo.canInstall = u.can_install === true;
+      renderUpdateBar();
+      return Boolean(updateInfo.latest);
+    } catch (_) { return false; } // the notice is optional
+  }
+
+  async function pollUpdate() { // the background check may still be running at startup: ask at 0 s, 3 s and 10 s
+    if (await loadUpdate()) return;
+    for (const wait of [3000, 7000]) {
+      await new Promise((r) => setTimeout(r, wait));
+      if (await loadUpdate()) return;
+    }
+  }
+
+  async function installUpdate() {
+    const v = updateInfo.latest.version;
+    const yes = await ask({ title: tr("update.install"), text: tr("settings.update_confirm", { v }), ok: tr("update.install") });
+    if (!yes) return;
+    const btn = $("#update-install");
+    btn.disabled = true;
+    $("#update-text").textContent = tr("settings.update_downloading");
+    showError($("#top-error"), null);
+    try {
+      await api("POST", "/api/update/install", {});
+    } catch (e) {
+      btn.disabled = false;
+      $("#update-download").hidden = false; // a way forward: the release page
+      $("#update-text").textContent = tr("update.available", { v });
+      showError($("#top-error"), e);
+      return;
+    }
+    document.body.textContent = tr("settings.update_installing");
+    document.body.className = "quit-done";
+  }
+
+  function bindUpdate() {
+    $("#update-install").addEventListener("click", installUpdate);
+    $("#update-download").addEventListener("click", () => {
+      if (updateInfo.latest) window.open(updateInfo.latest.page, "_blank", "noopener");
+    });
+    $("#update-dismiss").addEventListener("click", () => {
+      if (updateInfo.latest) remember("updateDismissed", updateInfo.latest.version);
+      $("#update-bar").hidden = true;
+    });
+  }
+
   async function saveSettings() {
     const dlg = $("#settings");
     const body = {};
     $$("[data-setting]", dlg).forEach((el) => { body[el.dataset.setting] = el.value; });
     body.keep_sources = $("#s-keep_sources").checked;
+    body.check_updates = $("#s-check_updates").checked;
     // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
     if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
@@ -1527,6 +1723,7 @@
       document.documentElement.lang = body.ui_lang;
       try { await loadStrings(body.ui_lang); } catch (e) { showError($("#top-error"), e); }
       applyI18n();
+      renderVersion();
       rerenderDynamic();
     }
     dlg.close();
@@ -1568,6 +1765,7 @@
   // ---------- wiring ----------
 
   function bind() {
+    bindHelpToggles();
     $$("[data-theme-set]").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themeSet)));
     lightQuery.addEventListener("change", renderTheme);
 
@@ -1630,6 +1828,18 @@
     $("#clip-discard").addEventListener("click", discardAnalysis);
 
     $("#queue-list").addEventListener("click", onJobAction);
+    $("#clips-close").addEventListener("click", closeClips);
+    for (const ev of ["cancel", "close"]) { // Esc fires both; the close button runs closeClips
+      $("#clips-view").addEventListener(ev, unloadClips);
+    }
+    $("#clips-open").addEventListener("click", async () => {
+      try {
+        await api("POST", `/api/jobs/${encodeURIComponent($("#clips-view").dataset.job)}/open-folder`, {});
+        showError($("#clips-error"), null);
+      } catch (err) {
+        showError($("#clips-error"), err);
+      }
+    });
     $("#clear-finished").addEventListener("click", async () => {
       try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($("#queue-error"), e); }
       await refreshJobs();
@@ -1639,6 +1849,13 @@
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
     $("#quit-app").addEventListener("click", quitApp);
+    bindUpdate();
+    $("#llm-models-refresh").addEventListener("click", loadModels);
+    $("#s-llm_provider").addEventListener("change", () => {
+      $("#s-llm_model").value = ""; // a model name belongs to one provider
+      loadModels();
+    });
+    $("#s-llm_model_pick").addEventListener("change", () => syncModelInput(true));
     $("#ytdlp-update").addEventListener("click", updateYtdlp);
     $$("#settings [data-close]").forEach((b) => b.addEventListener("click", () => $("#settings").close()));
     $$("#settings .show-btn").forEach((b) => b.addEventListener("click", () => {
@@ -1659,6 +1876,7 @@
     setTab(remembered("tab") || "short");
     try {
       await loadStrings(BOOT.lang);
+      renderVersion();
       await Promise.all([loadProfiles(), loadMusic()]);
       fillForm();
       fillClip();
@@ -1667,6 +1885,7 @@
       showError($("#top-error"), e);
     }
     refreshJobs();
+    pollUpdate();
   }
 
   init();

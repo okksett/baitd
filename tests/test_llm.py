@@ -1,11 +1,15 @@
 import json
 import logging
+import threading
 
 import pytest
 import requests
 
 from baitd.config import default_profile
 from baitd.llm import build_prompt, generate_script, parse_script
+from baitd import llm
+from baitd.ffmpeg import JobCancelled
+from baitd.llm import _http
 from baitd.llm._http import AuthError, NotFoundError
 from baitd.models import UserError
 
@@ -96,7 +100,7 @@ def test_long_hook_triggers_the_repair_retry(monkeypatch):
     calls = []
     replies = iter([openai_reply(long_hook()), openai_reply(VALID)])
     monkeypatch.setattr(requests, "post", lambda url, **kw: calls.append(kw) or next(replies))
-    s = generate_script("leer", profile(llm_provider="openai"), SETTINGS)
+    s = generate_script("leer", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert len(calls) == 2 and s.hook == "¿Sabías que leer 6 minutos reduce el estrés?"
     assert "hook" in calls[1]["json"]["messages"][0]["content"].split("rejected:")[1]
 
@@ -104,7 +108,7 @@ def test_long_hook_triggers_the_repair_retry(monkeypatch):
 def test_still_long_hook_after_retry_is_accepted_with_a_warning(monkeypatch, caplog):
     monkeypatch.setattr(requests, "post", lambda url, **kw: openai_reply(long_hook()))
     with caplog.at_level(logging.WARNING, logger="baitd.llm"):
-        s = generate_script("leer", profile(llm_provider="openai"), SETTINGS)
+        s = generate_script("leer", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert len(s.hook.split()) > 10 and s.scenes[0].text.startswith(s.hook)
     assert "gancho" in caplog.text
 
@@ -134,7 +138,7 @@ def test_generate_retries_once(monkeypatch):
         return next(replies)
 
     monkeypatch.setattr(requests, "post", post)
-    s = generate_script("leer", profile(llm_provider="openai"), SETTINGS)
+    s = generate_script("leer", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert s.title and s.language == "es" and len(calls) == 2
     assert "valid JSON" in calls[1][1]["json"]["messages"][0]["content"]
     assert calls[0][0] == "https://api.openai.com/v1/chat/completions"
@@ -147,7 +151,7 @@ def test_generate_gives_up_after_second_failure(monkeypatch):
     n = []
     monkeypatch.setattr(requests, "post", lambda *a, **k: n.append(1) or openai_reply("nope"))
     with pytest.raises(UserError):
-        generate_script("leer", profile(llm_provider="openai"), SETTINGS)
+        generate_script("leer", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert len(n) == 2
 
 
@@ -159,9 +163,9 @@ def test_gemini_request_shape(monkeypatch):
         return gemini_reply(VALID)
 
     monkeypatch.setattr(requests, "post", post)
-    s = generate_script("leer", profile(llm_provider="gemini", language="fr"), SETTINGS)
+    s = generate_script("leer", profile(language="fr"), {**SETTINGS, "llm_provider": "gemini"})
     assert s.language == "fr"
-    assert seen["url"].endswith("/models/gemini-2.5-flash:generateContent")
+    assert seen["url"].endswith("/models/gemini-3.6-flash:generateContent")
     assert "g-x" not in seen["url"]
     assert seen["headers"]["x-goog-api-key"] == "g-x"
     assert seen["json"]["generationConfig"]["responseMimeType"] == "application/json"
@@ -175,7 +179,7 @@ def test_compat_uses_base_url_and_optional_key(monkeypatch):
         return openai_reply(VALID)
 
     monkeypatch.setattr(requests, "post", post)
-    generate_script("leer", profile(llm_provider="compat", llm_model="qwen2"), SETTINGS)
+    generate_script("leer", profile(), {**SETTINGS, "llm_provider": "compat", "llm_model": "qwen2"})
     assert seen["url"] == "http://localhost:11434/v1/chat/completions"
     assert "Authorization" not in seen["headers"]
     assert seen["json"]["model"] == "qwen2"
@@ -185,7 +189,7 @@ def test_compat_uses_base_url_and_optional_key(monkeypatch):
 def test_provider_http_error_message(monkeypatch, provider):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(401, {"error": "bad"}))
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider=provider), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": provider})
     assert "clave" in str(e.value) and "Ajustes" in str(e.value)
 
 
@@ -194,21 +198,21 @@ def test_gemini_invalid_key_400(monkeypatch):
                       "details": [{"reason": "API_KEY_INVALID"}]}}
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(400, body))
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="gemini"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "gemini"})
     assert "clave" in str(e.value)
 
 
 def test_model_not_found(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(404, {}))
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="openai", llm_model="gpt-zzz"), SETTINGS)
-    assert "'gpt-zzz'" in e.value.cause and "OpenAI" in e.value.cause and "perfil" in e.value.fix
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai", "llm_model": "gpt-zzz"})
+    assert "'gpt-zzz'" in e.value.cause and "OpenAI" in e.value.cause and "Ajustes" in e.value.fix
 
 
 def test_rate_limit(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(429, {}))
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="openai"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert "límite" in str(e.value)
 
 
@@ -218,7 +222,7 @@ def test_connection_error(monkeypatch):
 
     monkeypatch.setattr(requests, "post", boom)
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="gemini"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "gemini"})
     assert "Sin conexión con Gemini" in str(e.value)
 
 
@@ -228,14 +232,14 @@ def test_timeout(monkeypatch):
 
     monkeypatch.setattr(requests, "post", boom)
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="openai"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert "tardó demasiado" in str(e.value)
 
 
 def test_server_error(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(500, {}))
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="openai"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai"})
     assert "500" in str(e.value)
 
 
@@ -245,23 +249,23 @@ def test_missing_key_raises_user_error(monkeypatch):
 
     monkeypatch.setattr(requests, "post", boom)
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="openai"), {**SETTINGS, "openai_key": ""})
+        generate_script("x", profile(), {**SETTINGS, "openai_key": "", "llm_provider": "openai"})
     assert "Ajustes" in str(e.value)
     with pytest.raises(UserError):
-        generate_script("x", profile(llm_provider="gemini"), {**SETTINGS, "gemini_key": ""})
+        generate_script("x", profile(), {**SETTINGS, "gemini_key": "", "llm_provider": "gemini"})
     with pytest.raises(UserError):
-        generate_script("x", profile(llm_provider="compat"), {**SETTINGS, "compat_base_url": ""})
+        generate_script("x", profile(), {**SETTINGS, "compat_base_url": "", "llm_provider": "compat"})
 
 
 def test_unknown_provider():
     with pytest.raises(UserError):
-        generate_script("x", profile(llm_provider="zzz"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "zzz"})
 
 
 def test_unexpected_response_shape(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(200, {"weird": 1}))
     with pytest.raises(UserError):
-        generate_script("x", profile(llm_provider="openai"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai"})
 
 
 # ---- M1 / M5: typed errors and compat wording ----
@@ -269,13 +273,13 @@ def test_unexpected_response_shape(monkeypatch):
 def test_auth_failures_are_typed(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(401, {}))
     with pytest.raises(AuthError):
-        generate_script("x", profile(llm_provider="openai"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai"})
 
 
 def test_compat_wording_uses_del(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(401, {}))
     with pytest.raises(AuthError) as e:
-        generate_script("x", profile(llm_provider="compat"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat"})
     assert e.value.cause == "La clave del servidor compatible no es válida"
 
 
@@ -285,7 +289,7 @@ def test_compat_connection_refused_suggests_ollama(monkeypatch):
 
     monkeypatch.setattr(requests, "post", boom)
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="compat"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat"})
     assert e.value.cause == "Sin conexión con el servidor compatible"
     assert e.value.fix == "¿Está abierto Ollama / el servidor?"
 
@@ -293,7 +297,7 @@ def test_compat_connection_refused_suggests_ollama(monkeypatch):
 def test_compat_404_suggests_v1(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(404, {}))
     with pytest.raises(NotFoundError) as e:
-        generate_script("x", profile(llm_provider="compat", llm_model="qwen2"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat", "llm_model": "qwen2"})
     assert e.value.cause == "El modelo 'qwen2' no existe en el servidor compatible"
     assert e.value.fix == "Revisa la URL (¿termina en /v1?) o el modelo"
 
@@ -304,5 +308,176 @@ def test_compat_timeout_message_is_capitalised(monkeypatch):
 
     monkeypatch.setattr(requests, "post", boom)
     with pytest.raises(UserError) as e:
-        generate_script("x", profile(llm_provider="compat"), SETTINGS)
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat"})
     assert e.value.cause == "El servidor compatible tardó demasiado en responder"
+
+
+def test_default_gemini_model_is_current():
+    assert llm.DEFAULT_MODELS["gemini"] == "gemini-3.6-flash"
+
+
+def test_request_retries_503_then_succeeds(monkeypatch):
+    replies = iter([FakeResp(503), FakeResp(503), FakeResp(200, {"ok": 1})])
+    delays = []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, cancel=None: delays.append(seconds))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: next(replies))
+    resp = _http.request("post", "http://x", "Gemini", "m", retry=True)
+    assert resp.status_code == 200
+    assert delays == [5, 15]
+
+
+def test_request_gives_up_after_three_retries(monkeypatch):
+    calls, delays = [], []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, cancel=None: delays.append(seconds))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(503))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Gemini", "m", retry=True)
+    assert "saturado" in e.value.cause
+    assert "Reintentar" in e.value.fix
+    assert delays == [5, 15, 30]
+    assert len(calls) == 4
+
+
+def test_request_keeps_rate_limit_message_after_retries(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(429))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Gemini", "m", retry=True)
+    assert "límite de peticiones" in e.value.cause
+
+
+@pytest.mark.parametrize("status", [404, 401])
+def test_request_does_not_retry_404_or_401(monkeypatch, status):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(status))
+    with pytest.raises(UserError):
+        _http.request("post", "http://x", "Gemini", "m", retry=True)
+    assert len(calls) == 1
+
+
+def test_request_retry_wait_stops_on_cancel(monkeypatch):
+    cancel = threading.Event()
+    calls = []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, c=None: cancel.set())
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(503))
+    with pytest.raises(JobCancelled):
+        _http.request("post", "http://x", "Gemini", "m", retry=True, cancel=cancel)
+    assert len(calls) == 1
+
+
+def test_request_without_retry_makes_one_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(503))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Pexels", "m")
+    assert len(calls) == 1
+    assert e.value.cause == "Pexels respondió con el error 503"
+
+
+# ---- Task 2: provider and model come from the settings ----
+
+def test_complete_uses_settings_provider_and_model(monkeypatch):
+    seen = {}
+
+    def post(url, **kw):
+        seen.update(url=url, **kw)
+        return openai_reply("ok")
+
+    monkeypatch.setattr(requests, "post", post)
+    p = profile()
+    assert not hasattr(p, "llm_provider") and not hasattr(p, "llm_model")
+    out = llm.complete("hola", p, {"llm_provider": "openai", "llm_model": "gpt-x", "openai_key": "k"})
+    assert out == "ok"
+    assert seen["url"] == "https://api.openai.com/v1/chat/completions" and seen["json"]["model"] == "gpt-x"
+
+
+def test_complete_defaults_to_gemini_default_model(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(requests, "post", lambda url, **kw: seen.update(url=url) or gemini_reply("ok"))
+    llm.complete("hola", profile(), {"gemini_key": "g"})
+    assert seen["url"].endswith("/models/gemini-3.6-flash:generateContent")
+
+
+def fake_get(monkeypatch, body, status=200):
+    seen = {}
+
+    def get(url, **kw):
+        seen.update(url=url, **kw)
+        return FakeResp(status, body)
+
+    monkeypatch.setattr(requests, "get", get)
+    return seen
+
+
+def test_list_models_gemini_filters_and_strips(monkeypatch):
+    seen = fake_get(monkeypatch, {"models": [
+        {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+        {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"]},
+        {"name": "models/gemma-3-27b", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-preview-tts", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-image", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-native-audio", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.6-flash-live", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-embedding-exp", "supportedGenerationMethods": ["generateContent"]},
+    ]})
+    out = llm.list_models("gemini", {"gemini_key": "g-secret"})
+    assert out == ["gemini-3.5-flash-lite", "gemini-3.6-flash"]
+    assert seen["headers"]["x-goog-api-key"] == "g-secret" and "g-secret" not in seen["url"]
+    assert "pageSize=1000" in seen["url"]
+
+
+def test_list_models_openai_filters(monkeypatch):
+    ids = ["gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "chatgpt-4o-latest", "gpt-4o-audio-preview",
+           "gpt-4o-realtime-preview", "gpt-4o-transcribe", "gpt-4o-mini-tts", "gpt-image-1",
+           "gpt-4o-search-preview", "text-embedding-3-small", "whisper-1", "dall-e-3", "o4-mini"]
+    seen = fake_get(monkeypatch, {"data": [{"id": i} for i in ids]})
+    assert llm.list_models("openai", {"openai_key": "sk-x"}) == [
+        "chatgpt-4o-latest", "gpt-4o", "gpt-4o-mini", "o1", "o3-mini", "o4-mini"]
+    assert seen["url"] == "https://api.openai.com/v1/models"
+    assert seen["headers"]["Authorization"] == "Bearer sk-x"
+
+
+def test_list_models_compat_returns_all_ids(monkeypatch):
+    seen = fake_get(monkeypatch, {"data": [{"id": "qwen2"}, {"id": "llama3.1"}]})
+    out = llm.list_models("compat", {"compat_base_url": "http://localhost:11434/v1/", "compat_key": ""})
+    assert out == ["llama3.1", "qwen2"]
+    assert seen["url"] == "http://localhost:11434/v1/models" and "Authorization" not in seen["headers"]
+    llm.list_models("compat", {"compat_base_url": "http://x/v1", "compat_key": "kk"})
+    assert seen["headers"]["Authorization"] == "Bearer kk"
+
+
+def test_list_models_requires_key(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("HTTP called")
+
+    monkeypatch.setattr(requests, "get", boom)
+    for provider, settings in (("gemini", {}), ("openai", {}), ("compat", {"compat_base_url": ""})):
+        with pytest.raises(UserError) as e:
+            llm.list_models(provider, settings)
+        assert "Ajustes" in e.value.fix
+    with pytest.raises(UserError):
+        llm.list_models("zzz", {})
+
+
+def test_list_models_makes_a_single_attempt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda *a, **k: calls.append(1) or FakeResp(503, {}))
+    with pytest.raises(UserError):
+        llm.list_models("openai", {"openai_key": "k"})
+    assert len(calls) == 1
+
+
+def test_list_models_bad_key_and_odd_payload(monkeypatch):
+    fake_get(monkeypatch, {}, status=401)
+    with pytest.raises(AuthError):
+        llm.list_models("openai", {"openai_key": "k"})
+    fake_get(monkeypatch, {"weird": 1})
+    with pytest.raises(UserError):
+        llm.list_models("gemini", {"gemini_key": "k"})
+
+
+def test_not_found_fix_points_to_ajustes(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(404, {}))
+    with pytest.raises(NotFoundError) as e:
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "openai", "llm_model": "gpt-zzz"})
+    assert e.value.fix == "Cambia el modelo en Ajustes"

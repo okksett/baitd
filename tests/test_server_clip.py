@@ -343,6 +343,29 @@ def test_settings_keep_sources(client):
     assert config.load_settings()["keep_sources"] is True
 
 
+def test_settings_youtube_cookies_browser(client):
+    assert client.get("/api/settings").get_json()["yt_cookies_browser"] == ""
+    assert client.post("/api/settings", json={"yt_cookies_browser": "firefox"}).get_json()["yt_cookies_browser"] == "firefox"
+    r = client.post("/api/settings", json={"yt_cookies_browser": "netscape"})
+    assert r.status_code == 400 and "navegador" in r.get_json()["error"]
+    assert config.load_settings()["yt_cookies_browser"] == "firefox"
+    assert client.post("/api/settings", json={"yt_cookies_browser": ""}).get_json()["yt_cookies_browser"] == ""
+
+
+def test_settings_youtube_cookies_file(client, tmp_path):
+    good = tmp_path / "cookies.txt"
+    good.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-value\n", encoding="utf-8")
+    body = client.post("/api/settings", json={"yt_cookies_file": f'"{good}"'}).get_json()
+    assert body["yt_cookies_file"] == str(good)  # quotes from "Copy as path" are dropped
+    assert "secret-value" not in json.dumps(body)  # the path is stored, never the cookies
+    bad = tmp_path / "notas.txt"
+    bad.write_text("no son cookies", encoding="utf-8")
+    for value in (str(bad), str(tmp_path / "missing.txt")):
+        assert client.post("/api/settings", json={"yt_cookies_file": value}).status_code == 400
+    assert config.load_settings()["yt_cookies_file"] == str(good)
+    assert client.post("/api/settings", json={"yt_cookies_file": ""}).get_json()["yt_cookies_file"] == ""
+
+
 def test_delete_unused_upload(client, profile_id, queue, make_mp4):
     src = _source(make_mp4, seconds=2)
     assert client.delete(f"/api/sources/{src.id}", data=b"{}", headers=UP).status_code == 415  # JSON only
@@ -425,3 +448,162 @@ def test_page_boot_data_carries_the_upload_extensions(client):
     html = client.get("/").get_data(as_text=True)
     boot = json.loads(html.split('id="boot">', 1)[1].split("</script>", 1)[0])
     assert boot["upload_exts"] == list(sources.UPLOAD_EXTS)  # the browser checks the extension before it starts
+
+
+def test_retry_route_404_409(client, profile_id):
+    jid = client.post("/api/jobs", json={"topics": ["a"], "profile_id": profile_id}).get_json()["ids"][0]
+    assert client.post("/api/jobs/nope/retry", json={}).status_code == 404
+    r = client.post(f"/api/jobs/{jid}/retry", json={})  # pending: nothing to retry
+    assert r.status_code == 409 and "→" in r.get_json()["error"]
+    client.post(f"/api/jobs/{jid}/cancel", json={})
+    r = client.post(f"/api/jobs/{jid}/retry", json={})
+    assert r.status_code == 200 and r.get_json() == {}
+    assert client.get("/api/jobs").get_json()["jobs"][0]["status"] == "pending"
+    assert client.post(f"/api/jobs/{jid}/retry", data="{}", content_type="text/plain").status_code == 415
+
+
+def test_a_cancelled_job_keeps_its_source_from_the_delete_button(client, profile_id, queue, make_mp4):
+    src = _source(make_mp4)
+    jid = queue.add_clip_job("clip_auto", {"source": {"source_id": src.id}, "overrides": {}},
+                             config.default_profile())
+    queue.cancel(jid)  # it can still be retried
+    assert client.delete(f"/api/sources/{src.id}", json={}).status_code == 409
+    client.delete(f"/api/jobs/{jid}", json={})
+    with pytest.raises(Exception):
+        sources.load_source(src.id)  # removing the item released it
+
+
+def test_settings_clip_max_height_validates(client):
+    assert client.get("/api/settings").get_json()["clip_max_height"] == 1440
+    assert client.post("/api/settings", json={"clip_max_height": "2160"}).get_json()["clip_max_height"] == 2160
+    assert client.post("/api/settings", json={"clip_max_height": 1080}).get_json()["clip_max_height"] == 1080
+    for bad in ("720", 999, "alto", None, True, 1440.5, ""):
+        r = client.post("/api/settings", json={"clip_max_height": bad})
+        assert r.status_code == 400 and "Calidad de descarga no válida" in json.dumps(r.get_json(), ensure_ascii=False)
+    assert config.load_settings()["clip_max_height"] == 1080
+
+
+def test_index_has_quality_select(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-setting="clip_max_height"' in html and 'id="s-clip_max_height"' in html
+
+
+# ---- finished videos, previewed in the app ----
+
+def _done_clip_job(queue, folder, kind="clip_auto", profile=None):
+    jid = queue.add_clip_job(kind, {"source": {"url": "https://example.test/v"}, "overrides": {}},
+                             profile or config.default_profile())
+    with queue._lock:
+        item = queue._find(jid)
+        item.update(status="done", output=str(folder))
+    return jid
+
+
+def _clip_folder(tmp_path, names=("clip-01.mp4", "clip-02.mp4"), entries=None, raw=None):
+    folder = tmp_path / "salida"
+    folder.mkdir()
+    for n in names:
+        (folder / n).write_bytes(b"\x00" * 2048)
+    if raw is not None:
+        (folder / "clips.json").write_text(raw, encoding="utf-8")
+    elif entries is not None:
+        (folder / "clips.json").write_text(json.dumps(entries), encoding="utf-8")
+    return folder
+
+
+def test_clips_route_lists_clips_json_in_render_order(client, queue, tmp_path):
+    entries = [{"file": "clip-01.mp4", "title": "Primero", "description": "d", "hashtags": [], "start": 0, "end": 5},
+               {"file": "clip-02.mp4", "title": "Segundo", "description": "d", "hashtags": [], "start": 6, "end": 9}]
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=entries))
+    r = client.get(f"/api/jobs/{jid}/clips")
+    assert r.status_code == 200
+    assert r.get_json() == {"clips": [{"file": "clip-01.mp4", "title": "Primero"},
+                                      {"file": "clip-02.mp4", "title": "Segundo"}], "aspect": "9:16"}
+
+
+def test_clips_route_reports_a_wide_profile_aspect(client, queue, tmp_path):
+    profile = config.default_profile()
+    profile.aspect = "16:9"
+    jid = _done_clip_job(queue, _clip_folder(tmp_path), profile=profile)
+    assert client.get(f"/api/jobs/{jid}/clips").get_json()["aspect"] == "16:9"
+
+
+def test_clips_route_without_clips_json_lists_the_files_sorted(client, queue, tmp_path):
+    folder = _clip_folder(tmp_path, names=("clip-02.mp4", "clip-01.mp4", "clip-1.mp4", "clipx.mp4", "otro.mp4"))
+    jid = _done_clip_job(queue, folder)
+    assert client.get(f"/api/jobs/{jid}/clips").get_json()["clips"] == [
+        {"file": "clip-01.mp4", "title": ""}, {"file": "clip-02.mp4", "title": ""}]
+
+
+@pytest.mark.parametrize("raw", ["{not json", "{}", '"x"', "[1, null]", "\x00", "[" * 100000])
+def test_clips_route_survives_a_corrupt_clips_json(client, queue, tmp_path, raw):
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, raw=raw))
+    r = client.get(f"/api/jobs/{jid}/clips")
+    if raw == "[1, null]":  # a valid list with nothing usable in it
+        assert r.status_code == 200 and r.get_json()["clips"] == []
+    else:
+        assert r.status_code == 200
+        assert r.get_json()["clips"] == [{"file": "clip-01.mp4", "title": ""}, {"file": "clip-02.mp4", "title": ""}]
+
+
+def test_clips_route_only_lists_safe_files_that_exist(client, queue, tmp_path):
+    entries = [{"file": "../x.mp4", "title": "a"}, {"file": "clip-01.mp4\n", "title": "b"},
+               {"file": "clip-03.mp4", "title": "falta"}, {"file": "clip-02.mp4", "title": 7}, {"file": 5},
+               {"file": "clip-01.mp4", "title": "ok"}]
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=entries))
+    assert client.get(f"/api/jobs/{jid}/clips").get_json()["clips"] == [
+        {"file": "clip-02.mp4", "title": ""}, {"file": "clip-01.mp4", "title": "ok"}]
+
+
+def test_clips_route_for_a_short_job_is_the_single_video(client, queue):
+    from test_server import finished_job
+    jid = finished_job(client, queue, topic="Mi tema")
+    assert client.get(f"/api/jobs/{jid}/clips").get_json() == {
+        "clips": [{"file": "video.mp4", "title": "Mi tema"}], "aspect": "9:16"}
+
+
+def test_clips_and_files_routes_404_unless_the_job_is_done(client, queue, tmp_path):
+    folder = _clip_folder(tmp_path)
+    jid = _done_clip_job(queue, folder)
+    with queue._lock:
+        queue._find(jid)["status"] = "running"
+    assert client.get(f"/api/jobs/{jid}/clips").status_code == 404
+    assert client.get(f"/api/jobs/{jid}/files/clip-01.mp4").status_code == 404
+    assert client.get("/api/jobs/nope/clips").status_code == 404
+    no_folder = queue.add_clip_job("clip_auto", {"source": {"url": "https://example.test/v"}, "overrides": {}},
+                                   config.default_profile())
+    with queue._lock:
+        queue._find(no_folder)["status"] = "done"
+    assert client.get(f"/api/jobs/{no_folder}/clips").status_code == 404
+
+
+def test_files_route_streams_a_clip_with_range(client, queue, tmp_path):
+    jid = _done_clip_job(queue, _clip_folder(tmp_path))
+    with client.get(f"/api/jobs/{jid}/files/clip-02.mp4") as r:
+        assert r.status_code == 200 and r.mimetype == "video/mp4" and len(r.data) == 2048
+    with client.get(f"/api/jobs/{jid}/files/clip-02.mp4", headers={"Range": "bytes=0-99"}) as r:
+        assert r.status_code == 206 and len(r.data) == 100
+
+
+@pytest.mark.parametrize("name", ["../x.mp4", "clip-1.mp4", "clip-03.mp4", "clip-01.mp4%0A", "clip-01.MP4",
+                                  "publicacion.txt", "clips.json", "%2e%2e%2fx.mp4", "clip-01.mp4/"])
+def test_files_route_404s_for_anything_but_an_existing_clip(client, queue, tmp_path, name):
+    folder = _clip_folder(tmp_path)
+    (tmp_path / "x.mp4").write_bytes(b"secret")
+    jid = _done_clip_job(queue, folder)
+    assert client.get(f"/api/jobs/{jid}/files/{name}").status_code == 404
+
+
+def test_files_route_rejects_cross_site_embedding(client, queue, tmp_path):
+    jid = _done_clip_job(queue, _clip_folder(tmp_path))
+    r = client.get(f"/api/jobs/{jid}/files/clip-01.mp4", headers={"Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 403 and "→" in r.get_json()["error"]
+    for site in ("same-origin", "none"):
+        with client.get(f"/api/jobs/{jid}/files/clip-01.mp4", headers={"Sec-Fetch-Site": site}) as ok:
+            assert ok.status_code == 200
+
+
+def test_index_has_the_clips_viewer(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'id="clips-view"' in html and 'data-job-act="clips"' in html
+    assert 'id="clips-grid"' in html and 'id="clips-close"' in html and 'id="clips-open"' in html

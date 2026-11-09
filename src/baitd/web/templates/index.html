@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="app.title">{{ t("app.title") }}</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
 <link rel="stylesheet" href="/static/app.css">
 <script type="application/json" id="boot">{{ boot|tojson }}</script>
 <script src="/static/app.js" defer></script>
@@ -14,6 +15,7 @@
 
 <header class="top">
   <div class="brandrow">
+    <img class="brand-icon" src="/static/icon.png" alt="" width="28" height="28">
     <h1 class="brand"><span data-i18n="brand.a">{{ t("brand.a") }}</span><em data-i18n="brand.b">{{ t("brand.b") }}</em></h1>
     <div class="tabs" role="tablist" data-i18n-aria="tabs.label" aria-label='{{ t("tabs.label") }}'>
       <button type="button" role="tab" id="tab-short" aria-selected="true" aria-controls="panel-short" data-tab="short" data-i18n="tab.short">{{ t("tab.short") }}</button>
@@ -41,6 +43,12 @@
             data-i18n-title="settings.open" title='{{ t("settings.open") }}'>⚙</button>
   </div>
 </header>
+<div id="update-bar" class="update-bar" role="status" hidden>
+  <span id="update-text"></span>
+  <button type="button" id="update-install" class="b2" hidden data-i18n="update.install">{{ t("update.install") }}</button>
+  <button type="button" id="update-download" class="b1" hidden data-i18n="update.download">{{ t("update.download") }}</button>
+  <button type="button" id="update-dismiss" class="icon-btn" data-i18n-aria="update.dismiss" aria-label='{{ t("update.dismiss") }}'>✕</button>
+</div>
 <p id="top-error" class="err" role="alert" hidden></p>
 
 <main class="grid">
@@ -174,19 +182,6 @@
     <details class="acc" id="acc-ai">
       <summary><span data-i18n="ai.title">{{ t("ai.title") }}</span><span class="sum" id="sum-ai"></span></summary>
       <div class="acc-body">
-        <div class="field">
-          <label class="lbl" for="f-llm" data-i18n="ai.provider">{{ t("ai.provider") }}</label>
-          <select id="f-llm" class="input">
-            <option value="gemini" data-i18n="llm.gemini">{{ t("llm.gemini") }}</option>
-            <option value="openai" data-i18n="llm.openai">{{ t("llm.openai") }}</option>
-            <option value="compat" data-i18n="llm.compat">{{ t("llm.compat") }}</option>
-          </select>
-        </div>
-        <div class="field">
-          <label class="lbl" for="f-model" data-i18n="ai.model">{{ t("ai.model") }}</label>
-          <input id="f-model" class="input" type="text" autocomplete="off" maxlength="80"
-                 data-i18n-placeholder="ai.model_placeholder" placeholder='{{ t("ai.model_placeholder") }}'>
-        </div>
         <div class="field wide">
           <label class="lbl" for="f-tone" data-i18n="ai.tone">{{ t("ai.tone") }}</label>
           <input id="f-tone" class="input" type="text" autocomplete="off" maxlength="200"
@@ -241,16 +236,22 @@
     <div id="clip-settings">
       <div class="row clip-row">
         <div class="field num">
-          <label class="lbl" for="c-count" data-i18n="clip.count">{{ t("clip.count") }}</label>
+          <div class="lbl-row">
+            <label class="lbl" for="c-count" data-i18n="clip.count">{{ t("clip.count") }}</label>
+            <button type="button" class="help" id="c-count-help-btn" aria-expanded="false" aria-controls="c-count-help" data-i18n-aria="clip.count_help_label" aria-label='{{ t("clip.count_help_label") }}'>?</button>
+          </div>
           <input id="c-count" class="input" type="number" min="1" max="20" step="1" inputmode="numeric">
         </div>
         <div class="field">
-          <span class="lbl" id="c-len-label" data-i18n="clip.duration">{{ t("clip.duration") }}</span>
-          <div class="range">
-            <label class="sr-only" for="c-min" data-i18n="clip.min">{{ t("clip.min") }}</label>
+          <div class="lbl-row">
+            <span class="lbl" id="c-len-label" data-i18n="clip.duration">{{ t("clip.duration") }}</span>
+            <button type="button" class="help" id="c-len-help-btn" aria-expanded="false" aria-controls="c-len-help" data-i18n-aria="clip.len_help_label" aria-label='{{ t("clip.len_help_label") }}'>?</button>
+          </div>
+          <div class="range" role="group" aria-labelledby="c-len-label">
+            <label class="range-lbl" for="c-min" data-i18n="clip.min">{{ t("clip.min") }}</label>
             <input id="c-min" class="input" type="number" min="10" max="180" step="1" inputmode="numeric">
             <span aria-hidden="true">–</span>
-            <label class="sr-only" for="c-max" data-i18n="clip.max">{{ t("clip.max") }}</label>
+            <label class="range-lbl" for="c-max" data-i18n="clip.max">{{ t("clip.max") }}</label>
             <input id="c-max" class="input" type="number" min="10" max="180" step="1" inputmode="numeric">
           </div>
         </div>
@@ -265,6 +266,8 @@
           </select>
         </div>
       </div>
+      <p class="hint" id="c-count-help" data-i18n="clip.count_help" hidden>{{ t("clip.count_help") }}</p>
+      <p class="hint" id="c-len-help" data-i18n="clip.len_help" hidden>{{ t("clip.len_help") }}</p>
       <div class="row">
         <label class="sr-only" for="c-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
         <select id="c-aspect" class="input">
@@ -473,6 +476,32 @@
           <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-compat_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
       </div>
     </div>
+    <h3 class="lbl" data-i18n="settings.ai">{{ t("settings.ai") }}</h3>
+    <div class="keys">
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="s-llm_provider" data-i18n="ai.provider">{{ t("ai.provider") }}</label>
+          <select id="s-llm_provider" class="input" data-setting="llm_provider" aria-describedby="llm-hint">
+            <option value="gemini" data-i18n="llm.gemini">{{ t("llm.gemini") }}</option>
+            <option value="openai" data-i18n="llm.openai">{{ t("llm.openai") }}</option>
+            <option value="compat" data-i18n="llm.compat">{{ t("llm.compat") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="s-llm_model_pick" data-i18n="ai.model">{{ t("ai.model") }}</label>
+          <select id="s-llm_model_pick" class="input" aria-describedby="llm-hint"></select>
+        </div>
+      </div>
+      <div class="field" hidden>
+        <label class="lbl" for="s-llm_model" data-i18n="ai.model_name">{{ t("ai.model_name") }}</label>
+        <input id="s-llm_model" class="input" type="text" autocomplete="off" spellcheck="false" maxlength="80" hidden
+               data-setting="llm_model" data-i18n-placeholder="ai.model_placeholder" placeholder='{{ t("ai.model_placeholder") }}'>
+      </div>
+      <div>
+        <button type="button" class="pill" id="llm-models-refresh" data-i18n="ai.refresh">{{ t("ai.refresh") }}</button>
+      </div>
+      <p class="hint" id="llm-hint" data-i18n="ai.hint">{{ t("ai.hint") }}</p>
+    </div>
     <h3 class="lbl" data-i18n="settings.general">{{ t("settings.general") }}</h3>
     <div class="keys">
       <div class="key-row">
@@ -497,9 +526,44 @@
         </div>
       </div>
     </div>
+    <label class="check"><input type="checkbox" id="s-check_updates"> <span data-i18n="settings.check_updates">{{ t("settings.check_updates") }}</span></label>
     <h3 class="lbl" data-i18n="settings.clipping">{{ t("settings.clipping") }}</h3>
     <label class="check"><input type="checkbox" id="s-keep_sources" aria-describedby="keep-hint"> <span data-i18n="settings.keep_sources">{{ t("settings.keep_sources") }}</span></label>
     <p class="hint" id="keep-hint" data-i18n="settings.keep_hint">{{ t("settings.keep_hint") }}</p>
+    <div class="keys">
+      <div class="key-row">
+        <label for="s-clip_max_height" data-i18n="settings.quality">{{ t("settings.quality") }}</label>
+        <select id="s-clip_max_height" class="input" data-setting="clip_max_height">
+          <option value="1080" data-i18n="settings.quality_1080">{{ t("settings.quality_1080") }}</option>
+          <option value="1440" data-i18n="settings.quality_1440">{{ t("settings.quality_1440") }}</option>
+          <option value="2160" data-i18n="settings.quality_2160">{{ t("settings.quality_2160") }}</option>
+        </select>
+      </div>
+    </div>
+    <p class="lbl" data-i18n="settings.yt_session">{{ t("settings.yt_session") }}</p>
+    <p class="hint" id="yt-hint" data-i18n="settings.yt_hint">{{ t("settings.yt_hint") }}</p>
+    <div class="keys">
+      <div class="key-row">
+        <label for="s-yt_cookies_browser" data-i18n="settings.yt_browser">{{ t("settings.yt_browser") }}</label>
+        <select id="s-yt_cookies_browser" class="input" data-setting="yt_cookies_browser" aria-describedby="yt-hint">
+          <option value="" data-i18n="settings.yt_browser_none">{{ t("settings.yt_browser_none") }}</option>
+          <option value="firefox" data-i18n="browser.firefox">{{ t("browser.firefox") }}</option>
+          <option value="chrome" data-i18n="browser.chrome">{{ t("browser.chrome") }}</option>
+          <option value="edge" data-i18n="browser.edge">{{ t("browser.edge") }}</option>
+          <option value="brave" data-i18n="browser.brave">{{ t("browser.brave") }}</option>
+          <option value="opera" data-i18n="browser.opera">{{ t("browser.opera") }}</option>
+          <option value="vivaldi" data-i18n="browser.vivaldi">{{ t("browser.vivaldi") }}</option>
+          <option value="safari" data-i18n="browser.safari">{{ t("browser.safari") }}</option>
+        </select>
+      </div>
+      <div class="key-row">
+        <label for="s-yt_cookies_file" data-i18n="settings.yt_file">{{ t("settings.yt_file") }}</label>
+        <input id="s-yt_cookies_file" class="input" type="text" autocomplete="off" spellcheck="false" data-setting="yt_cookies_file"
+               aria-describedby="yt-file-hint"
+               data-i18n-placeholder="settings.yt_file_placeholder" placeholder='{{ t("settings.yt_file_placeholder") }}'>
+      </div>
+    </div>
+    <p class="hint" id="yt-file-hint" data-i18n="settings.yt_file_hint">{{ t("settings.yt_file_hint") }}</p>
     <div class="ytdlp">
       <button type="button" class="pill" id="ytdlp-update" aria-describedby="ytdlp-hint" data-i18n="settings.ytdlp">{{ t("settings.ytdlp") }}</button>
       <p class="hint" id="ytdlp-hint" data-i18n="settings.ytdlp_hint">{{ t("settings.ytdlp_hint") }}</p>
@@ -509,6 +573,7 @@
     <div class="field quit-row">
       <button type="button" class="b1" id="quit-app" data-i18n="settings.quit">{{ t("settings.quit") }}</button>
     </div>
+    <p class="hint" id="app-version"></p>
     <p id="settings-error" class="err" role="alert" hidden></p>
     <div class="btns">
       <button type="button" class="b1" data-close data-i18n="btn.cancel">{{ t("btn.cancel") }}</button>
@@ -533,6 +598,21 @@
   </div>
 </dialog>
 
+<dialog id="clips-view" aria-labelledby="clips-title">
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="clips-title" data-i18n="clips.title">{{ t("clips.title") }}</h2>
+      <button type="button" class="gear" id="clips-close" data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>✕</button>
+    </div>
+    <p id="clips-error" class="err" role="alert" hidden></p>
+    <p id="clips-empty" class="hint" hidden data-i18n="clips.empty">{{ t("clips.empty") }}</p>
+    <div id="clips-grid" class="clips-grid"></div>
+    <div class="btns">
+      <button type="button" class="b1" id="clips-open" data-i18n="queue.open">{{ t("queue.open") }}</button>
+    </div>
+  </div>
+</dialog>
+
 <template id="tpl-job">
   <li class="job">
     <div class="job-head"><span class="job-title"><span class="job-kind" hidden></span><span class="job-topic"></span></span><span class="chip"></span></div>
@@ -541,7 +621,9 @@
     <p class="err job-err" hidden></p>
     <div class="job-actions">
       <button type="button" class="pill" data-job-act="review" data-i18n="queue.review">{{ t("queue.review") }}</button>
+      <button type="button" class="pill" data-job-act="clips" data-i18n="queue.view">{{ t("queue.view") }}</button>
       <button type="button" class="pill" data-job-act="open" data-i18n="queue.open">{{ t("queue.open") }}</button>
+      <button type="button" class="pill" data-job-act="retry" data-i18n="queue.retry">{{ t("queue.retry") }}</button>
       <button type="button" class="pill" data-job-act="cancel" data-i18n="queue.cancel">{{ t("queue.cancel") }}</button>
       <button type="button" class="pill" data-job-act="remove" data-i18n="queue.remove">{{ t("queue.remove") }}</button>
     </div>

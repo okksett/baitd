@@ -561,6 +561,7 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert 'id="tpl-moment"' in html
     # settings dialog: keep sources and the yt-dlp updater
     assert 'id="s-keep_sources"' in html and 'id="ytdlp-update"' in html
+    assert 'data-setting="yt_cookies_browser"' in html and 'data-setting="yt_cookies_file"' in html
     js = JS.read_text("utf-8")
     assert "new XMLHttpRequest()" in js and ".abort()" in js and '"X-Baitd-Upload", "1"' in js
     # chunked uploads (F3): 64 MiB PUTs in order, the extension checked first, abort deletes the partial upload
@@ -656,3 +657,216 @@ def test_small_ui_items_are_wired():
     assert "if (body.theme === dlg.dataset.themeShown) delete body.theme" in js  # M8
     assert '$("#profile").disabled = busy' in js and '$("#profile-menu-btn").disabled = busy' in js  # M9
     assert "const previous = state.savePromise" in js  # M9: saves are chained
+
+
+# ---- Task 2: AI provider and model in Ajustes ----
+
+def test_settings_llm_provider_and_model_validation(client):
+    assert client.post("/api/settings", json={"llm_provider": "zzz"}).status_code == 400
+    r = client.post("/api/settings", json={"llm_model": "m" * 81})
+    assert r.status_code == 400 and "→" in r.json["error"]
+    assert config.load_settings()["llm_provider"] == "gemini"
+    r = client.post("/api/settings", json={"llm_provider": "openai", "llm_model": "m" * 80})
+    assert r.status_code == 200 and r.json["llm_provider"] == "openai"
+    assert config.load_settings()["llm_model"] == "m" * 80
+
+
+def test_profile_without_llm_fields_is_valid(client):
+    p = client.get("/api/profiles").json["profiles"][0]
+    assert "llm_provider" not in p and "llm_model" not in p
+    assert client.post("/api/profiles", json=dict(p, llm_provider="zzz")).status_code == 200  # ignored
+
+
+def test_llm_models_route(client, monkeypatch):
+    seen = {}
+
+    def fake(provider, settings):
+        seen["provider"], seen["key"] = provider, settings["gemini_key"]
+        return ["gemini-3.6-flash"]
+
+    monkeypatch.setattr(server.llm, "list_models", fake)
+    client.post("/api/settings", json={"gemini_key": "g-secret-1234"})
+    r = client.get("/api/llm/models?provider=gemini")
+    assert r.status_code == 200
+    assert r.json == {"models": ["gemini-3.6-flash"], "default": "gemini-3.6-flash"}
+    assert seen == {"provider": "gemini", "key": "g-secret-1234"} and "g-secret" not in r.text
+    assert client.get("/api/llm/models?provider=zzz").status_code == 400
+    assert client.get("/api/llm/models").status_code == 400
+
+
+def test_llm_models_route_without_key_is_a_400(client):
+    r = client.get("/api/llm/models?provider=gemini")
+    assert r.status_code == 400 and r.json["error"] == "Falta la clave de Gemini → Añádela en Ajustes"
+
+
+def test_settings_dialog_has_the_ai_block(client):
+    html = client.get("/").text
+    dialog = html[html.index('<dialog id="settings"'):]
+    assert 'data-setting="llm_provider"' in dialog and 'data-setting="llm_model"' in dialog
+    assert 'id="s-llm_model_pick"' in dialog and 'id="llm-models-refresh"' in dialog and 'id="llm-hint"' in dialog
+    assert 'id="f-llm"' not in html and 'id="f-model"' not in html
+    assert dialog.index('data-setting="compat_key"') < dialog.index('data-setting="llm_provider"') < dialog.index('data-setting="output_dir"')
+
+
+def test_clipping_form_help_toggles_and_visible_min_max(client):
+    html = client.get("/").text
+    es = json.loads(ES.read_text("utf-8"))
+    en = json.loads((ES.parent / "en.json").read_text("utf-8"))
+    for key in ("count", "len"):
+        assert f'id="c-{key}-help"' in html and f'aria-controls="c-{key}-help"' in html
+        assert re.search(rf'<p[^>]*class="hint"[^>]*id="c-{key}-help"[^>]*\bhidden\b', html)
+    assert re.search(r'<button[^>]*type="button"[^>]*id="c-count-help-btn"[^>]*aria-expanded="false"', html)
+    assert 'data-i18n-aria="clip.count_help_label"' in html
+    assert re.search(r'role="group"[^>]*aria-labelledby="c-len-label"', html)
+    assert 'class="sr-only" for="c-min"' not in html and 'class="sr-only" for="c-max"' not in html
+    assert (es["clip.min"], es["clip.max"]) == ("mín", "máx")
+    assert (en["clip.min"], en["clip.max"]) == ("min", "max")
+    assert es["progress.step_pct"] == "{step} · {n} %" and en["progress.step_pct"] == "{step} · {n} %"
+    for k in ("clip.count_help_label", "clip.count_help", "clip.len_help"):
+        assert es[k] and en[k]
+
+
+def test_boot_carries_version_and_page_shows_it(client):
+    import baitd
+    html = client.get("/").text
+    assert baitd.__version__ == "0.3.0"
+    assert f'"version": "{baitd.__version__}"' in html
+    assert 'id="app-version"' in html
+    es = json.loads(ES.read_text("utf-8"))
+    en = json.loads(EN.read_text("utf-8"))
+    assert es["settings.version"] == "Versión {v}" and en["settings.version"] == "Version {v}"
+    assert 'tr("settings.version"' in JS.read_text("utf-8")
+
+
+def test_version_matches_installed_metadata():
+    from importlib.metadata import version
+
+    import baitd
+    assert version("baitd") == baitd.__version__
+
+
+def test_favicon_and_brand_icon(client):
+    html = client.get("/").text
+    assert '<link rel="icon" type="image/png" href="/static/icon.png">' in html
+    assert re.search(r'<img class="brand-icon" src="/static/icon.png" alt="" width="28" height="28">', html)
+    assert html.index('class="brand-icon"') < html.index('class="brand"')
+    assert client.get("/static/icon.png").status_code == 200
+
+
+
+# ---- updates ----
+
+def test_check_updates_setting_is_boolean(client):
+    assert client.get("/api/settings").json["check_updates"] is True
+    assert client.post("/api/settings", json={"check_updates": False}).status_code == 200
+    assert client.get("/api/settings").json["check_updates"] is False
+    assert client.post("/api/settings", json={"check_updates": "no"}).status_code == 400
+
+
+def test_api_update_shape(client, monkeypatch):
+    from baitd import __version__, updater
+    monkeypatch.setattr(updater, "state", {"latest": None})
+    assert client.get("/api/update").json == {"current": __version__, "latest": None, "can_install": False}
+    latest = {"version": "9.9.9", "page": "https://github.com/okksett/baitd/releases/tag/v9.9.9",
+              "setup_url": "", "sums_url": ""}
+    updater.state["latest"] = latest
+    assert client.get("/api/update").json == {"current": __version__, "latest": latest, "can_install": False}
+
+
+def test_install_409_when_not_installable(client, monkeypatch):
+    from baitd import updater
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "", "sums_url": ""}})
+    monkeypatch.setattr(updater, "download_and_verify", lambda *a, **k: pytest.fail("must not download"))
+    r = client.post("/api/update/install", json={})
+    assert r.status_code == 409 and "→" in r.json["error"]
+
+
+def test_install_happy_path_order(queue, monkeypatch, tmp_data):
+    from baitd import updater
+    calls = []
+    latest = {"version": "9.9.9", "page": "p", "setup_url": "u", "sums_url": "s"}
+    monkeypatch.setattr(updater, "state", {"latest": latest})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+    monkeypatch.setattr(updater, "download_and_verify",
+                        lambda l, dest, **k: calls.append(("download", dest.name)) or dest / "s.exe")
+    monkeypatch.setattr(updater, "launch_installer", lambda p: calls.append(("launch", p.name)))
+    app = server.create_app(queue, shutdown=lambda: calls.append(("shutdown",)))
+    app.test_client_class = LocalClient
+    r = app.test_client().post("/api/update/install", json={})
+    assert r.status_code == 200 and r.json == {"ok": True}
+    assert wait_for(lambda: ("shutdown",) in calls)
+    assert calls == [("download", "actualizaciones"), ("launch", "s.exe"), ("shutdown",)]
+
+
+def test_install_failed_verification_does_not_launch(client, monkeypatch):
+    from baitd import updater
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+
+    def bad(*a, **k):
+        raise UserError("No se pudo verificar la actualización", "Descárgala desde la página de Baitd")
+
+    monkeypatch.setattr(updater, "download_and_verify", bad)
+    monkeypatch.setattr(updater, "launch_installer", lambda p: pytest.fail("must not launch"))
+    r = client.post("/api/update/install", json={})
+    assert r.status_code == 400 and "verificar" in r.json["error"]
+
+
+def test_install_disk_error_is_a_user_error(client, monkeypatch):
+    from baitd import updater
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+    monkeypatch.setattr(updater, "download_and_verify", lambda *a, **k: (_ for _ in ()).throw(
+        UserError("No se pudo guardar la actualización",
+                  "Libera espacio en el disco o descárgala desde la página de Baitd")))
+    r = client.post("/api/update/install", json={})
+    assert r.status_code == 400
+    assert r.json["error"] == ("No se pudo guardar la actualización → "
+                               "Libera espacio en el disco o descárgala desde la página de Baitd")
+
+
+def test_install_after_successful_launch_gets_409(queue, monkeypatch, tmp_data):
+    from baitd import updater
+    calls = []
+    monkeypatch.setattr(updater, "installing", False)
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+    monkeypatch.setattr(updater, "download_and_verify", lambda l, dest, **k: calls.append("download") or dest / "s.exe")
+    monkeypatch.setattr(updater, "launch_installer", lambda p: calls.append("launch"))
+    app = server.create_app(queue, shutdown=lambda: None)
+    app.test_client_class = LocalClient
+    assert app.test_client().post("/api/update/install", json={}).status_code == 200
+    r2 = app.test_client().post("/api/update/install", json={})  # inside the 0.3 s before shutdown
+    assert r2.status_code == 409 and "Ya se está descargando la actualización" in r2.json["error"]
+    assert calls == ["download", "launch"]
+
+
+def test_second_concurrent_install_gets_409(queue, monkeypatch, tmp_data):
+    from baitd import updater
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+
+    def slow(l, dest, **k):
+        calls.append("download")
+        started.set()
+        assert release.wait(5)
+        return dest / "s.exe"
+
+    monkeypatch.setattr(updater, "download_and_verify", slow)
+    monkeypatch.setattr(updater, "launch_installer", lambda p: calls.append("launch"))
+    app = server.create_app(queue)
+    app.test_client_class = LocalClient
+    first = {}
+    t = threading.Thread(target=lambda: first.update(r=app.test_client().post("/api/update/install", json={})))
+    t.start()
+    assert started.wait(3)
+    r2 = app.test_client().post("/api/update/install", json={})
+    assert r2.status_code == 409 and "Ya se está descargando la actualización" in r2.json["error"]
+    assert calls == ["download"]  # the second request did not touch the first
+    release.set()
+    t.join(5)
+    assert first["r"].status_code == 200 and calls == ["download", "launch"]
+    assert updater.install_lock.acquire(blocking=False)  # released afterwards
+    updater.install_lock.release()

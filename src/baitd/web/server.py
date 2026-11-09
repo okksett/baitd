@@ -23,7 +23,7 @@ from typing import Callable
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from .. import audio, captions, config, llm, tts
+from .. import __version__, audio, captions, config, llm, tts, updater
 from ..clip import pipeline as clip_pipeline
 from ..clip import sources as clip_sources
 from ..clip import ytdlp_loader
@@ -45,6 +45,7 @@ _LOCAL_HOSTS = ("127.0.0.1", "localhost")
 _POSITIONS = ("bottom", "middle", "top")
 _MAX_OUTLINE = 20  # px; the presets use 0-6
 _LLM_PROVIDERS = tuple(llm.DEFAULT_MODELS)
+_MAX_LLM_MODEL = 80
 _UPLOAD_PATH = "/api/uploads"
 _UPLOAD_CHUNK_PATH = re.compile(r"/api/uploads/[0-9a-f]{12}")  # PUT: one chunk of a chunked upload
 _UPLOAD_MAX = 40 * 1024**3  # a whole long-video upload, declared when it begins
@@ -139,8 +140,8 @@ def _parse_profile(d: dict) -> Profile:
     ok = (
         isinstance(p.name, str) and p.name.strip() and len(p.name) <= 60
         and isinstance(p.language, str) and 0 < len(p.language.strip()) <= 20
-        and p.llm_provider in _LLM_PROVIDERS and p.tts_provider in tts.PROVIDERS
-        and all(isinstance(v, str) for v in (p.llm_model, p.tone, p.voice, p.music))
+        and p.tts_provider in tts.PROVIDERS
+        and all(isinstance(v, str) for v in (p.tone, p.voice, p.music))
         and -50 <= p.rate <= 50 and 0 <= p.music_volume <= 1
         and p.music in _music_choices()
         and s.preset in captions.PRESETS and s.position in _POSITIONS
@@ -248,6 +249,30 @@ def _public_job(job: dict) -> dict:
     return {**job, "has_video": bool(video and job["status"] == "done" and video.is_file())}
 
 
+_CLIP_FILE = re.compile(r"(?:clip-\d{2}|video)\.mp4")
+
+
+def _listed_clips(folder: Path) -> list[dict]:
+    """The finished clips of a clip job. clips.json is read back from disk, so only names that
+    match _CLIP_FILE and exist directly in the folder get through; a bad file falls back to the listing."""
+    try:
+        raw = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raise ValueError("clips.json is not a list")
+    except (OSError, ValueError, RecursionError):
+        raw = None
+    if raw is None:
+        names = sorted(p.name for p in folder.glob("clip-*.mp4") if _CLIP_FILE.fullmatch(p.name) and p.is_file())
+        return [{"file": n, "title": ""} for n in names]
+    clips = []
+    for entry in raw:
+        name = entry.get("file") if isinstance(entry, dict) else None
+        if isinstance(name, str) and _CLIP_FILE.fullmatch(name) and (folder / name).is_file():
+            title = entry.get("title")
+            clips.append({"file": name, "title": title if isinstance(title, str) else ""})
+    return clips
+
+
 def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_DIR / "templates"),
                 static_folder=str(WEB_DIR / "static"), static_url_path="/static")
@@ -321,7 +346,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         def t(key: str) -> str:
             return strings.get(key) or i18n["es"].get(key) or key
 
-        boot = {"lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
+        boot = {"version": __version__, "lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
                 "presets": {k: v.to_dict() for k, v in captions.PRESETS.items()},
                 "upload_exts": list(clip_sources.UPLOAD_EXTS)}
         return render_template("index.html", t=t, lang=lang, theme=_stored_theme(), boot=boot)
@@ -349,16 +374,37 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
             if key == "cache_max_gb":
                 update[key] = _cache_gb(value)
                 continue
-            if key == "keep_sources":
+            if key in ("keep_sources", "check_updates"):
                 if not isinstance(value, bool):
-                    raise UserError("Valor no válido para 'keep_sources'", "Revisa los ajustes")
+                    raise UserError(f"Valor no válido para '{key}'", "Revisa los ajustes")
                 update[key] = value
+                continue
+            if key == "yt_cookies_browser":
+                if value not in ("", *clip_sources.COOKIE_BROWSERS):
+                    raise UserError("Ese navegador no sirve para la sesión de YouTube", "Elige uno de la lista")
+                update[key] = value
+                continue
+            if key == "clip_max_height":
+                if isinstance(value, str) and value.strip().isdigit():
+                    value = int(value.strip())
+                if type(value) is not int or value not in clip_sources.QUALITIES:
+                    raise UserError("Calidad de descarga no válida", "Elige una de la lista")
+                update[key] = value
+                continue
+            if key == "yt_cookies_file":
+                if not isinstance(value, str):
+                    raise UserError("Valor no válido para el archivo de cookies", "Revisa los ajustes")
+                update[key] = str(clip_sources.check_cookie_file(value)) if value.strip().strip('"').strip() else ""
                 continue
             if not isinstance(value, str):
                 raise UserError(f"Valor no válido para '{key}'", "Revisa los ajustes")
             value = value.strip()
             if key in KEY_FIELDS and value.startswith(MASK):
                 continue  # the masked placeholder came back unchanged
+            if key == "llm_provider" and value not in _LLM_PROVIDERS:
+                raise UserError("Proveedor de IA no válido", "Elige Gemini, OpenAI o un servidor compatible")
+            if key == "llm_model" and len(value) > _MAX_LLM_MODEL:
+                raise UserError("El nombre del modelo es demasiado largo", f"Usa como máximo {_MAX_LLM_MODEL} caracteres")
             update[key] = value
         if "ui_lang" in update and update["ui_lang"] not in UI_LANGS:
             raise UserError("Idioma de la interfaz no válido", "Elige español o inglés")
@@ -370,6 +416,14 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         with voice_lock:
             voice_cache.clear()  # a new key can change which voices are available
         return jsonify(_masked_settings())
+
+    @app.get("/api/llm/models")
+    def get_llm_models():
+        provider = request.args.get("provider", "")
+        if provider not in _LLM_PROVIDERS:
+            raise UserError("Proveedor de IA no válido", "Elige Gemini, OpenAI o un servidor compatible")
+        return jsonify(models=llm.list_models(provider, config.load_settings()),
+                       default=llm.DEFAULT_MODELS[provider])
 
     # --- profiles ---
 
@@ -448,6 +502,16 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         queue.cancel(job_id)
         return jsonify(ok=True)
 
+    @app.post("/api/jobs/<job_id>/retry")
+    def retry_job(job_id: str):
+        job_or_404(job_id)
+        try:
+            queue.retry(job_id)
+        except ValueError:
+            return jsonify(error=str(UserError("Este trabajo no se puede reintentar",
+                                               "Solo se reintentan los que fallaron o se cancelaron"))), 409
+        return jsonify({})
+
     @app.delete("/api/jobs/<job_id>")
     def remove_job(job_id: str):
         job_or_404(job_id)
@@ -467,6 +531,31 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         if not job["has_video"]:
             abort(404)
         return send_file(Path(job["output"]) / "video.mp4", mimetype="video/mp4", conditional=True)
+
+    def finished_folder(job_id: str) -> tuple[dict, Path]:
+        job = job_or_404(job_id)
+        folder = Path(job["output"]) if job["output"] else None
+        if job["status"] != "done" or folder is None or not folder.is_dir():
+            abort(404)
+        return job, folder
+
+    @app.get("/api/jobs/<job_id>/clips")
+    def job_clips(job_id: str):
+        job, folder = finished_folder(job_id)
+        if job["kind"] == "short":
+            clips = [{"file": "video.mp4", "title": job["topic"]}] if (folder / "video.mp4").is_file() else []
+        else:
+            clips = _listed_clips(folder)
+        return jsonify(clips=clips, aspect=queue.aspect(job_id))
+
+    @app.get("/api/jobs/<job_id>/files/<file>")
+    def job_file(job_id: str, file: str):
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites
+            abort(403)
+        _, folder = finished_folder(job_id)
+        if not _CLIP_FILE.fullmatch(file) or not (folder / file).is_file():
+            abort(404)
+        return send_file(folder / file, mimetype="video/mp4", conditional=True)
 
     @app.post("/api/jobs/<job_id>/open-folder")
     def open_folder(job_id: str):
@@ -651,7 +740,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         except (OSError, ValueError, AttributeError, UserError):
             src = None  # damaged analysis or source already gone: only the analysis is removed
         if src is not None:  # the source goes too unless kept or still needed by a queued item
-            clip_pipeline._release_source(src, config.load_settings(), queue.unfinished_refs)
+            clip_pipeline._release_source(src, config.load_settings(), queue.held_refs)
         clip_pipeline.delete_analysis(analysis_id)
         return jsonify(ok=True)
 
@@ -662,7 +751,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         # No meta.json = an upload still in progress (or being probed): only DELETE /api/uploads/<id> removes it
         if not clip_sources.valid_id(source_id) or not (clip_sources.sources_dir() / source_id / "meta.json").is_file():
             abort(404)
-        if clip_pipeline.source_needed(source_id, queue.unfinished_refs):
+        if clip_pipeline.source_needed(source_id, queue.held_refs):
             return jsonify(error=str(UserError("Ese video lo usa un trabajo de la cola o un análisis",
                                                "Espera a que termine o descarta el análisis"))), 409
         clip_sources.delete_source(source_id)
@@ -682,6 +771,36 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     def ytdlp_update():
         _body()
         return jsonify(version=ytdlp_loader.update_ytdlp())
+
+    @app.get("/api/update")
+    def get_update():
+        latest = updater.state.get("latest")
+        return jsonify(current=__version__, latest=latest, can_install=updater.can_install(latest))
+
+    @app.post("/api/update/install")
+    def post_update_install():
+        _body()
+        latest = updater.state.get("latest")
+        if not updater.can_install(latest):
+            return jsonify(error="Esta instalación no se puede actualizar sola → Descarga la versión nueva desde la página de Baitd"), 409
+        busy = jsonify(error=str(UserError("Ya se está descargando la actualización", "Espera a que termine")))
+        if updater.installing or not updater.install_lock.acquire(blocking=False):
+            return busy, 409
+        try:
+            if updater.installing:  # launched between the check above and taking the lock
+                return busy, 409
+            path = updater.download_and_verify(latest, config.data_dir() / "actualizaciones")
+            updater.launch_installer(path)
+            updater.installing = True  # Baitd closes in a moment; the installer must not be removed or started twice
+        finally:
+            updater.install_lock.release()
+
+        def stop() -> None:
+            queue.stop()  # a running job goes back to pending
+            if shutdown is not None:
+                shutdown()
+        threading.Timer(0.3, stop).start()  # after this response has been sent
+        return jsonify(ok=True)
 
     @app.post("/api/shutdown")
     def post_shutdown():

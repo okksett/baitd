@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import threading
+
 from ..models import UserError
 from ._http import post_json, unexpected
 
 OPENAI_BASE = "https://api.openai.com/v1"
 
 
-def complete(prompt: str, model: str, settings: dict, provider: str = "openai") -> str:
+def complete(prompt: str, model: str, settings: dict, provider: str = "openai",
+             cancel: threading.Event | None = None) -> str:
     """Chat completion against OpenAI or any OpenAI-compatible server (provider 'compat')."""
     headers = {"Content-Type": "application/json"}
     if provider == "openai":
@@ -26,7 +29,7 @@ def complete(prompt: str, model: str, settings: dict, provider: str = "openai") 
         "connect_fix": "¿Está abierto Ollama / el servidor?",
         "not_found_fix": "Revisa la URL (¿termina en /v1?) o el modelo",
     }
-    data = post_json(f"{base}/chat/completions", headers, payload, label, model, **hints)
+    data = post_json(f"{base}/chat/completions", headers, payload, label, model, retry=True, cancel=cancel, **hints)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

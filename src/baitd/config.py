@@ -19,8 +19,14 @@ SETTINGS_DEFAULTS: dict = {
     "openai_key": "", "gemini_key": "", "elevenlabs_key": "", "pexels_key": "",
     "pixabay_key": "", "compat_base_url": "", "compat_key": "", "output_dir": "",
     "ui_lang": "es", "theme": "dark",
+    "llm_provider": "gemini",  # AI text provider (a key of llm.DEFAULT_MODELS)
+    "llm_model": "",  # "" = the provider's default model
     "cache_max_gb": 3,  # clip cache cap in GB (ruling R30); not in the UI, editable in settings.json
+    "check_updates": True,  # look for a newer Baitd release when the app opens
     "keep_sources": False,  # Clipping: keep downloaded/uploaded videos and analyses after a run
+    "yt_cookies_browser": "",  # Clipping: read the YouTube session from this browser (sources.COOKIE_BROWSERS)
+    "clip_max_height": 1440,  # Clipping: max download height (sources.QUALITIES)
+    "yt_cookies_file": "",  # Clipping: path to an exported cookies.txt; wins over the browser
 }
 
 
@@ -95,10 +101,35 @@ def save_settings(d: dict) -> None:
         _write_json(data_dir() / "settings.json", {**raw_settings(), **d})
 
 
+def migrate_llm_settings() -> None:
+    """One time (0.2 -> 0.3): the AI provider/model moved from each profile to the settings.
+    Takes them from the first profile with a model (else the first profile)."""
+    with _LOCK:
+        if "llm_provider" in raw_settings():
+            return
+        raw = _read_json(data_dir() / "profiles.json", [], list)
+        entries = [d for d in raw if isinstance(d, dict)]
+        if not entries:
+            return
+        pick = next((d for d in entries if isinstance(d.get("llm_model"), str) and d["llm_model"].strip()),
+                    entries[0])
+        provider, model = pick.get("llm_provider"), pick.get("llm_model")
+        from .llm import DEFAULT_MODELS  # late: llm imports models, not config
+
+        update: dict = {}
+        if isinstance(provider, str) and provider in DEFAULT_MODELS:
+            update["llm_provider"] = provider
+        if isinstance(model, str) and model.strip():
+            update["llm_model"] = model.strip()[:80]
+        if update:
+            update.setdefault("llm_provider", SETTINGS_DEFAULTS["llm_provider"])
+            save_settings(update)
+
+
 def default_profile() -> Profile:
     return Profile(
         id="default", name="Por defecto", language="es", aspect="9:16", fps=30,
-        seconds=45, llm_provider="gemini", llm_model="", tone="",
+        seconds=45, tone="",
         tts_provider="edge", voice="es-ES-ElviraNeural", rate=0,
         subtitle=replace(PRESETS["caja_azul"]),
         music="lofi", music_volume=0.15,

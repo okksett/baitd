@@ -43,6 +43,7 @@ exe = EXE(
     exclude_binaries=True,
     name="Baitd",
     console=sys.platform != "darwin",
+    icon=str(ROOT / "packaging" / "baitd.ico"),
     upx=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="Baitd", upx=False)
@@ -51,6 +52,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="Baitd.app",
+        icon=str(ROOT / "packaging" / "baitd.icns"),
         bundle_identifier="com.baitd.app",
         info_plist={"CFBundleName": "Baitd", "CFBundleDisplayName": "Baitd",
                     "NSHighResolutionCapable": True},

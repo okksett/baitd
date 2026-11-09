@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baitd"
-version = "0.2.1"
+dynamic = ["version"]
 description = "Local app that turns a topic into a short video and cuts clips from long videos"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -33,10 +33,13 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md", "assets/models/*.onnx", "assets/models/LICENSE-yunet.txt",
-              "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/i18n/*.json"]
+              "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/*.png", "web/static/i18n/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
 pythonpath = ["src"]
 markers = ["network: tests that need internet access"]
+
+[tool.setuptools.dynamic]
+version = {attr = "baitd.__version__"}

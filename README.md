@@ -10,6 +10,10 @@ Baitd es una aplicación gratuita y de código abierto (licencia MIT) que convie
 
 ### Opción A: descargar la app (la más fácil)
 
+**Windows, con instalador:** descarga `Baitd-Setup.exe` de la página de **Releases**. Instala Baitd con icono en el escritorio y en el menú Inicio, y trae desinstalador. Cada Release incluye también `SHA256SUMS`, con la huella de cada archivo, por si quieres comprobar la descarga. El instalador no está firmado (ver SmartScreen más abajo).
+
+**Cualquier sistema, en un paquete:**
+
 1. Ve a la página de **Releases** del repositorio y descarga el paquete de tu sistema (Windows, macOS Intel / Apple Silicon o Linux). Mientras no haya una Release, cada ejecución de **GitHub Actions** (pestaña *Actions* → workflow *build*) deja los paquetes como *artifacts*: `Baitd-windows-x64.zip`, `Baitd-macos-arm64.zip`, `Baitd-macos-x64.zip` y `Baitd-linux-x64.tar.gz`.
 2. Descomprímelo y abre Baitd con doble clic. Se abre el navegador con la app.
 3. Primer arranque: la app no está firmada, así que tu sistema avisará (ver abajo).
@@ -18,9 +22,11 @@ En Windows y Linux se abre también una ventana de consola con la dirección y "
 
 **Si algo no funciona**, abre la app desde una terminal con `--selftest` (por ejemplo `Baitd.exe --selftest`): genera un vídeo de prueba sin conexión y sin tocar tus datos, y termina con `SELFTEST OK <segundos>` o con la causa del fallo.
 
-**Windows (SmartScreen):** si aparece "Windows protegió su PC", pulsa **Más información → Ejecutar de todas formas**.
+**Windows (SmartScreen):** ni el programa ni `Baitd-Setup.exe` están firmados. Si aparece "Windows protegió su PC", pulsa **Más información → Ejecutar de todas formas**.
 
 **macOS (Gatekeeper):** haz clic derecho sobre la app y elige **Abrir**, y confirma. Si no aparece esa opción, ve a **Ajustes → Privacidad y seguridad**, baja hasta el aviso de Baitd y pulsa **Abrir igualmente**.
+
+**Actualizaciones:** al abrir, Baitd avisa si hay una Release nueva. En las instalaciones de Windows, un clic descarga el instalador, comprueba su SHA-256 y lo ejecuta; en los demás sistemas abre la página de la Release. Se puede apagar en **⚙ Ajustes** ("Buscar actualizaciones al abrir").
 
 ### Opción B: desde el código
 
@@ -45,7 +51,7 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 | Gemini | Guion con IA, nivel gratuito | <https://aistudio.google.com/app/apikey> |
 | OpenAI | Guion con IA y voces (de pago) | <https://platform.openai.com/api-keys> |
 | ElevenLabs | Voces de más calidad (de pago) | <https://elevenlabs.io/app/settings/api-keys> |
-| Ollama | Guion con IA local, sin clave. En **Ajustes** pon la "Dirección de Ollama o servidor compatible" `http://localhost:11434/v1`; en el perfil, sección **Guion** ("IA que escribe el guion"), elige el proveedor "Ollama o compatible" | <https://ollama.com> |
+| Ollama | Guion con IA local, sin clave. En **Ajustes** pon la "Dirección de Ollama o servidor compatible" `http://localhost:11434/v1`; en **Ajustes → Inteligencia artificial** elige el proveedor "Ollama o compatible" | <https://ollama.com> |
 
 ## El camino gratis
 
@@ -56,6 +62,15 @@ Las claves se pegan en **Ajustes** y solo se envían al servicio al que pertenec
 
 > **Aviso sobre edge-tts:** usa el servicio de voces de Microsoft Edge, que **no es oficial** y podría dejar de funcionar en cualquier momento. Si falla, cambia de proveedor de voz (OpenAI, ElevenLabs) en la sección **Voz** del perfil; sus claves se pegan en **Ajustes**.
 
+## Modelo de IA
+
+El modelo se elige en **⚙ Ajustes → Inteligencia artificial**, junto a las claves, y vale para todos los perfiles y para las dos pestañas (Crear short y Clipping). Eliges el proveedor, y el modelo en una lista desplegable; el botón **Actualizar lista** la rellena con los modelos que tu clave puede usar. Con **Otro…** escribes el nombre a mano (por ejemplo, para Ollama). Ya no se elige por perfil: si un perfil antiguo tenía un modelo escrito, se pasa a Ajustes una sola vez. Si la IA está saturada o con errores temporales del servidor, Baitd reintenta unas veces con espera creciente antes de dar error.
+
+## Ver el resultado y reintentar
+
+- **Vista previa:** cuando un trabajo termina, el botón **Ver videos** reproduce los resultados dentro de la app (el short, o los clips de Clipping).
+- **Reintentar:** si un trabajo falla o se cancela, el botón **Reintentar** lo vuelve a lanzar sin volver a descargar ni a transcribir el video. En los trabajos de Clipping, mientras el trabajo siga en la lista, Baitd conserva el video original, incluso si reinicias la app; si lo quitas de la lista, se libera.
+
 ## Clipping: sacar clips de un video largo
 
 La pestaña **Clipping** convierte un video largo (podcast, entrevista, stream) en varios clips verticales. Tiene dos modos: **Buscar momentos** (descarga, transcribe y propone candidatos; tú eliges y pulsas «Exportar seleccionados») y **Crear clips** (modo automático: elige los mejores momentos y los recorta, encuadra y subtitula sin revisión).
@@ -65,7 +80,9 @@ La pestaña **Clipping** convierte un video largo (podcast, entrevista, stream) 
 - **Primera vez en local:** el modelo de Whisper ("small", unos **250 MB**) no viene dentro de la app; se descarga una sola vez al usar la transcripción local.
 - **Encuadre vertical** (se cambia por clip en la revisión): **Cara** (por defecto, sigue a quien habla), **Centro** (recorte fijo al centro, útil para pantallas y juegos) y **Completo** (el video entero con fondo difuminado, sin ampliar).
 - **Dónde se guarda:** los originales en `fuentes/` y las transcripciones y candidatos en `analisis/`, dentro de la carpeta de datos; los clips terminados van a `salidas/`. Los originales se borran al exportar todos sus clips, salvo que marques "Guardar videos originales" en Ajustes. No cuentan para el tope de 3 GB de la caché.
+- **Calidad de descarga:** se elige en **⚙ Ajustes**: 1080p (más rápida), 1440p (por defecto) o 4K (más nítida, unos 1 GB por 25 min).
 - **Actualizar yt-dlp:** si una descarga deja de funcionar, usa el botón **Actualizar yt-dlp** en **Ajustes** y reinicia Baitd.
+- **«Confirma que no eres un bot»:** si YouTube bloquea la descarga, ve a **Ajustes → Clipping → Sesión de YouTube**. Elige Firefox, o pega la ruta de un archivo `cookies.txt` exportado con la extensión «Get cookies.txt LOCALLY» con tu sesión de YouTube abierta. En Windows, Chrome y Edge no dejan leer sus cookies: ahí usa el archivo. Baitd guarda solo la ruta y usa una copia temporal; las cookies no salen de tu ordenador.
 
 > **Derechos:** si usas videos de otros canales, respeta sus derechos y las reglas de cada plataforma.
 
@@ -102,6 +119,10 @@ Baitd is a free, open-source (MIT) app that turns **a topic** (e.g. "the benefit
 
 ### Option A: download the app (easiest)
 
+**Windows, with the installer:** download `Baitd-Setup.exe` from the **Releases** page. It installs Baitd with a desktop icon and a Start menu entry, and includes an uninstaller. Every Release also carries `SHA256SUMS`, with the checksum of each file, in case you want to verify your download. The installer is not code-signed (see SmartScreen below).
+
+**Any system, as a package:**
+
 1. Open the repository's **Releases** page and download the package for your system (Windows, macOS Intel / Apple Silicon, or Linux). Until there is a Release, every **GitHub Actions** run (*Actions* tab → *build* workflow) leaves the packages as *artifacts*: `Baitd-windows-x64.zip`, `Baitd-macos-arm64.zip`, `Baitd-macos-x64.zip` and `Baitd-linux-x64.tar.gz`.
 2. Unzip it and double-click Baitd. Your browser opens on the app.
 3. First launch: the app is unsigned, so your system will warn you (see below).
@@ -110,9 +131,11 @@ On Windows and Linux a console window also opens showing the address and "Pulsa 
 
 **Troubleshooting:** run the app from a terminal with `--selftest` (e.g. `Baitd.exe --selftest`): it renders an offline test video without touching your data and ends with `SELFTEST OK <seconds>` or the cause of the failure.
 
-**Windows (SmartScreen):** if you see "Windows protected your PC", click **More info → Run anyway**.
+**Windows (SmartScreen):** neither the app nor `Baitd-Setup.exe` is code-signed. If you see "Windows protected your PC", click **More info → Run anyway**.
 
 **macOS (Gatekeeper):** right-click the app, choose **Open**, and confirm. If that option is missing, go to **System Settings → Privacy & Security**, scroll to the Baitd notice and click **Open Anyway**.
+
+**Updates:** on launch, Baitd shows a notice when a new Release exists. On Windows installs, one click downloads the installer, verifies its SHA-256 and runs it; on other systems it opens the Release page. You can turn it off in **⚙ Settings** ("Check for updates on startup").
 
 ### Option B: run from source
 
@@ -137,7 +160,7 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 | Gemini | LLM script, free tier | <https://aistudio.google.com/app/apikey> |
 | OpenAI | LLM script and voices (paid) | <https://platform.openai.com/api-keys> |
 | ElevenLabs | Higher-quality voices (paid) | <https://elevenlabs.io/app/settings/api-keys> |
-| Ollama | Local LLM, no key. In **Settings** set "Ollama or compatible server address" to `http://localhost:11434/v1`; in the profile's **Script** section ("AI that writes the script") pick the "Ollama or compatible" provider | <https://ollama.com> |
+| Ollama | Local LLM, no key. In **Settings** set "Ollama or compatible server address" to `http://localhost:11434/v1`; in **Settings → Artificial intelligence** pick the "Ollama or compatible" provider | <https://ollama.com> |
 
 ## The free path
 
@@ -148,6 +171,15 @@ Paste keys in **Settings (Ajustes)**; each is only sent to the service it belong
 
 > **edge-tts warning:** it uses Microsoft Edge's voice service, which is **unofficial** and may stop working at any time. If it fails, switch to another voice provider (OpenAI, ElevenLabs) in the profile's **Voice** ("Voz") section; their keys go in **Settings**.
 
+## AI model
+
+The model is chosen in **⚙ Settings → Artificial intelligence**, next to the keys, and applies to every profile and to both tabs (Create short and Clipping). Pick the provider, then the model from a dropdown; the **Refresh list** button fills it with the models your key can use. **Other…** lets you type a name by hand (for example for Ollama). It is no longer set per profile: if an old profile had a model typed in, it is moved to Settings once. When the AI is overloaded or returning temporary server errors, Baitd retries a few times with growing waits before giving up.
+
+## Viewing results and retrying
+
+- **Preview:** when a job finishes, the **View videos** button plays the results inside the app (the short, or the Clipping clips).
+- **Retry:** if a job fails or is cancelled, the **Retry** button runs it again without downloading or transcribing the video again. For Clipping jobs, while the job stays in the list, Baitd keeps the original video, even across app restarts; removing it from the list releases it.
+
 ## Clipping: cut clips from a long video
 
 The **Clipping** tab turns a long video (podcast, interview, stream) into several vertical clips. It has two modes: **Find moments** (download, transcribe and suggest candidates; you pick and press "Export selected") and **Create clips** (automatic mode: it picks the best moments and cuts, frames and captions them with no review).
@@ -157,7 +189,9 @@ The **Clipping** tab turns a long video (podcast, interview, stream) into severa
 - **First local run:** the Whisper model ("small", about **250 MB**) is not bundled; it is downloaded once when you first use local transcription.
 - **Vertical framing** (changeable per clip during review): **Face** (default, follows the speaker), **Center** (fixed centre crop, good for screens and games) and **Full** (the whole video over a blurred background, no zoom).
 - **Where things live:** sources in `fuentes/` and transcripts and candidates in `analisis/`, inside the data folder; finished clips go to `salidas/`. Sources are deleted once all their clips are exported unless you tick "Keep original videos" in Settings. They do not count toward the 3 GB cache cap.
+- **Download quality:** chosen in **⚙ Settings**: 1080p (faster), 1440p (default) or 4K (sharper, about 1 GB per 25 min).
 - **Updating yt-dlp:** if downloads stop working, use the **Update yt-dlp** button in **Settings (Ajustes)** and restart Baitd.
+- **“Confirm you’re not a bot”:** if YouTube blocks the download, go to **Settings → Clipping → YouTube session**. Pick Firefox, or paste the path of a `cookies.txt` exported with the “Get cookies.txt LOCALLY” extension while signed in to YouTube. On Windows, Chrome and Edge don’t let other apps read their cookies: use the file there. Baitd stores only the path and reads a temporary copy; cookies never leave your computer.
 
 > **Rights:** if you use other channels' videos, respect their rights and each platform's rules.
 

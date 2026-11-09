@@ -219,16 +219,61 @@ def _resolve(item: dict, with_overrides: bool = True) -> tuple[Profile, ClipProf
 
 
 def _acquire_source(item: dict, providers: ClipProviders, cancel: threading.Event,
-                    on_progress: Callable[[float], None]) -> tuple[SourceInfo, bool]:
-    """(source, fetched by this job). A source the user already has is never deleted on failure."""
+                    on_progress: Callable[[float], None],
+                    on_source: Callable[[dict], None] | None = None) -> tuple[SourceInfo, bool]:
+    """(source, delete it if the job fails). A source the user already has is never deleted on failure, nor
+    is a download the queue item now points at (on_source): Reintentar reuses it instead of downloading
+    again. A retry whose download is gone fetches the link again."""
     s = _payload(item).get("source")
     s = s if isinstance(s, dict) else {}
-    if isinstance(s.get("url"), str) and s["url"].strip():
-        sources.check_url(s["url"])
-        return (providers.fetch_url or sources.fetch_url)(s["url"].strip(), cancel, on_progress), True
+    url = s["url"].strip() if isinstance(s.get("url"), str) else ""
+    if s.get("fetched") is True and isinstance(s.get("source_id"), str):
+        try:
+            return sources.load_source(s["source_id"]), False
+        except UserError:
+            if not url:
+                raise
+            log.info("El video descargado %s ya no está; se descarga otra vez", s["source_id"])
+            sources.delete_source(s["source_id"])  # whatever is left of it is unusable
+    if url:
+        sources.check_url(url)
+        src = (providers.fetch_url or sources.fetch_url)(url, cancel, on_progress)
+        if on_source is None:
+            return src, True
+        on_source({"source_id": src.id, "fetched": True, "url": url})
+        return src, False
     if isinstance(s.get("source_id"), str):
         return sources.load_source(s["source_id"]), False
     raise UserError("Falta el video de origen", "Pega un enlace o sube un archivo")
+
+
+_TRANSCRIPT = "transcript.json"  # in the source folder: a retry or a new analysis skips transcribing
+
+
+def _transcript_key(opts: ClipProfile, language: str | None) -> list:
+    model = "whisper-1" if opts.transcriber == "openai" else opts.whisper_model
+    return [opts.transcriber, model, language]
+
+
+def _saved_transcript(src: SourceInfo, key: list) -> Transcript | None:
+    """The transcript saved with the source when it was made with the same settings; None otherwise."""
+    try:
+        raw = json.loads((sources.sources_dir() / src.id / _TRANSCRIPT).read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and raw.get("key") == key:
+            return _transcript_from_dict(raw.get("transcript"))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        pass
+    return None
+
+
+def _save_transcript(src: SourceInfo, key: list, transcript: Transcript) -> None:
+    if not sources.valid_id(src.id) or not (sources.sources_dir() / src.id).is_dir():
+        return
+    try:
+        config._write_json(sources.sources_dir() / src.id / _TRANSCRIPT,
+                           {"key": key, "transcript": transcript.to_dict()})
+    except OSError:
+        log.warning("No se pudo guardar la transcripción de %s", src.id)
 
 
 def _understand(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: dict, cancel: threading.Event,
@@ -236,12 +281,16 @@ def _understand(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: 
     """Steps 2 and 3: audio + transcript, then the ranked moments. Big files live in a temp folder."""
     with tempfile.TemporaryDirectory(prefix="baitd-clip-") as tmp:
         steps.begin(2)
-        audio = sources.extract_audio(src, Path(tmp) / "audio.wav", cancel)
+        audio = sources.extract_audio(src, Path(tmp) / "audio.wav", cancel)  # the moments step needs it too
         language = None if opts.language == "auto" else opts.language
-        transcript = (providers.transcribe or transcribe.transcribe)(
-            audio, opts.transcriber, language, settings, opts.whisper_model, cancel,
-            lambda f: steps.frac(2, f),
-            on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0))
+        key = _transcript_key(opts, language)
+        transcript = _saved_transcript(src, key)
+        if transcript is None:
+            transcript = (providers.transcribe or transcribe.transcribe)(
+                audio, opts.transcriber, language, settings, opts.whisper_model, cancel,
+                lambda f: steps.frac(2, f),
+                on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0))
+            _save_transcript(src, key, transcript)
         steps.end(2)
 
         steps.begin(3)
@@ -274,6 +323,9 @@ def _write_texts(folder: Path, moments: list[Moment]) -> None:
         tags = " ".join(t if t.startswith("#") else f"#{t}" for t in m.hashtags)
         blocks.append(f"clip-{i:02d}.mp4 ({_hms(m.start)}–{_hms(m.end)})\n{m.title}\n\n{m.description}\n\n{tags}\n")
     (folder / "publicacion.txt").write_text("\n".join(blocks), encoding="utf-8")
+    clips = [{"file": f"clip-{i:02d}.mp4", "title": m.title, "description": m.description,
+              "hashtags": list(m.hashtags), "start": m.start, "end": m.end} for i, m in enumerate(moments, 1)]
+    (folder / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,
@@ -406,6 +458,8 @@ def sweep(analysis_ids: set[str], source_ids: set[str], keep_sources: bool) -> N
 
 
 def _discard(folder: Path | None, fetched: SourceInfo | None) -> None:
+    """A failed run's output folder goes, and the source it downloaded unless the queue item points at it
+    (then `fetched` is None: _acquire_source decides)."""
     if folder is not None:
         shutil.rmtree(folder, ignore_errors=True)
     if fetched is not None:
@@ -418,9 +472,10 @@ def run_clip_auto(item: dict, settings: dict, cancel: threading.Event, progress:
                   providers: ClipProviders | None = None, *,
                   on_output: Callable[[Path], None] | None = None,
                   on_title: Callable[[str], None] | None = None,
+                  on_source: Callable[[dict], None] | None = None,
                   busy: Busy | None = None) -> Path:
     """Link or stored source -> ranked clips in a new output folder (returned). A failed or cancelled run
-    leaves no folder and no source this run downloaded."""
+    leaves no folder; a source it downloaded stays only if on_source recorded it for Reintentar."""
     providers = providers or ClipProviders()
     profile, opts = _resolve(item)
     steps = _Steps(progress, cancel)
@@ -428,8 +483,8 @@ def run_clip_auto(item: dict, settings: dict, cancel: threading.Event, progress:
     folder: Path | None = None
     try:
         steps.begin(1)
-        src, is_new = _acquire_source(item, providers, cancel, lambda f: steps.frac(1, f))
-        fetched = src if is_new else None
+        src, disposable = _acquire_source(item, providers, cancel, lambda f: steps.frac(1, f), on_source)
+        fetched = src if disposable else None
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
@@ -449,17 +504,19 @@ def run_clip_analyze(item: dict, settings: dict, cancel: threading.Event, progre
                      providers: ClipProviders | None = None, *,
                      on_output: Callable[[Path], None] | None = None,
                      on_title: Callable[[str], None] | None = None,
-                  busy: Busy | None = None) -> Path:
+                     on_source: Callable[[dict], None] | None = None,
+                     busy: Busy | None = None) -> Path:
     """Source -> transcript and up to 2 x count candidate moments saved as analisis/<id>.json (returned).
-    The source stays for the export; it is removed only if this run fails after downloading it."""
+    The source stays for the export; if this run fails after downloading it, it stays only if on_source
+    recorded it for Reintentar."""
     providers = providers or ClipProviders()
     profile, opts = _resolve(item)
     steps = _Steps(progress, cancel)
     fetched: SourceInfo | None = None
     try:
         steps.begin(1)
-        src, is_new = _acquire_source(item, providers, cancel, lambda f: steps.frac(1, f))
-        fetched = src if is_new else None
+        src, disposable = _acquire_source(item, providers, cancel, lambda f: steps.frac(1, f), on_source)
+        fetched = src if disposable else None
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
@@ -480,7 +537,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
                     providers: ClipProviders | None = None, *,
                     on_output: Callable[[Path], None] | None = None,
                     on_title: Callable[[str], None] | None = None,
-                  busy: Busy | None = None) -> Path:
+                    on_source: Callable[[dict], None] | None = None,
+                    busy: Busy | None = None) -> Path:
     """The moments the user picked (with their edits) from a saved analysis -> clips in a new folder."""
     providers = providers or ClipProviders()
     profile, _ = _resolve(item, with_overrides=False)

@@ -19,7 +19,10 @@ log = logging.getLogger(__name__)
 
 _STATUSES = ("pending", "running", "done", "error", "cancelled")
 _FINISHED = ("done", "error", "cancelled")
-_PUBLIC = ("id", "topic", "status", "step", "step_index", "percent", "error", "output",
+_RETRYABLE = ("error", "cancelled")
+_UNFINISHED = ("pending", "running")
+_HOLDING = (*_UNFINISHED, *_RETRYABLE)  # items whose source (and analysis) must stay: they may still run
+_PUBLIC = ("id", "topic", "status", "step", "step_index", "percent", "step_percent", "error", "output",
            "profile_name", "created_at", "kind", "analysis_id")
 _CLIP_RUNNERS = {"clip_auto": clip_pipeline.run_clip_auto, "clip_analyze": clip_pipeline.run_clip_analyze,
                  "clip_export": clip_pipeline.run_clip_export}
@@ -82,12 +85,13 @@ class JobQueue:
         try:
             step_index = int(d.get("step_index") or 0)
             percent = float(d.get("percent") or 0.0)
+            step_percent = float(d.get("step_percent") or 0.0)
         except (TypeError, ValueError):
-            step_index, percent = 0, 0.0
+            step_index, percent, step_percent = 0, 0.0, 0.0
         return {
             "id": d["id"], "topic": d["topic"], "status": status,
             "step": d.get("step") or "", "step_index": step_index,
-            "percent": percent, "error": d.get("error") or "",
+            "percent": percent, "step_percent": step_percent, "error": d.get("error") or "",
             "output": d.get("output") or "", "profile_name": d.get("profile_name") or "",
             "created_at": d.get("created_at") or "",
             "profile": d["profile"],
@@ -104,7 +108,7 @@ class JobQueue:
 
     @staticmethod
     def _reset_pending(item: dict) -> None:
-        item.update(status="pending", step="", step_index=0, percent=0.0, error="", output="")
+        item.update(status="pending", step="", step_index=0, percent=0.0, step_percent=0.0, error="", output="")
 
     # --- public API ---
 
@@ -120,7 +124,7 @@ class JobQueue:
                 script = (scripts or {}).get(topic)
                 item = {
                     "id": uuid.uuid4().hex[:12], "topic": topic, "status": "pending",
-                    "step": "", "step_index": 0, "percent": 0.0, "error": "", "output": "",
+                    "step": "", "step_index": 0, "percent": 0.0, "step_percent": 0.0, "error": "", "output": "",
                     "profile_name": profile.name, "created_at": now,
                     "profile": snapshot, "script": script.to_dict() if script else None,
                     "kind": "short", "payload": None, "analysis_id": "",
@@ -139,7 +143,7 @@ class JobQueue:
         analysis_id = payload.get("analysis_id") if kind == "clip_export" else ""
         item = {
             "id": uuid.uuid4().hex[:12], "topic": topic, "status": "pending",
-            "step": "", "step_index": 0, "percent": 0.0, "error": "", "output": "",
+            "step": "", "step_index": 0, "percent": 0.0, "step_percent": 0.0, "error": "", "output": "",
             "profile_name": profile.name, "created_at": datetime.now().isoformat(timespec="seconds"),
             "profile": profile.to_dict(), "script": None,
             "kind": kind, "payload": copy.deepcopy(payload),
@@ -171,6 +175,13 @@ class JobQueue:
         with self._lock:
             return [{k: i[k] for k in _PUBLIC} for i in self._items]
 
+    def aspect(self, id: str) -> str:
+        """The profile aspect the job was made with ("9:16" when unknown)."""
+        with self._lock:
+            item = self._find(id)
+            value = item["profile"].get("aspect") if item else None
+        return value if value in ("9:16", "16:9") else "9:16"
+
     def cancel(self, id: str) -> None:
         with self._lock:
             item = self._find(id)
@@ -181,6 +192,17 @@ class JobQueue:
                 self._save()
             elif item["status"] == "running":
                 self._cancels[id].set()
+
+    def retry(self, id: str) -> None:
+        """Reintentar: a failed or cancelled item goes back to pending with its payload, profile and script.
+        A clip job's payload points at the source it already downloaded, so the retry reuses it."""
+        with self._lock:
+            item = self._find(id)
+            if item is None or item["status"] not in _RETRYABLE:
+                raise ValueError(f"job {id!r} cannot be retried")
+            self._reset_pending(item)
+            self._save()
+            self._wake.notify_all()
 
     def remove(self, id: str) -> None:
         """Delete one finished (done/error/cancelled) item; other statuses are left alone."""
@@ -200,22 +222,29 @@ class JobQueue:
         self._release(gone)
 
     def _release(self, gone: list[dict]) -> None:
-        """Removed clip items free what they held: a finished analysis and its source, or the uploaded source
-        of a failed run, unless kept or still needed by an unfinished item (ruling T8c). Called unlocked."""
+        """Removed clip items free what they held: a finished analysis and its source, or the source of a
+        failed run (uploaded, or downloaded and kept for Reintentar), unless kept or still needed by an item
+        that may still run (ruling T8c). Called unlocked."""
         clip = [i for i in gone if i["kind"] != "short"]
         if not clip:
             return
         settings = config.load_settings()
-        busy = lambda: self._unfinished_refs("")  # noqa: E731
+        busy = lambda: self._held_refs("")  # noqa: E731
+        with self._lock:
+            owned = {i["analysis_id"] for i in self._items if i["kind"] == "clip_analyze" and i["analysis_id"]}
         for i in clip:
             if i["kind"] == "clip_analyze" and i["analysis_id"]:
+                clip_pipeline.release_analysis(i["analysis_id"], settings, busy)
+            elif i["kind"] == "clip_export" and i["analysis_id"] and i["analysis_id"] not in owned:
+                # its analyze item already left: the analysis stayed only for this export
                 clip_pipeline.release_analysis(i["analysis_id"], settings, busy)
             src = i["payload"].get("source")
             if isinstance(src, dict) and isinstance(src.get("source_id"), str):
                 clip_pipeline.release_source_id(src["source_id"], settings, busy)
 
     def sweep_clip_data(self, keep_sources: bool) -> None:
-        """Startup: drop analyses no queue item lists and sources nothing needs (see clip.pipeline.sweep)."""
+        """Startup: drop analyses no queue item lists and sources nothing needs (see clip.pipeline.sweep).
+        Failed and cancelled items keep theirs: Reintentar works after a restart."""
         analyses, sources_ = set(), set()
         with self._lock:
             for i in self._items:
@@ -223,7 +252,7 @@ class JobQueue:
                     continue
                 if i["kind"] == "clip_analyze" and i["analysis_id"]:
                     analyses.add(i["analysis_id"])
-                if i["status"] in ("pending", "running"):
+                if i["status"] in _HOLDING:
                     if isinstance(i["payload"].get("analysis_id"), str):
                         analyses.add(i["payload"]["analysis_id"])
                     src = i["payload"].get("source")
@@ -287,7 +316,8 @@ class JobQueue:
                 path = self._clip_runners[kind](dict(item), settings, cancel, progress,
                                                 on_output=lambda folder: self._record_output(id, folder),
                                                 on_title=lambda title: self._record_title(id, title),
-                                                busy=lambda: self._unfinished_refs(id))
+                                                on_source=lambda source: self._record_source(id, source),
+                                                busy=lambda: self._held_refs(id))
                 outcome = {"status": "done", "percent": 100.0, "output": str(path)}
                 if kind == "clip_analyze":  # the analysis file, not a folder: the item frees the queue
                     outcome.update(output="", analysis_id=Path(path).stem)
@@ -310,12 +340,23 @@ class JobQueue:
         """(source ids, analysis ids) that pending or running clip items still need."""
         return self._unfinished_refs(exclude)
 
+    def held_refs(self) -> tuple[set[str], set[str]]:
+        """(source ids, analysis ids) that clip items which may still run (unfinished, failed or cancelled:
+        Reintentar) need. Nothing in these sets may be deleted."""
+        return self._held_refs("")
+
     def _unfinished_refs(self, exclude: str) -> tuple[set[str], set[str]]:
         """(source ids, analysis ids) that other pending or running clip items still need."""
+        return self._refs(exclude, _UNFINISHED)
+
+    def _held_refs(self, exclude: str) -> tuple[set[str], set[str]]:
+        return self._refs(exclude, _HOLDING)
+
+    def _refs(self, exclude: str, statuses: tuple[str, ...]) -> tuple[set[str], set[str]]:
         sources_, analyses = set(), set()
         with self._lock:
             for i in self._items:
-                if i["id"] == exclude or i["status"] not in ("pending", "running") or i["kind"] == "short":
+                if i["id"] == exclude or i["status"] not in statuses or i["kind"] == "short":
                     continue
                 src = i["payload"].get("source")
                 if isinstance(src, dict) and isinstance(src.get("source_id"), str):
@@ -332,6 +373,14 @@ class JobQueue:
                 item["topic"] = title
                 self._save()
 
+    def _record_source(self, id: str, source: dict) -> None:
+        """A clip job downloaded its source: the payload now points at it, so Reintentar reuses the file."""
+        with self._lock:
+            item = self._find(id)
+            if item is not None and isinstance(item["payload"], dict):
+                item["payload"] = {**item["payload"], "source": dict(source)}
+                self._save()
+
     def _record_output(self, id: str, folder: Path) -> None:
         """Persist the job's folder as soon as it exists, so a hard kill can be cleaned up."""
         with self._lock:
@@ -341,12 +390,13 @@ class JobQueue:
                 self._save()
 
     def _progress(self, id: str, step: str, index: int, total: int, pct: float) -> None:
-        overall = round(((index - 1) + max(0.0, min(100.0, pct)) / 100) / (total or 6) * 100, 1)
+        pct = max(0.0, min(100.0, pct))
+        overall = round(((index - 1) + pct / 100) / (total or 6) * 100, 1)
         with self._lock:
             item = self._find(id)
             if item is None or item["status"] != "running":
                 return
             changed = item["step"] != step
-            item.update(step=step, step_index=index, percent=overall)
+            item.update(step=step, step_index=index, percent=overall, step_percent=pct)
             if changed:
                 self._save()
