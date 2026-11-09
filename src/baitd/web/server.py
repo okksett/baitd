@@ -471,6 +471,16 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         queue.cancel(job_id)
         return jsonify(ok=True)
 
+    @app.post("/api/jobs/<job_id>/retry")
+    def retry_job(job_id: str):
+        job_or_404(job_id)
+        try:
+            queue.retry(job_id)
+        except ValueError:
+            return jsonify(error=str(UserError("Este trabajo no se puede reintentar",
+                                               "Solo se reintentan los que fallaron o se cancelaron"))), 409
+        return jsonify({})
+
     @app.delete("/api/jobs/<job_id>")
     def remove_job(job_id: str):
         job_or_404(job_id)
@@ -674,7 +684,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         except (OSError, ValueError, AttributeError, UserError):
             src = None  # damaged analysis or source already gone: only the analysis is removed
         if src is not None:  # the source goes too unless kept or still needed by a queued item
-            clip_pipeline._release_source(src, config.load_settings(), queue.unfinished_refs)
+            clip_pipeline._release_source(src, config.load_settings(), queue.held_refs)
         clip_pipeline.delete_analysis(analysis_id)
         return jsonify(ok=True)
 
@@ -685,7 +695,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         # No meta.json = an upload still in progress (or being probed): only DELETE /api/uploads/<id> removes it
         if not clip_sources.valid_id(source_id) or not (clip_sources.sources_dir() / source_id / "meta.json").is_file():
             abort(404)
-        if clip_pipeline.source_needed(source_id, queue.unfinished_refs):
+        if clip_pipeline.source_needed(source_id, queue.held_refs):
             return jsonify(error=str(UserError("Ese video lo usa un trabajo de la cola o un análisis",
                                                "Espera a que termine o descarta el análisis"))), 409
         clip_sources.delete_source(source_id)

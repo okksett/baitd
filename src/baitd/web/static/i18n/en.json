@@ -151,6 +151,7 @@
   "queue.open": "Open folder",
   "queue.cancel": "Cancel",
   "queue.remove": "Remove",
+  "queue.retry": "Retry",
   "queue.added": "Added to the queue: {n}",
   "status.pending": "Queued",
   "status.running": "Creating",

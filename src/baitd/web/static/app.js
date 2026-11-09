@@ -8,6 +8,7 @@
   const KNOWN_LANGS = ["es", "en", "fr", "de"];
   const ACTIVE = ["pending", "running"];
   const FINISHED = ["done", "error", "cancelled"];
+  const RETRYABLE = ["error", "cancelled"];
   const SAVE_DELAY = 500;
   const POLL_MS = 1000;
   const MIN_CLIP_S = 10; // clip length limits and clips per run, as the server checks them
@@ -1395,6 +1396,7 @@
     // a finished analysis has no folder: it opens its review list instead
     $('[data-job-act="review"]', li).hidden = !(job.kind === "clip_analyze" && job.status === "done" && job.analysis_id);
     $('[data-job-act="open"]', li).hidden = !(job.status === "done" && job.output);
+    $('[data-job-act="retry"]', li).hidden = !RETRYABLE.includes(job.status);
     $('[data-job-act="cancel"]', li).hidden = !ACTIVE.includes(job.status);
     $('[data-job-act="remove"]', li).hidden = !FINISHED.includes(job.status);
   }
@@ -1442,6 +1444,7 @@
     const url = {
       open: [`/api/jobs/${encodeURIComponent(id)}/open-folder`, "POST"],
       cancel: [`/api/jobs/${encodeURIComponent(id)}/cancel`, "POST"],
+      retry: [`/api/jobs/${encodeURIComponent(id)}/retry`, "POST"],
       remove: [`/api/jobs/${encodeURIComponent(id)}`, "DELETE"],
     }[act];
     try {

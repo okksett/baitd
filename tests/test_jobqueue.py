@@ -275,3 +275,58 @@ def test_load_removes_partial_folder_of_a_killed_job(tmp_path):
     assert statuses(q2) == ["pending", "pending"]
     assert [i["output"] for i in q2.list()] == ["", ""]
     assert [i["output"] for i in json.loads(path.read_text(encoding="utf-8"))] == ["", ""]
+
+
+# ---- Reintentar ----
+
+def _stored(path, id):
+    return next(i for i in json.loads(path.read_text(encoding="utf-8")) if i["id"] == id)
+
+
+def test_retry_resets_error_job_keeping_payload(tmp_path):
+    path = tmp_path / "queue.json"
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
+    ids = q.add(["a"], config.default_profile(), {"a": SCRIPT})
+    cid = q.add_clip_job("clip_auto", {"source": {"url": "https://x.test/v"}, "overrides": {"count": 3}},
+                         config.default_profile())
+    q.cancel(cid)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data[0].update(status="error", error="Falló → Otra vez", step="voice", step_index=3, percent=40.0,
+                   output=str(tmp_path / "x"))
+    path.write_text(json.dumps(data), encoding="utf-8")
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path)
+    before = _stored(path, ids[0])
+    for id in (ids[0], cid):
+        q.retry(id)
+    row = q.list()[0]
+    assert (row["status"], row["error"], row["step"], row["step_index"], row["percent"], row["output"]) == \
+        ("pending", "", "", 0, 0, "")
+    assert q.list()[1]["status"] == "pending"
+    after = _stored(path, ids[0])  # persisted, and the snapshot is untouched
+    assert after["status"] == "pending"
+    assert (after["profile"], after["script"]) == (before["profile"], before["script"])
+    assert _stored(path, cid)["payload"] == {"source": {"url": "https://x.test/v"}, "overrides": {"count": 3}}
+
+
+def test_retry_rejects_running_and_done(tmp_path):
+    release = threading.Event()
+
+    def runner(topic, profile, settings, script, cancel, progress, **kw):
+        if topic == "b":
+            release.wait(WAIT)
+        return tmp_path / topic
+
+    q = make_queue(tmp_path, runner)
+    ids = q.add(["a", "b", "c"], config.default_profile())
+    with pytest.raises(ValueError):
+        q.retry(ids[0])  # pending
+    q.start()
+    assert wait_for(lambda: statuses(q)[:2] == ["done", "running"])
+    for id in ids[:2]:
+        with pytest.raises(ValueError):
+            q.retry(id)
+    with pytest.raises(ValueError):
+        q.retry("nope")
+    release.set()
+    assert wait_for(lambda: statuses(q) == ["done"] * 3)
+    q.stop()

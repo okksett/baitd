@@ -151,6 +151,7 @@
   "queue.open": "Abrir carpeta",
   "queue.cancel": "Cancelar",
   "queue.remove": "Quitar",
+  "queue.retry": "Reintentar",
   "queue.added": "Añadido a la cola: {n}",
   "status.pending": "En cola",
   "status.running": "Creando",

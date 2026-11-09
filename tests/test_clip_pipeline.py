@@ -2,6 +2,7 @@ import json
 import shutil
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -31,7 +32,7 @@ def _llm(prompt):
 @pytest.fixture
 def providers(make_mp4):
     """Everything network- or model-facing replaced: a generated 40 s source, a fake transcript and LLM."""
-    seen = {"fetch": 0, "faces": 0}
+    seen = {"fetch": 0, "faces": 0, "transcribe": 0}
     src_file = make_mp4(seconds=SECONDS, w=320, h=180, fps=15)
 
     def fetch_url(url, cancel, on_progress):
@@ -45,6 +46,7 @@ def providers(make_mp4):
 
     def transcribe(audio, provider, language, settings, model, cancel, on_progress, on_model_load=None):
         assert audio.is_file()
+        seen["transcribe"] += 1
         if seen.get("model_load"):  # a local model that has to be downloaded first
             on_model_load(True)
             on_model_load(False)
@@ -445,7 +447,8 @@ def test_startup_sweep_removes_what_nothing_needs(tmp_data):
     q.sweep_clip_data(keep_sources=False)
     assert an["listed"].exists() and an["export"].exists()
     assert not an["orphan"].exists() and not an["of_removed"].exists()
-    assert sorted(p.name for p in sources.sources_dir().iterdir()) == ["a" * 12, "b" * 12, "c" * 12]
+    # f: a failed run can be retried after a restart, so its source stays
+    assert sorted(p.name for p in sources.sources_dir().iterdir()) == ["a" * 12, "b" * 12, "c" * 12, "f" * 12]
     assert not partial.exists()
 
 
@@ -542,3 +545,177 @@ def test_framing_failure_falls_back_to_centre(tmp_data, tmp_path, providers, mon
         folder = pipeline.run_clip_auto(_item(), _settings(tmp_path), threading.Event(), lambda *a: None, providers)
     assert modes.count("centro") == 2 and (folder / "clip-01.mp4").is_file()
     assert "se usa el centro" in caplog.text
+
+
+# ---- Reintentar: a failed clip job resumes without downloading or transcribing again ----
+
+URL = "https://example.test/watch?v=1"
+
+
+def _recording(item):
+    """on_source as the queue wires it: the job's payload now points at the downloaded source."""
+    return lambda source: item["payload"].__setitem__("source", source)
+
+
+def test_clip_auto_failure_after_fetch_keeps_source_for_retry(tmp_data, tmp_path, providers):
+    providers.complete = lambda prompt: "no json at all"  # the moments step fails
+    item, outputs = _item(), []
+    with pytest.raises(UserError):
+        pipeline.run_clip_auto(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers,
+                               on_output=outputs.append, on_source=_recording(item))
+    src = item["payload"]["source"]
+    assert src == {"source_id": src["source_id"], "fetched": True, "url": URL}
+    assert (sources.sources_dir() / src["source_id"]).is_dir()
+    assert sources.load_source(src["source_id"]).title == "Mi video ñ"
+    assert outputs and not outputs[0].exists()  # the output folder still goes
+    saved = json.loads((sources.sources_dir() / src["source_id"] / "transcript.json").read_text(encoding="utf-8"))
+    assert saved["key"] == ["local", "small", None] and saved["transcript"]["language"] == "es"
+    assert len(saved["transcript"]["words"]) == 80
+
+
+def test_clip_analyze_failure_after_fetch_keeps_source_for_retry(tmp_data, tmp_path, providers):
+    providers.complete = lambda prompt: "no json at all"
+    item = _item("clip_analyze")
+    with pytest.raises(UserError):
+        pipeline.run_clip_analyze(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers,
+                                  on_source=_recording(item))
+    assert sources.load_source(item["payload"]["source"]["source_id"])
+    assert not list(pipeline.analyses_dir().iterdir())
+
+
+def _run_until(q, status, id):
+    return _wait(lambda: next(i for i in q.list() if i["id"] == id)["status"] in status, WAIT)
+
+
+def test_clip_retry_skips_download_and_transcription(tmp_data, tmp_path, providers):
+    config.save_settings(_settings(tmp_path))
+    providers.complete = lambda prompt: "no json at all"
+    runners = {"clip_auto": lambda *a, **k: pipeline.run_clip_auto(*a, providers=providers, **k)}
+    path = tmp_path / "queue.json"
+    q = JobQueue(path, clip_runners=runners)
+    jid = q.add_clip_job("clip_auto", _item()["payload"], config.default_profile())
+    q.start()
+    assert _run_until(q, ("done", "error"), jid)
+    assert q.list()[0]["status"] == "error"
+    assert (providers.seen["fetch"], providers.seen["transcribe"]) == (1, 1)
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]["payload"]["source"]
+    assert stored["fetched"] is True and stored["url"] == URL and sources.load_source(stored["source_id"])
+
+    providers.complete = _llm  # whatever failed is fixed: Reintentar
+    q.retry(jid)
+    assert _run_until(q, ("done", "error"), jid)
+    q.stop()
+    row = q.list()[0]
+    assert row["status"] == "done", row["error"]
+    assert (providers.seen["fetch"], providers.seen["transcribe"]) == (1, 1)
+    assert (Path(row["output"]) / "clip-02.mp4").is_file()
+    assert not list(sources.sources_dir().iterdir())  # a successful run still releases the source
+
+
+def test_retry_downloads_again_when_the_fetched_source_is_gone(tmp_data, tmp_path, providers):
+    item = _item("clip_analyze", {"source": {"source_id": "a" * 12, "fetched": True, "url": URL},
+                                  "overrides": {"count": 2, "min_s": 10, "max_s": 20}})
+    path = pipeline.run_clip_analyze(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers,
+                                     on_source=_recording(item))
+    new = item["payload"]["source"]
+    assert providers.seen["fetch"] == 1 and new["source_id"] != "a" * 12
+    assert new == {"source_id": new["source_id"], "fetched": True, "url": URL}
+    assert pipeline.load_analysis(path.stem)["source_id"] == new["source_id"]
+
+
+def test_transcript_cache_ignored_when_settings_change(tmp_data, tmp_path, providers, make_mp4):
+    sid, target = sources.new_upload("a.mp4")
+    shutil.copy(make_mp4(seconds=SECONDS, w=320, h=180, fps=15), target)
+    sources.finish_upload(sid, target, "a.mp4")
+    cache = sources.sources_dir() / sid / "transcript.json"
+
+    def analyze(**overrides):
+        item = _item("clip_analyze", {"source": {"source_id": sid},
+                                      "overrides": {"count": 2, "min_s": 10, "max_s": 20, **overrides}})
+        calls = []
+        pipeline.run_clip_analyze(item, _settings(tmp_path), threading.Event(), lambda *a: calls.append(a),
+                                  providers)
+        return calls
+
+    analyze()
+    assert providers.seen["transcribe"] == 1
+    assert json.loads(cache.read_text(encoding="utf-8"))["key"] == ["local", "small", None]
+    calls = analyze()  # same settings: the saved transcript is used
+    assert providers.seen["transcribe"] == 1
+    assert ("transcribe", 2, 5, 100.0) in calls
+    analyze(whisper_model="medium")  # another model transcribes again and replaces the saved one
+    assert providers.seen["transcribe"] == 2
+    assert json.loads(cache.read_text(encoding="utf-8"))["key"] == ["local", "medium", None]
+    analyze(whisper_model="medium", language="es")
+    assert providers.seen["transcribe"] == 3
+    analyze(transcriber="openai", language="es")
+    assert providers.seen["transcribe"] == 4
+    assert json.loads(cache.read_text(encoding="utf-8"))["key"] == ["openai", "whisper-1", "es"]
+    analyze(transcriber="openai", whisper_model="large-v3", language="es")  # the local model does not matter
+    assert providers.seen["transcribe"] == 4
+    cache.write_text("{oops", encoding="utf-8")  # a damaged file is ignored, never an error
+    analyze(transcriber="openai", language="es")
+    assert providers.seen["transcribe"] == 5
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_removing_failed_item_releases_fetched_source(tmp_data, tmp_path, providers, keep):
+    config.save_settings(_settings(tmp_path, keep_sources=keep))
+    providers.complete = lambda prompt: "no json at all"
+    runners = {"clip_auto": lambda *a, **k: pipeline.run_clip_auto(*a, providers=providers, **k)}
+    q = JobQueue(tmp_path / "queue.json", clip_runners=runners)
+    jid = q.add_clip_job("clip_auto", _item()["payload"], config.default_profile())
+    q.start()
+    assert _run_until(q, ("done", "error"), jid)
+    q.stop()
+    assert q.list()[0]["status"] == "error"
+    assert len(list(sources.sources_dir().iterdir())) == 1  # kept for Reintentar
+    q.remove(jid)
+    assert q.list() == []
+    assert len(list(sources.sources_dir().iterdir())) == (1 if keep else 0)
+
+
+def test_startup_sweep_keeps_source_of_failed_item(tmp_data):
+    for k in "abcd":
+        _fake_source(k * 12)
+    path = tmp_data / "queue.json"
+    fetched = {"source_id": "a" * 12, "fetched": True, "url": URL}
+    _write_queue(path, [
+        _clip_row("q1" + "0" * 10, "clip_auto", "error", {"source": fetched}),
+        _clip_row("q2" + "0" * 10, "clip_analyze", "cancelled", {"source": {"source_id": "b" * 12}}),
+        _clip_row("q3" + "0" * 10, "clip_auto", "error", {"source": {"source_id": "c" * 12}}),
+        _clip_row("q4" + "0" * 10, "clip_auto", "done", {"source": {"source_id": "d" * 12}}),
+    ])
+    q = JobQueue(path)
+    q.sweep_clip_data(keep_sources=False)  # a restart: failed and cancelled runs keep what Reintentar needs
+    assert sorted(p.name for p in sources.sources_dir().iterdir()) == ["a" * 12, "b" * 12, "c" * 12]
+    q.remove("q1" + "0" * 10)  # the other direction: removing or clearing them releases their sources
+    assert sorted(p.name for p in sources.sources_dir().iterdir()) == ["b" * 12, "c" * 12]
+    q.clear_finished()
+    assert q.list() == [] and not list(sources.sources_dir().iterdir())
+    JobQueue(path).sweep_clip_data(keep_sources=False)
+    assert not list(sources.sources_dir().iterdir())
+
+
+def test_retryable_item_keeps_a_source_another_item_releases(tmp_data):
+    _fake_source("a" * 12)
+    path = tmp_data / "queue.json"
+    shared = {"source": {"source_id": "a" * 12}}
+    _write_queue(path, [_clip_row("q1" + "0" * 10, "clip_auto", "cancelled", shared),
+                        _clip_row("q2" + "0" * 10, "clip_auto", "error", shared)])
+    q = JobQueue(path)
+    q.remove("q1" + "0" * 10)  # q2 can still be retried: its source stays
+    assert [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
+    q.remove("q2" + "0" * 10)
+    assert not list(sources.sources_dir().iterdir())
+
+
+def test_failed_export_keeps_its_analysis_until_it_is_removed(tmp_data):
+    export = _clip_row("q2" + "0" * 10, "clip_export", "error", {"analysis_id": "1" * 12, "moments": []}, "1" * 12)
+    q, f = _analyze_done_queue(tmp_data, export)
+    q.sweep_clip_data(keep_sources=False)  # a restart: the export can still be retried
+    assert f.exists() and [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
+    q.remove("q1" + "0" * 10)  # its analyze item leaves first
+    assert f.exists() and [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
+    q.remove("q2" + "0" * 10)  # nothing leaks once the export goes too
+    assert not f.exists() and not list(sources.sources_dir().iterdir())

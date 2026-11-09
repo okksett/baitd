@@ -448,3 +448,26 @@ def test_page_boot_data_carries_the_upload_extensions(client):
     html = client.get("/").get_data(as_text=True)
     boot = json.loads(html.split('id="boot">', 1)[1].split("</script>", 1)[0])
     assert boot["upload_exts"] == list(sources.UPLOAD_EXTS)  # the browser checks the extension before it starts
+
+
+def test_retry_route_404_409(client, profile_id):
+    jid = client.post("/api/jobs", json={"topics": ["a"], "profile_id": profile_id}).get_json()["ids"][0]
+    assert client.post("/api/jobs/nope/retry", json={}).status_code == 404
+    r = client.post(f"/api/jobs/{jid}/retry", json={})  # pending: nothing to retry
+    assert r.status_code == 409 and "→" in r.get_json()["error"]
+    client.post(f"/api/jobs/{jid}/cancel", json={})
+    r = client.post(f"/api/jobs/{jid}/retry", json={})
+    assert r.status_code == 200 and r.get_json() == {}
+    assert client.get("/api/jobs").get_json()["jobs"][0]["status"] == "pending"
+    assert client.post(f"/api/jobs/{jid}/retry", data="{}", content_type="text/plain").status_code == 415
+
+
+def test_a_cancelled_job_keeps_its_source_from_the_delete_button(client, profile_id, queue, make_mp4):
+    src = _source(make_mp4)
+    jid = queue.add_clip_job("clip_auto", {"source": {"source_id": src.id}, "overrides": {}},
+                             config.default_profile())
+    queue.cancel(jid)  # it can still be retried
+    assert client.delete(f"/api/sources/{src.id}", json={}).status_code == 409
+    client.delete(f"/api/jobs/{jid}", json={})
+    with pytest.raises(Exception):
+        sources.load_source(src.id)  # removing the item released it
