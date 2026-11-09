@@ -724,3 +724,30 @@ def test_clipping_form_help_toggles_and_visible_min_max(client):
     assert es["progress.step_pct"] == "{step} · {n} %" and en["progress.step_pct"] == "{step} · {n} %"
     for k in ("clip.count_help_label", "clip.count_help", "clip.len_help"):
         assert es[k] and en[k]
+
+
+def test_boot_carries_version_and_page_shows_it(client):
+    import baitd
+    html = client.get("/").text
+    assert baitd.__version__ == "0.3.0"
+    assert f'"version": "{baitd.__version__}"' in html
+    assert 'id="app-version"' in html
+    es = json.loads(ES.read_text("utf-8"))
+    en = json.loads(EN.read_text("utf-8"))
+    assert es["settings.version"] == "Versión {v}" and en["settings.version"] == "Version {v}"
+    assert 'tr("settings.version"' in JS.read_text("utf-8")
+
+
+def test_version_matches_installed_metadata():
+    from importlib.metadata import version
+
+    import baitd
+    assert version("baitd") == baitd.__version__
+
+
+def test_favicon_and_brand_icon(client):
+    html = client.get("/").text
+    assert '<link rel="icon" type="image/png" href="/static/icon.png">' in html
+    assert re.search(r'<img class="brand-icon" src="/static/icon.png" alt="" width="28" height="28">', html)
+    assert html.index('class="brand-icon"') < html.index('class="brand"')
+    assert client.get("/static/icon.png").status_code == 200

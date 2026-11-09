@@ -23,7 +23,7 @@ from typing import Callable
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from .. import audio, captions, config, llm, tts
+from .. import __version__, audio, captions, config, llm, tts
 from ..clip import pipeline as clip_pipeline
 from ..clip import sources as clip_sources
 from ..clip import ytdlp_loader
@@ -322,7 +322,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         def t(key: str) -> str:
             return strings.get(key) or i18n["es"].get(key) or key
 
-        boot = {"lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
+        boot = {"version": __version__, "lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
                 "presets": {k: v.to_dict() for k, v in captions.PRESETS.items()},
                 "upload_exts": list(clip_sources.UPLOAD_EXTS)}
         return render_template("index.html", t=t, lang=lang, theme=_stored_theme(), boot=boot)

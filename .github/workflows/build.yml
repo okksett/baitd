@@ -96,3 +96,50 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
+
+      - name: Build installer (Inno Setup)
+        if: runner.os == 'Windows'
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          choco install innosetup -y --no-progress
+          VERSION=$(python -c "import baitd; print(baitd.__version__)")
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DAppVersion=$VERSION" packaging/baitd.iss
+          ls -l dist-installer/Baitd-Setup.exe
+
+      - name: Installer size gate (must stay under 450 MB)
+        if: runner.os == 'Windows'
+        run: |
+          size=$(wc -c < dist-installer/Baitd-Setup.exe | tr -d ' ')
+          echo "Baitd-Setup.exe: $((size / 1048576)) MB"
+          test "$size" -le $((450 * 1048576)) || { echo "Installer is over 450 MB"; exit 1; }
+
+      - name: Checksums
+        if: runner.os == 'Windows'
+        run: |
+          # Bare file names in SHA256SUMS: hash both files from one folder.
+          cp "${{ matrix.artifact }}" dist-installer/
+          cd dist-installer
+          sha256sum Baitd-Setup.exe "$(basename '${{ matrix.artifact }}')" > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: Baitd-windows-setup
+          path: |
+            dist-installer/Baitd-Setup.exe
+            dist-installer/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Installer smoke test (silent install + selftest)
+        if: runner.os == 'Windows'
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          INSTALL_DIR=$(cygpath -w "$RUNNER_TEMP/baitd-install")
+          powershell -NoProfile -Command "\$p = Start-Process -Wait -PassThru -FilePath 'dist-installer\Baitd-Setup.exe' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=$INSTALL_DIR'; exit \$p.ExitCode"
+          test -f "$RUNNER_TEMP/baitd-install/Baitd.exe"
+          out=$("$RUNNER_TEMP/baitd-install/Baitd.exe" --selftest 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q "SELFTEST OK"

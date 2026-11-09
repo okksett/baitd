@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="app.title">{{ t("app.title") }}</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
 <link rel="stylesheet" href="/static/app.css">
 <script type="application/json" id="boot">{{ boot|tojson }}</script>
 <script src="/static/app.js" defer></script>
@@ -14,6 +15,7 @@
 
 <header class="top">
   <div class="brandrow">
+    <img class="brand-icon" src="/static/icon.png" alt="" width="28" height="28">
     <h1 class="brand"><span data-i18n="brand.a">{{ t("brand.a") }}</span><em data-i18n="brand.b">{{ t("brand.b") }}</em></h1>
     <div class="tabs" role="tablist" data-i18n-aria="tabs.label" aria-label='{{ t("tabs.label") }}'>
       <button type="button" role="tab" id="tab-short" aria-selected="true" aria-controls="panel-short" data-tab="short" data-i18n="tab.short">{{ t("tab.short") }}</button>
@@ -564,6 +566,7 @@
     <div class="field quit-row">
       <button type="button" class="b1" id="quit-app" data-i18n="settings.quit">{{ t("settings.quit") }}</button>
     </div>
+    <p class="hint" id="app-version"></p>
     <p id="settings-error" class="err" role="alert" hidden></p>
     <div class="btns">
       <button type="button" class="b1" data-close data-i18n="btn.cancel">{{ t("btn.cancel") }}</button>

@@ -184,6 +184,7 @@
   "settings.saved": "Settings saved",
   "settings.quit": "Quit Baitd",
   "settings.quit_text": "The app will close. A video in progress goes back to the queue.",
+  "settings.version": "Version {v}",
   "settings.quit_done": "Baitd has closed. You can close this tab now.",
 
   "err.network": "Could not reach Baitd → Check that the app is still open and reload the page",

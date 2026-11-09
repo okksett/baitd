@@ -68,6 +68,10 @@
     each("data-i18n-title", (el) => { el.title = tr(el.dataset.i18nTitle); });
   }
 
+  function renderVersion() {
+    $("#app-version").textContent = tr("settings.version", { v: BOOT.version });
+  }
+
   async function loadStrings(lang) {
     const res = await fetch(`/static/i18n/${encodeURIComponent(lang)}.json`);
     if (!res.ok) throw new Error(tr("err.network"));
@@ -1601,6 +1605,7 @@
       document.documentElement.lang = body.ui_lang;
       try { await loadStrings(body.ui_lang); } catch (e) { showError($("#top-error"), e); }
       applyI18n();
+      renderVersion();
       rerenderDynamic();
     }
     dlg.close();
@@ -1740,6 +1745,7 @@
     setTab(remembered("tab") || "short");
     try {
       await loadStrings(BOOT.lang);
+      renderVersion();
       await Promise.all([loadProfiles(), loadMusic()]);
       fillForm();
       fillClip();

@@ -184,6 +184,7 @@
   "settings.saved": "Ajustes guardados",
   "settings.quit": "Salir de Baitd",
   "settings.quit_text": "Se cerrará la app. Un vídeo en curso volverá a la cola.",
+  "settings.version": "Versión {v}",
   "settings.quit_done": "Baitd se ha cerrado. Ya puedes cerrar esta pestaña.",
 
   "err.network": "No se pudo conectar con Baitd → Comprueba que la app sigue abierta y recarga la página",

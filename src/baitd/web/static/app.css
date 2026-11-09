@@ -112,6 +112,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 
 .top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 26px; }
 .brandrow { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.brand-icon { width: 28px; height: 28px; flex: none; margin-right: -8px; }
 .brand { font: 400 26px/1 Anton, sans-serif; letter-spacing: .5px; }
 .tabs { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
 .tabs [role="tab"] { border: 0; background: none; padding: 7px 14px; font-size: 13px; white-space: nowrap; color: var(--muted); }

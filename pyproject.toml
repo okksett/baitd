@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baitd"
-version = "0.2.1"
+dynamic = ["version"]
 description = "Local app that turns a topic into a short video and cuts clips from long videos"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -40,3 +40,6 @@ testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
 pythonpath = ["src"]
 markers = ["network: tests that need internet access"]
+
+[tool.setuptools.dynamic]
+version = {attr = "baitd.__version__"}
