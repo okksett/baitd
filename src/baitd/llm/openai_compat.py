@@ -29,7 +29,7 @@ def complete(prompt: str, model: str, settings: dict, provider: str = "openai",
         "connect_fix": "¿Está abierto Ollama / el servidor?",
         "not_found_fix": "Revisa la URL (¿termina en /v1?) o el modelo",
     }
-    data = post_json(f"{base}/chat/completions", headers, payload, label, model, cancel=cancel, **hints)
+    data = post_json(f"{base}/chat/completions", headers, payload, label, model, retry=True, cancel=cancel, **hints)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

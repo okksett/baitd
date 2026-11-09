@@ -1,6 +1,12 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_real_waits(monkeypatch):
+    """Retry waits must never really sleep in tests."""
+    monkeypatch.setattr("baitd.llm._http._sleep", lambda seconds, cancel=None: None)
+
+
 @pytest.fixture
 def tmp_data(tmp_path, monkeypatch):
     monkeypatch.setenv("BAITD_DATA", str(tmp_path))

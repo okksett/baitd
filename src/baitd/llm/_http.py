@@ -49,13 +49,15 @@ def _sleep(seconds: float, cancel: threading.Event | None = None) -> None:
 
 def request(method: str, url: str, provider: str, model: str = "", *, noun: str = "el modelo",
             connect_fix: str | None = None, not_found_fix: str | None = None,
-            cancel: threading.Event | None = None, **kwargs) -> requests.Response:
+            retry: bool = False, cancel: threading.Event | None = None,
+            **kwargs) -> requests.Response:
     """Send an HTTP request (requests.<method>) and return the 200 response; map failures to UserError.
 
     `noun` names what `model` is ("el modelo", "la voz"); `connect_fix` / `not_found_fix` replace
     the generic advice for providers where it would mislead (a local server, a base URL).
-    Busy statuses (RETRY_STATUSES) are retried after RETRY_DELAYS; `cancel` interrupts the waits."""
-    for delay in (0, *RETRY_DELAYS):
+    With `retry=True` (AI text generation only) busy statuses (RETRY_STATUSES) are retried after
+    RETRY_DELAYS and `cancel` interrupts the waits; otherwise there is a single attempt."""
+    for delay in (0, *(RETRY_DELAYS if retry else ())):
         if delay:
             _sleep(delay, cancel)
             if cancel is not None and cancel.is_set():
@@ -70,7 +72,7 @@ def request(method: str, url: str, provider: str, model: str = "", *, noun: str 
                             connect_fix or "Comprueba tu conexión a internet") from None
         except requests.RequestException as e:
             raise UserError(f"Error de red con {provider} ({type(e).__name__})", "Inténtalo de nuevo") from None
-        if resp.status_code not in RETRY_STATUSES:
+        if not retry or resp.status_code not in RETRY_STATUSES:
             break
 
     status = resp.status_code
@@ -84,7 +86,7 @@ def request(method: str, url: str, provider: str, model: str = "", *, noun: str 
     if status == 429:
         raise UserError(f"{_cap(provider)} alcanzó el límite de peticiones o de cuota",
                         "Espera un momento o revisa tu plan")
-    if status >= 500:
+    if retry and status >= 500:
         raise UserError(f"{_cap(provider)} está saturado (error {status})",
                         "Espera unos minutos y pulsa Reintentar, o elige otro modelo en Ajustes")
     raise UserError(f"{_cap(provider)} respondió con el error {status}", "Inténtalo de nuevo más tarde")

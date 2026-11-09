@@ -20,7 +20,7 @@ def complete(prompt: str, model: str, settings: dict, cancel: threading.Event | 
     # Key goes in a header, not the URL, so it never ends up in logs or tracebacks.
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
     data = post_json(f"{BASE}/models/{quote(model, safe='')}:generateContent", headers, payload, "Gemini", model,
-                     cancel=cancel)
+                     retry=True, cancel=cancel)
     try:
         return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
     except (KeyError, IndexError, TypeError, AttributeError):
