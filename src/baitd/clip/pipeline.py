@@ -323,6 +323,9 @@ def _write_texts(folder: Path, moments: list[Moment]) -> None:
         tags = " ".join(t if t.startswith("#") else f"#{t}" for t in m.hashtags)
         blocks.append(f"clip-{i:02d}.mp4 ({_hms(m.start)}–{_hms(m.end)})\n{m.title}\n\n{m.description}\n\n{tags}\n")
     (folder / "publicacion.txt").write_text("\n".join(blocks), encoding="utf-8")
+    clips = [{"file": f"clip-{i:02d}.mp4", "title": m.title, "description": m.description,
+              "hashtags": list(m.hashtags), "start": m.start, "end": m.end} for i, m in enumerate(moments, 1)]
+    (folder / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,

@@ -81,7 +81,7 @@ def test_auto_end_to_end_offline(tmp_data, tmp_path, providers):
                                     on_output=outputs.append, on_title=titles.append)
     assert outputs == [folder] and titles == ["Mi video ñ"]
     assert folder.parent == tmp_path / "out" and folder.name.endswith("_mi-video-n")
-    assert sorted(p.name for p in folder.iterdir()) == ["clip-01.mp4", "clip-02.mp4", "publicacion.txt"]  # no .work
+    assert sorted(p.name for p in folder.iterdir()) == ["clip-01.mp4", "clip-02.mp4", "clips.json", "publicacion.txt"]  # no .work
     for name in ("clip-01.mp4", "clip-02.mp4"):
         info = probe(folder / name)
         assert (info["width"], info["height"]) == (1080, 1920)
@@ -91,6 +91,11 @@ def test_auto_end_to_end_offline(tmp_data, tmp_path, providers):
     assert "clip-01.mp4 (00:00:00–00:00:14)" in text and "clip-02.mp4 (00:00:20–00:00:34)" in text
     assert "Primero" in text and "Descripcion Segundo" in text and "#prueba #clip" in text
     assert text.index("clip-01") < text.index("clip-02")
+    clips = json.loads((folder / "clips.json").read_text(encoding="utf-8"))  # what the app lists and plays
+    assert [c["file"] for c in clips] == ["clip-01.mp4", "clip-02.mp4"]
+    assert [c["title"] for c in clips] == ["Primero", "Segundo"]
+    assert clips[1] == {"file": "clip-02.mp4", "title": "Segundo", "description": "Descripcion Segundo",
+                        "hashtags": ["#prueba", "#clip"], "start": 20.0, "end": 34.9}
     assert {c[0] for c in calls} == set(pipeline.CLIP_STEPS)
     assert all(c[2] == 5 and c[1] == pipeline.CLIP_STEPS.index(c[0]) + 1 for c in calls)
     assert providers.seen["faces"] == 2
@@ -147,7 +152,7 @@ def test_analyze_then_export_with_edited_bounds(tmp_data, tmp_path, providers):
     assert job["status"] == "done", job["error"]
     from pathlib import Path
     folder = Path(job["output"])
-    assert [p.name for p in sorted(folder.iterdir())] == ["clip-01.mp4", "publicacion.txt"]
+    assert [p.name for p in sorted(folder.iterdir())] == ["clip-01.mp4", "clips.json", "publicacion.txt"]
     assert abs(probe(folder / "clip-01.mp4")["duration"] - 12.9) < 0.4
     text = (folder / "publicacion.txt").read_text(encoding="utf-8")
     assert "(00:00:02–00:00:14)" in text and "Editado" in text
@@ -397,7 +402,7 @@ def test_selftest_includes_clips(tmp_data, tmp_path_factory):
     work = tmp_path_factory.mktemp("selftest-clips")
     selftest.run_selftest(work)
     folder = next(p for p in (work / "out").iterdir() if (p / "clip-01.mp4").exists())
-    assert sorted(p.name for p in folder.iterdir()) == ["clip-01.mp4", "clip-02.mp4", "publicacion.txt"]
+    assert sorted(p.name for p in folder.iterdir()) == ["clip-01.mp4", "clip-02.mp4", "clips.json", "publicacion.txt"]
     for name in ("clip-01.mp4", "clip-02.mp4"):
         info = probe(folder / name)
         assert (info["width"], info["height"]) == (1080, 1920)

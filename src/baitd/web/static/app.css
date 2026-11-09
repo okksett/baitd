@@ -360,6 +360,14 @@ dialog:has(.dlg.small) { width: min(420px, calc(100% - 32px)); }
 .key-input .input { flex: 1; min-width: 0; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .key-row a { font-size: 13px; align-self: flex-start; }
 
+.clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-top: 16px; }
+.clips-grid.wide { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.clip-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; }
+.clip-tile video { width: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: 12px; object-fit: contain; }
+.clips-grid.wide .clip-tile video { aspect-ratio: 16 / 9; }
+.clip-tile figcaption { font-size: 13px; overflow-wrap: anywhere; }
+#clips-view .btns { margin-top: 18px; }
+
 /* ---------- responsive (down to 360 px) ---------- */
 
 @media (max-width: 860px) {

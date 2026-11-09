@@ -1416,6 +1416,7 @@
     showError($(".job-err", li), job.error ? new Error(job.error) : null);
     // a finished analysis has no folder: it opens its review list instead
     $('[data-job-act="review"]', li).hidden = !(job.kind === "clip_analyze" && job.status === "done" && job.analysis_id);
+    $('[data-job-act="clips"]', li).hidden = !(job.status === "done" && job.output);
     $('[data-job-act="open"]', li).hidden = !(job.status === "done" && job.output);
     $('[data-job-act="retry"]', li).hidden = !RETRYABLE.includes(job.status);
     $('[data-job-act="cancel"]', li).hidden = !ACTIVE.includes(job.status);
@@ -1452,6 +1453,43 @@
     }
   }
 
+  // The finished videos of a job, playable inside the app.
+  async function openClips(id) {
+    const dlg = $("#clips-view");
+    const grid = $("#clips-grid");
+    grid.replaceChildren();
+    $("#clips-empty").hidden = true;
+    showError($("#clips-error"), null);
+    dlg.dataset.job = id;
+    try {
+      const r = await api("GET", `/api/jobs/${encodeURIComponent(id)}/clips`);
+      grid.classList.toggle("wide", r.aspect === "16:9");
+      for (const c of r.clips) {
+        const tile = document.createElement("figure");
+        tile.className = "clip-tile";
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.src = `/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(c.file)}`;
+        const cap = document.createElement("figcaption");
+        cap.textContent = c.title || c.file;
+        tile.append(video, cap);
+        grid.append(tile);
+      }
+      $("#clips-empty").hidden = r.clips.length > 0;
+    } catch (err) {
+      showError($("#clips-error"), err);
+    }
+    if (!dlg.open) dlg.showModal();
+  }
+
+  function closeClips() {
+    const dlg = $("#clips-view");
+    $$("video", dlg).forEach((v) => { v.pause(); v.removeAttribute("src"); v.load(); }); // stop playing and downloading
+    $("#clips-grid").replaceChildren();
+    dlg.close();
+  }
+
   async function onJobAction(e) {
     const btn = e.target.closest("[data-job-act]");
     if (!btn) return;
@@ -1460,6 +1498,10 @@
     if (act === "review") {
       const job = state.jobs.find((j) => j.id === id);
       if (job) await openReview(job, true);
+      return;
+    }
+    if (act === "clips") {
+      await openClips(id);
       return;
     }
     const url = {
@@ -1775,6 +1817,18 @@
     $("#clip-discard").addEventListener("click", discardAnalysis);
 
     $("#queue-list").addEventListener("click", onJobAction);
+    $("#clips-close").addEventListener("click", closeClips);
+    for (const ev of ["cancel", "close"]) { // Esc fires both; the close button runs closeClips
+      $("#clips-view").addEventListener(ev, () => $$("#clips-view video").forEach((v) => v.pause()));
+    }
+    $("#clips-open").addEventListener("click", async () => {
+      try {
+        await api("POST", `/api/jobs/${encodeURIComponent($("#clips-view").dataset.job)}/open-folder`, {});
+        showError($("#clips-error"), null);
+      } catch (err) {
+        showError($("#clips-error"), err);
+      }
+    });
     $("#clear-finished").addEventListener("click", async () => {
       try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($("#queue-error"), e); }
       await refreshJobs();

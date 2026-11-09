@@ -249,6 +249,30 @@ def _public_job(job: dict) -> dict:
     return {**job, "has_video": bool(video and job["status"] == "done" and video.is_file())}
 
 
+_CLIP_FILE = re.compile(r"(?:clip-\d{2}|video)\.mp4")
+
+
+def _listed_clips(folder: Path) -> list[dict]:
+    """The finished clips of a clip job. clips.json is read back from disk, so only names that
+    match _CLIP_FILE and exist directly in the folder get through; a bad file falls back to the listing."""
+    try:
+        raw = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raise ValueError("clips.json is not a list")
+    except (OSError, ValueError, RecursionError):
+        raw = None
+    if raw is None:
+        names = sorted(p.name for p in folder.glob("clip-*.mp4") if _CLIP_FILE.fullmatch(p.name) and p.is_file())
+        return [{"file": n, "title": ""} for n in names]
+    clips = []
+    for entry in raw:
+        name = entry.get("file") if isinstance(entry, dict) else None
+        if isinstance(name, str) and _CLIP_FILE.fullmatch(name) and (folder / name).is_file():
+            title = entry.get("title")
+            clips.append({"file": name, "title": title if isinstance(title, str) else ""})
+    return clips
+
+
 def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_DIR / "templates"),
                 static_folder=str(WEB_DIR / "static"), static_url_path="/static")
@@ -507,6 +531,31 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         if not job["has_video"]:
             abort(404)
         return send_file(Path(job["output"]) / "video.mp4", mimetype="video/mp4", conditional=True)
+
+    def finished_folder(job_id: str) -> tuple[dict, Path]:
+        job = job_or_404(job_id)
+        folder = Path(job["output"]) if job["output"] else None
+        if job["status"] != "done" or folder is None or not folder.is_dir():
+            abort(404)
+        return job, folder
+
+    @app.get("/api/jobs/<job_id>/clips")
+    def job_clips(job_id: str):
+        job, folder = finished_folder(job_id)
+        if job["kind"] == "short":
+            clips = [{"file": "video.mp4", "title": job["topic"]}] if (folder / "video.mp4").is_file() else []
+        else:
+            clips = _listed_clips(folder)
+        return jsonify(clips=clips, aspect=queue.aspect(job_id))
+
+    @app.get("/api/jobs/<job_id>/files/<file>")
+    def job_file(job_id: str, file: str):
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites
+            abort(403)
+        _, folder = finished_folder(job_id)
+        if not _CLIP_FILE.fullmatch(file) or not (folder / file).is_file():
+            abort(404)
+        return send_file(folder / file, mimetype="video/mp4", conditional=True)
 
     @app.post("/api/jobs/<job_id>/open-folder")
     def open_folder(job_id: str):

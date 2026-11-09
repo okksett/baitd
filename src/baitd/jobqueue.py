@@ -175,6 +175,13 @@ class JobQueue:
         with self._lock:
             return [{k: i[k] for k in _PUBLIC} for i in self._items]
 
+    def aspect(self, id: str) -> str:
+        """The profile aspect the job was made with ("9:16" when unknown)."""
+        with self._lock:
+            item = self._find(id)
+            value = item["profile"].get("aspect") if item else None
+        return value if value in ("9:16", "16:9") else "9:16"
+
     def cancel(self, id: str) -> None:
         with self._lock:
             item = self._find(id)

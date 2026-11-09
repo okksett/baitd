@@ -598,6 +598,21 @@
   </div>
 </dialog>
 
+<dialog id="clips-view" aria-labelledby="clips-title">
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="clips-title" data-i18n="clips.title">{{ t("clips.title") }}</h2>
+      <button type="button" class="gear" id="clips-close" data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>✕</button>
+    </div>
+    <p id="clips-error" class="err" role="alert" hidden></p>
+    <p id="clips-empty" class="hint" hidden data-i18n="clips.empty">{{ t("clips.empty") }}</p>
+    <div id="clips-grid" class="clips-grid"></div>
+    <div class="btns">
+      <button type="button" class="b1" id="clips-open" data-i18n="queue.open">{{ t("queue.open") }}</button>
+    </div>
+  </div>
+</dialog>
+
 <template id="tpl-job">
   <li class="job">
     <div class="job-head"><span class="job-title"><span class="job-kind" hidden></span><span class="job-topic"></span></span><span class="chip"></span></div>
@@ -606,6 +621,7 @@
     <p class="err job-err" hidden></p>
     <div class="job-actions">
       <button type="button" class="pill" data-job-act="review" data-i18n="queue.review">{{ t("queue.review") }}</button>
+      <button type="button" class="pill" data-job-act="clips" data-i18n="queue.view">{{ t("queue.view") }}</button>
       <button type="button" class="pill" data-job-act="open" data-i18n="queue.open">{{ t("queue.open") }}</button>
       <button type="button" class="pill" data-job-act="retry" data-i18n="queue.retry">{{ t("queue.retry") }}</button>
       <button type="button" class="pill" data-job-act="cancel" data-i18n="queue.cancel">{{ t("queue.cancel") }}</button>
