@@ -471,3 +471,18 @@ def test_a_cancelled_job_keeps_its_source_from_the_delete_button(client, profile
     client.delete(f"/api/jobs/{jid}", json={})
     with pytest.raises(Exception):
         sources.load_source(src.id)  # removing the item released it
+
+
+def test_settings_clip_max_height_validates(client):
+    assert client.get("/api/settings").get_json()["clip_max_height"] == 1440
+    assert client.post("/api/settings", json={"clip_max_height": "2160"}).get_json()["clip_max_height"] == 2160
+    assert client.post("/api/settings", json={"clip_max_height": 1080}).get_json()["clip_max_height"] == 1080
+    for bad in ("720", 999, "alto", None, True, 1440.5, ""):
+        r = client.post("/api/settings", json={"clip_max_height": bad})
+        assert r.status_code == 400 and "Calidad de descarga no válida" in json.dumps(r.get_json(), ensure_ascii=False)
+    assert config.load_settings()["clip_max_height"] == 1080
+
+
+def test_index_has_quality_select(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-setting="clip_max_height"' in html and 'id="s-clip_max_height"' in html

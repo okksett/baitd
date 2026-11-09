@@ -24,6 +24,7 @@ SETTINGS_DEFAULTS: dict = {
     "cache_max_gb": 3,  # clip cache cap in GB (ruling R30); not in the UI, editable in settings.json
     "keep_sources": False,  # Clipping: keep downloaded/uploaded videos and analyses after a run
     "yt_cookies_browser": "",  # Clipping: read the YouTube session from this browser (sources.COOKIE_BROWSERS)
+    "clip_max_height": 1440,  # Clipping: max download height (sources.QUALITIES)
     "yt_cookies_file": "",  # Clipping: path to an exported cookies.txt; wins over the browser
 }
 

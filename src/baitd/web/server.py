@@ -360,6 +360,13 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
                     raise UserError("Ese navegador no sirve para la sesión de YouTube", "Elige uno de la lista")
                 update[key] = value
                 continue
+            if key == "clip_max_height":
+                if isinstance(value, str) and value.strip().isdigit():
+                    value = int(value.strip())
+                if type(value) is not int or value not in clip_sources.QUALITIES:
+                    raise UserError("Calidad de descarga no válida", "Elige una de la lista")
+                update[key] = value
+                continue
             if key == "yt_cookies_file":
                 if not isinstance(value, str):
                     raise UserError("Valor no válido para el archivo de cookies", "Revisa los ajustes")

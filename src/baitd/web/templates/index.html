@@ -521,6 +521,16 @@
     <h3 class="lbl" data-i18n="settings.clipping">{{ t("settings.clipping") }}</h3>
     <label class="check"><input type="checkbox" id="s-keep_sources" aria-describedby="keep-hint"> <span data-i18n="settings.keep_sources">{{ t("settings.keep_sources") }}</span></label>
     <p class="hint" id="keep-hint" data-i18n="settings.keep_hint">{{ t("settings.keep_hint") }}</p>
+    <div class="keys">
+      <div class="key-row">
+        <label for="s-clip_max_height" data-i18n="settings.quality">{{ t("settings.quality") }}</label>
+        <select id="s-clip_max_height" class="input" data-setting="clip_max_height">
+          <option value="1080" data-i18n="settings.quality_1080">{{ t("settings.quality_1080") }}</option>
+          <option value="1440" data-i18n="settings.quality_1440">{{ t("settings.quality_1440") }}</option>
+          <option value="2160" data-i18n="settings.quality_2160">{{ t("settings.quality_2160") }}</option>
+        </select>
+      </div>
+    </div>
     <p class="lbl" data-i18n="settings.yt_session">{{ t("settings.yt_session") }}</p>
     <p class="hint" id="yt-hint" data-i18n="settings.yt_hint">{{ t("settings.yt_hint") }}</p>
     <div class="keys">

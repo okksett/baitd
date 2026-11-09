@@ -20,7 +20,17 @@ from .models import SourceInfo
 
 MAX_SECONDS = 4 * 3600
 UPLOAD_EXTS = ("mp4", "mov", "mkv", "webm", "m4v", "avi", "mp3", "wav", "m4a", "aac", "ogg", "opus", "flac")
-FORMAT = "bv*[height<=2160]+ba/b[height<=2160]/b"
+QUALITIES = (1080, 1440, 2160)  # download height caps offered in Ajustes
+DEFAULT_QUALITY = 1440
+
+
+def format_for(height: int) -> str:
+    return f"bv*[height<={height}]+ba/b[height<={height}]/b"
+
+
+def _quality(settings: dict) -> int:
+    value = settings.get("clip_max_height")
+    return value if type(value) is int and value in QUALITIES else DEFAULT_QUALITY
 _DEFAULT_BYTES_PER_S = 2_000_000
 _ID = re.compile(r"[0-9a-f]{12}")
 _PARTIAL = "upload.json"  # in a source folder while a chunked upload is still arriving
@@ -203,15 +213,16 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
             if total:
                 on_progress(min(0.99, d.get("downloaded_bytes", 0) / total))
 
+    settings = config.load_settings()
     opts = {
-        "format": FORMAT, "merge_output_format": "mp4", "ffmpeg_location": ffmpeg.ffmpeg_exe(),
+        "format": format_for(_quality(settings)), "merge_output_format": "mp4", "ffmpeg_location": ffmpeg.ffmpeg_exe(),
         "outtmpl": str(folder / "source.%(ext)s"), "noplaylist": True, "playlist_items": "1",
         "quiet": True, "no_warnings": True, "noprogress": True, "socket_timeout": 20, "retries": 3,
         "progress_hooks": [hook],
     }
     failures = (ytdlp.utils.DownloadError, getattr(ytdlp.utils, "YoutubeDLError", ytdlp.utils.DownloadError))
     with tempfile.TemporaryDirectory(prefix="baitd-cookies-") as cookie_tmp:
-        cookie_opts, browser = _cookie_opts(config.load_settings(), Path(cookie_tmp))
+        cookie_opts, browser = _cookie_opts(settings, Path(cookie_tmp))
         opts.update(cookie_opts)
         try:
             if cancel.is_set():

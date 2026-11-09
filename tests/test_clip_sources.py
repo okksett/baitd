@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from baitd import ffmpeg
+from baitd import config, ffmpeg
 from baitd.clip import sources, ytdlp_loader
 from baitd.ffmpeg import JobCancelled
 from baitd.models import UserError
@@ -47,8 +47,26 @@ def test_fetch_uses_id_not_title_in_path(fake_ytdlp, tmp_data):
     assert s.channel == "Canal" and s.title == "日本語 🎉 / .." and s.has_video and s.width == 320
     assert "source.%(ext)s" in fake_ytdlp.opts["outtmpl"] and "日本" not in fake_ytdlp.opts["outtmpl"]
     assert fake_ytdlp.opts["noplaylist"] and "cookiefile" not in fake_ytdlp.opts
-    assert "bv*[height<=2160]" in fake_ytdlp.opts["format"]
+    assert "bv*[height<=1440]" in fake_ytdlp.opts["format"]
     assert sources.load_source(s.id) == s
+
+
+def test_format_for_builds_the_height_capped_selector():
+    assert sources.QUALITIES == (1080, 1440, 2160)
+    assert sources.format_for(2160) == "bv*[height<=2160]+ba/b[height<=2160]/b"
+
+
+def test_fetch_quality_follows_the_setting(fake_ytdlp, tmp_data):
+    config.save_settings({"clip_max_height": 2160})
+    _go()
+    assert "height<=2160" in fake_ytdlp.opts["format"]
+
+
+@pytest.mark.parametrize("bad", [999, "huge", None, True, 1440.5])
+def test_fetch_invalid_quality_falls_back_to_1440(fake_ytdlp, tmp_data, bad):
+    config.save_settings({"clip_max_height": bad})
+    _go()
+    assert "height<=1440" in fake_ytdlp.opts["format"] and "2160" not in fake_ytdlp.opts["format"]
 
 
 _COOKIES = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-value\n"
