@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 
 from ..models import Profile, Scene, Script, UserError, first_sentence
 from . import gemini, openai_compat
@@ -11,7 +12,7 @@ __all__ = ["generate_script", "build_prompt", "parse_script", "complete"]
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODELS = {"openai": "gpt-4o-mini", "gemini": "gemini-2.5-flash", "compat": "llama3.1"}
+DEFAULT_MODELS = {"openai": "gpt-4o-mini", "gemini": "gemini-3.6-flash", "compat": "llama3.1"}
 WORDS_PER_SECOND = 2.5
 HOOK_MAX_WORDS = 8  # asked for in the prompt: under 3 seconds spoken
 HOOK_REJECT_WORDS = 10  # longer hooks are sent back once for repair (ruling R29)
@@ -103,15 +104,15 @@ def parse_script(raw: str, language: str, strict_hook: bool = True) -> Script:
     )
 
 
-def complete(prompt: str, profile: Profile, settings: dict) -> str:
+def complete(prompt: str, profile: Profile, settings: dict, cancel: threading.Event | None = None) -> str:
     """One provider call (OpenAI, Gemini or OpenAI-compatible) returning the raw reply text."""
     provider = profile.llm_provider
     if provider not in DEFAULT_MODELS:
         raise UserError(f"Proveedor de IA desconocido: '{provider}'", "Elige OpenAI, Gemini o compatible en el perfil")
     model = profile.llm_model.strip() or DEFAULT_MODELS[provider]
     if provider == "gemini":
-        return gemini.complete(prompt, model, settings)
-    return openai_compat.complete(prompt, model, settings, provider=provider)
+        return gemini.complete(prompt, model, settings, cancel=cancel)
+    return openai_compat.complete(prompt, model, settings, provider=provider, cancel=cancel)
 
 
 def generate_script(topic: str, profile: Profile, settings: dict) -> Script:

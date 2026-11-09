@@ -291,7 +291,7 @@ def find_moments(t: Transcript, audio: Path, opts: ClipProfile, profile: Profile
                  complete: Callable[[str], str] | None = None) -> list[Moment]:
     if complete is None:
         def complete(p: str) -> str:
-            return llm.complete(p, profile, settings)
+            return llm.complete(p, profile, settings, cancel=cancel)
 
     try:
         curve = energy_curve(audio, cancel)

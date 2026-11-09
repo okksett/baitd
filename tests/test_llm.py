@@ -1,11 +1,15 @@
 import json
 import logging
+import threading
 
 import pytest
 import requests
 
 from baitd.config import default_profile
 from baitd.llm import build_prompt, generate_script, parse_script
+from baitd import llm
+from baitd.ffmpeg import JobCancelled
+from baitd.llm import _http
 from baitd.llm._http import AuthError, NotFoundError
 from baitd.models import UserError
 
@@ -161,7 +165,7 @@ def test_gemini_request_shape(monkeypatch):
     monkeypatch.setattr(requests, "post", post)
     s = generate_script("leer", profile(llm_provider="gemini", language="fr"), SETTINGS)
     assert s.language == "fr"
-    assert seen["url"].endswith("/models/gemini-2.5-flash:generateContent")
+    assert seen["url"].endswith("/models/gemini-3.6-flash:generateContent")
     assert "g-x" not in seen["url"]
     assert seen["headers"]["x-goog-api-key"] == "g-x"
     assert seen["json"]["generationConfig"]["responseMimeType"] == "application/json"
@@ -306,3 +310,61 @@ def test_compat_timeout_message_is_capitalised(monkeypatch):
     with pytest.raises(UserError) as e:
         generate_script("x", profile(llm_provider="compat"), SETTINGS)
     assert e.value.cause == "El servidor compatible tardó demasiado en responder"
+
+
+@pytest.fixture(autouse=True)
+def no_real_waits(monkeypatch):
+    """Retry waits must never really sleep in tests."""
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, cancel=None: None)
+
+
+def test_default_gemini_model_is_current():
+    assert llm.DEFAULT_MODELS["gemini"] == "gemini-3.6-flash"
+
+
+def test_request_retries_503_then_succeeds(monkeypatch):
+    replies = iter([FakeResp(503), FakeResp(503), FakeResp(200, {"ok": 1})])
+    delays = []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, cancel=None: delays.append(seconds))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: next(replies))
+    resp = _http.request("post", "http://x", "Gemini", "m")
+    assert resp.status_code == 200
+    assert delays == [5, 15]
+
+
+def test_request_gives_up_after_three_retries(monkeypatch):
+    calls, delays = [], []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, cancel=None: delays.append(seconds))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(503))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Gemini", "m")
+    assert "saturado" in e.value.cause
+    assert "Reintentar" in e.value.fix
+    assert delays == [5, 15, 30]
+    assert len(calls) == 4
+
+
+def test_request_keeps_rate_limit_message_after_retries(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(429))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Gemini", "m")
+    assert "límite de peticiones" in e.value.cause
+
+
+@pytest.mark.parametrize("status", [404, 401])
+def test_request_does_not_retry_404_or_401(monkeypatch, status):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(status))
+    with pytest.raises(UserError):
+        _http.request("post", "http://x", "Gemini", "m")
+    assert len(calls) == 1
+
+
+def test_request_retry_wait_stops_on_cancel(monkeypatch):
+    cancel = threading.Event()
+    calls = []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, c=None: cancel.set())
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(503))
+    with pytest.raises(JobCancelled):
+        _http.request("post", "http://x", "Gemini", "m", cancel=cancel)
+    assert len(calls) == 1
