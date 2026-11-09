@@ -13,7 +13,7 @@ import webbrowser
 
 from waitress import create_server
 
-from . import config, instance
+from . import __version__, config, instance, updater
 from .jobqueue import JobQueue
 from .web.server import UPLOAD_CHUNK_MAX, create_app
 
@@ -215,6 +215,8 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         print("Pulsa Ctrl+C para cerrar", flush=True)
         if not args.no_browser:
             webbrowser.open(url)
+        if config.load_settings().get("check_updates", True):
+            updater.start_background_check(__version__)
         try:
             server.run()
         except KeyboardInterrupt:

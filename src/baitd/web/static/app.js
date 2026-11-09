@@ -1490,6 +1490,7 @@
       $$("[data-setting]", dlg).forEach((el) => { el.value = s[el.dataset.setting] || ""; });
       loadModels(); // fills the model list for the saved provider; does not block the dialog
       $("#s-keep_sources").checked = s.keep_sources === true;
+      $("#s-check_updates").checked = s.check_updates !== false;
       $("#ytdlp-status").textContent = "";
       showError($("#ytdlp-error"), null);
       $("#s-theme").value = effectiveTheme();
@@ -1581,11 +1582,69 @@
     document.body.className = "quit-done";
   }
 
+  // ---------- update notice ----------
+
+  const updateInfo = { latest: null, canInstall: false };
+
+  function renderUpdateBar() {
+    const bar = $("#update-bar");
+    const v = updateInfo.latest && updateInfo.latest.version;
+    if (!v || remembered("updateDismissed") === v) { bar.hidden = true; return; }
+    $("#update-text").textContent = tr("update.available", { v });
+    $("#update-install").hidden = !updateInfo.canInstall;
+    $("#update-download").hidden = updateInfo.canInstall;
+    bar.hidden = false;
+  }
+
+  async function loadUpdate() {
+    try {
+      const u = await api("GET", "/api/update");
+      updateInfo.latest = u.latest || null;
+      updateInfo.canInstall = u.can_install === true;
+      renderUpdateBar();
+      return Boolean(updateInfo.latest);
+    } catch (_) { return false; } // the notice is optional
+  }
+
+  async function pollUpdate() { // the background check may still be running at startup: ask at 0 s, 3 s and 10 s
+    if (await loadUpdate()) return;
+    for (const wait of [3000, 7000]) {
+      await new Promise((r) => setTimeout(r, wait));
+      if (await loadUpdate()) return;
+    }
+  }
+
+  async function installUpdate() {
+    const v = updateInfo.latest.version;
+    const yes = await ask({ title: tr("update.install"), text: tr("settings.update_confirm", { v }), ok: tr("update.install") });
+    if (!yes) return;
+    try {
+      await api("POST", "/api/update/install", {});
+    } catch (e) {
+      showError($("#top-error"), e);
+      return;
+    }
+    document.body.textContent = tr("settings.update_installing");
+    document.body.className = "quit-done";
+  }
+
+  function bindUpdate() {
+    $("#update-install").addEventListener("click", installUpdate);
+    $("#update-download").addEventListener("click", () => {
+      if (updateInfo.latest) window.open(updateInfo.latest.page, "_blank", "noopener");
+    });
+    $("#update-dismiss").addEventListener("click", () => {
+      if (updateInfo.latest) remember("updateDismissed", updateInfo.latest.version);
+      $("#update-bar").hidden = true;
+    });
+  }
+
   async function saveSettings() {
     const dlg = $("#settings");
     const body = {};
     $$("[data-setting]", dlg).forEach((el) => { body[el.dataset.setting] = el.value; });
     body.keep_sources = $("#s-keep_sources").checked;
+    body.check_updates = $("#s-check_updates").checked;
     // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
     if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
@@ -1719,6 +1778,7 @@
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
     $("#quit-app").addEventListener("click", quitApp);
+    bindUpdate();
     $("#llm-models-refresh").addEventListener("click", loadModels);
     $("#s-llm_provider").addEventListener("change", () => {
       $("#s-llm_model").value = ""; // a model name belongs to one provider
@@ -1754,6 +1814,7 @@
       showError($("#top-error"), e);
     }
     refreshJobs();
+    pollUpdate();
   }
 
   init();

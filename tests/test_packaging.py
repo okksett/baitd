@@ -26,3 +26,8 @@ def test_icon_files_exist():
     for name in ("baitd.ico", "baitd.icns", "logo-source.png"):
         assert (PACKAGING / name).stat().st_size > 0, name
     assert (ROOT / "src" / "baitd" / "web" / "static" / "icon.png").stat().st_size > 0
+
+
+def test_installer_does_not_restart_applications():
+    # the Check: IsUpdate [Run] entry reopens Baitd; Restart Manager must not open it a second time
+    assert "RestartApplications=no" in (PACKAGING / "baitd.iss").read_text("utf-8")

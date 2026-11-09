@@ -22,6 +22,7 @@ SETTINGS_DEFAULTS: dict = {
     "llm_provider": "gemini",  # AI text provider (a key of llm.DEFAULT_MODELS)
     "llm_model": "",  # "" = the provider's default model
     "cache_max_gb": 3,  # clip cache cap in GB (ruling R30); not in the UI, editable in settings.json
+    "check_updates": True,  # look for a newer Baitd release when the app opens
     "keep_sources": False,  # Clipping: keep downloaded/uploaded videos and analyses after a run
     "yt_cookies_browser": "",  # Clipping: read the YouTube session from this browser (sources.COOKIE_BROWSERS)
     "clip_max_height": 1440,  # Clipping: max download height (sources.QUALITIES)

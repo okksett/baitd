@@ -43,6 +43,12 @@
             data-i18n-title="settings.open" title='{{ t("settings.open") }}'>⚙</button>
   </div>
 </header>
+<div id="update-bar" class="update-bar" role="status" hidden>
+  <span id="update-text"></span>
+  <button type="button" id="update-install" class="b2" hidden data-i18n="update.install">{{ t("update.install") }}</button>
+  <button type="button" id="update-download" class="b1" hidden data-i18n="update.download">{{ t("update.download") }}</button>
+  <button type="button" id="update-dismiss" class="icon-btn" data-i18n-aria="update.dismiss" aria-label='{{ t("update.dismiss") }}'>✕</button>
+</div>
 <p id="top-error" class="err" role="alert" hidden></p>
 
 <main class="grid">
@@ -520,6 +526,7 @@
         </div>
       </div>
     </div>
+    <label class="check"><input type="checkbox" id="s-check_updates"> <span data-i18n="settings.check_updates">{{ t("settings.check_updates") }}</span></label>
     <h3 class="lbl" data-i18n="settings.clipping">{{ t("settings.clipping") }}</h3>
     <label class="check"><input type="checkbox" id="s-keep_sources" aria-describedby="keep-hint"> <span data-i18n="settings.keep_sources">{{ t("settings.keep_sources") }}</span></label>
     <p class="hint" id="keep-hint" data-i18n="settings.keep_hint">{{ t("settings.keep_hint") }}</p>

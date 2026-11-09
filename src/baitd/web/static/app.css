@@ -211,6 +211,10 @@ select option, select optgroup { background: var(--panel-solid); color: var(--te
   letter-spacing: .06em; text-transform: uppercase; font-size: 13px;
 }
 .quit-row .b1 { width: 100%; }
+.update-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: -10px 0 18px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; font-size: 14px; }
+.update-bar #update-text { flex: 1; min-width: 160px; }
+.update-bar .b1, .update-bar .b2 { flex: none; padding: 6px 16px; }
+.update-bar[hidden] { display: none; }
 body.quit-done { display: grid; place-items: center; min-height: 100vh; padding: 24px; text-align: center; }
 .b1:hover:not(:disabled) { background: rgba(255, 255, 255, .06); }
 .b2:hover:not(:disabled) { filter: brightness(.94); }

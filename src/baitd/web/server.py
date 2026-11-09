@@ -23,7 +23,7 @@ from typing import Callable
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from .. import __version__, audio, captions, config, llm, tts
+from .. import __version__, audio, captions, config, llm, tts, updater
 from ..clip import pipeline as clip_pipeline
 from ..clip import sources as clip_sources
 from ..clip import ytdlp_loader
@@ -350,9 +350,9 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
             if key == "cache_max_gb":
                 update[key] = _cache_gb(value)
                 continue
-            if key == "keep_sources":
+            if key in ("keep_sources", "check_updates"):
                 if not isinstance(value, bool):
-                    raise UserError("Valor no válido para 'keep_sources'", "Revisa los ajustes")
+                    raise UserError(f"Valor no válido para '{key}'", "Revisa los ajustes")
                 update[key] = value
                 continue
             if key == "yt_cookies_browser":
@@ -722,6 +722,27 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
     def ytdlp_update():
         _body()
         return jsonify(version=ytdlp_loader.update_ytdlp())
+
+    @app.get("/api/update")
+    def get_update():
+        latest = updater.state.get("latest")
+        return jsonify(current=__version__, latest=latest, can_install=updater.can_install(latest))
+
+    @app.post("/api/update/install")
+    def post_update_install():
+        _body()
+        latest = updater.state.get("latest")
+        if not updater.can_install(latest):
+            return jsonify(error="Esta instalación no se puede actualizar sola → Descarga la versión nueva desde la página de Baitd"), 409
+        path = updater.download_and_verify(latest, config.data_dir() / "actualizaciones")
+        updater.launch_installer(path)
+
+        def stop() -> None:
+            queue.stop()  # a running job goes back to pending
+            if shutdown is not None:
+                shutdown()
+        threading.Timer(0.3, stop).start()  # after this response has been sent
+        return jsonify(ok=True)
 
     @app.post("/api/shutdown")
     def post_shutdown():

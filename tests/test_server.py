@@ -751,3 +751,62 @@ def test_favicon_and_brand_icon(client):
     assert re.search(r'<img class="brand-icon" src="/static/icon.png" alt="" width="28" height="28">', html)
     assert html.index('class="brand-icon"') < html.index('class="brand"')
     assert client.get("/static/icon.png").status_code == 200
+
+
+
+# ---- updates ----
+
+def test_check_updates_setting_is_boolean(client):
+    assert client.get("/api/settings").json["check_updates"] is True
+    assert client.post("/api/settings", json={"check_updates": False}).status_code == 200
+    assert client.get("/api/settings").json["check_updates"] is False
+    assert client.post("/api/settings", json={"check_updates": "no"}).status_code == 400
+
+
+def test_api_update_shape(client, monkeypatch):
+    from baitd import __version__, updater
+    monkeypatch.setattr(updater, "state", {"latest": None})
+    assert client.get("/api/update").json == {"current": __version__, "latest": None, "can_install": False}
+    latest = {"version": "9.9.9", "page": "https://github.com/okksett/baitd/releases/tag/v9.9.9",
+              "setup_url": "", "sums_url": ""}
+    updater.state["latest"] = latest
+    assert client.get("/api/update").json == {"current": __version__, "latest": latest, "can_install": False}
+
+
+def test_install_409_when_not_installable(client, monkeypatch):
+    from baitd import updater
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "", "sums_url": ""}})
+    monkeypatch.setattr(updater, "download_and_verify", lambda *a, **k: pytest.fail("must not download"))
+    r = client.post("/api/update/install", json={})
+    assert r.status_code == 409 and "→" in r.json["error"]
+
+
+def test_install_happy_path_order(queue, monkeypatch, tmp_data):
+    from baitd import updater
+    calls = []
+    latest = {"version": "9.9.9", "page": "p", "setup_url": "u", "sums_url": "s"}
+    monkeypatch.setattr(updater, "state", {"latest": latest})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+    monkeypatch.setattr(updater, "download_and_verify",
+                        lambda l, dest, **k: calls.append(("download", dest.name)) or dest / "s.exe")
+    monkeypatch.setattr(updater, "launch_installer", lambda p: calls.append(("launch", p.name)))
+    app = server.create_app(queue, shutdown=lambda: calls.append(("shutdown",)))
+    app.test_client_class = LocalClient
+    r = app.test_client().post("/api/update/install", json={})
+    assert r.status_code == 200 and r.json == {"ok": True}
+    assert wait_for(lambda: ("shutdown",) in calls)
+    assert calls == [("download", "actualizaciones"), ("launch", "s.exe"), ("shutdown",)]
+
+
+def test_install_failed_verification_does_not_launch(client, monkeypatch):
+    from baitd import updater
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+
+    def bad(*a, **k):
+        raise UserError("No se pudo verificar la actualización", "Descárgala desde la página de Baitd")
+
+    monkeypatch.setattr(updater, "download_and_verify", bad)
+    monkeypatch.setattr(updater, "launch_installer", lambda p: pytest.fail("must not launch"))
+    r = client.post("/api/update/install", json={})
+    assert r.status_code == 400 and "verificar" in r.json["error"]

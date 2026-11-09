@@ -33,7 +33,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3", "assets/music/CREDITS.md", "assets/models/*.onnx", "assets/models/LICENSE-yunet.txt",
-              "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/i18n/*.json"]
+              "web/templates/*.html", "web/static/*.css", "web/static/*.js", "web/static/*.png", "web/static/i18n/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

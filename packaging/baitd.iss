@@ -17,6 +17,7 @@ OutputDir=..\dist-installer
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=yes
+RestartApplications=no
 UninstallDisplayName=Baitd
 SetupIconFile=baitd.ico
 UninstallDisplayIcon={app}\Baitd.exe

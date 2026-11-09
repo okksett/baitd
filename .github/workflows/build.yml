@@ -103,7 +103,7 @@ jobs:
           MSYS_NO_PATHCONV: "1"
         run: |
           choco install innosetup -y --no-progress
-          VERSION=$(python -c "import baitd; print(baitd.__version__)")
+          VERSION=$(python -c "import baitd; print(baitd.__version__)" | tr -d '\r')
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DAppVersion=$VERSION" packaging/baitd.iss
           ls -l dist-installer/Baitd-Setup.exe
 
