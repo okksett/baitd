@@ -1346,7 +1346,24 @@
 
   function stepLabel(job) {
     if (job.status === "pending" || !job.step) return tr("step.waiting");
-    return tr(`step.${job.step}`);
+    const step = tr(`step.${job.step}`);
+    const n = Math.round(job.step_percent || 0);
+    // a step with its own fraction (e.g. the source download) shows it next to the name while it runs
+    if (job.status === "running" && n > 0 && n < 100) return tr("progress.step_pct", { step, n });
+    return step;
+  }
+
+  // "?" buttons: each shows/hides the hint it controls (aria-controls), keeping aria-expanded in sync
+  function bindHelpToggles() {
+    $$("button.help[aria-controls]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const panel = document.getElementById(btn.getAttribute("aria-controls"));
+        if (!panel) return;
+        const open = btn.getAttribute("aria-expanded") !== "true";
+        btn.setAttribute("aria-expanded", String(open));
+        panel.hidden = !open;
+      });
+    });
   }
 
   const isClipJob = (job) => Boolean(job.kind) && job.kind !== "short";
@@ -1625,6 +1642,7 @@
   // ---------- wiring ----------
 
   function bind() {
+    bindHelpToggles();
     $$("[data-theme-set]").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themeSet)));
     lightQuery.addEventListener("change", renderTheme);
 

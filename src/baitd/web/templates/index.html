@@ -228,16 +228,22 @@
     <div id="clip-settings">
       <div class="row clip-row">
         <div class="field num">
-          <label class="lbl" for="c-count" data-i18n="clip.count">{{ t("clip.count") }}</label>
+          <div class="lbl-row">
+            <label class="lbl" for="c-count" data-i18n="clip.count">{{ t("clip.count") }}</label>
+            <button type="button" class="help" id="c-count-help-btn" aria-expanded="false" aria-controls="c-count-help" data-i18n-aria="clip.count_help_label" aria-label='{{ t("clip.count_help_label") }}'>?</button>
+          </div>
           <input id="c-count" class="input" type="number" min="1" max="20" step="1" inputmode="numeric">
         </div>
         <div class="field">
-          <span class="lbl" id="c-len-label" data-i18n="clip.duration">{{ t("clip.duration") }}</span>
-          <div class="range">
-            <label class="sr-only" for="c-min" data-i18n="clip.min">{{ t("clip.min") }}</label>
+          <div class="lbl-row">
+            <span class="lbl" id="c-len-label" data-i18n="clip.duration">{{ t("clip.duration") }}</span>
+            <button type="button" class="help" id="c-len-help-btn" aria-expanded="false" aria-controls="c-len-help" data-i18n-aria="clip.len_help_label" aria-label='{{ t("clip.len_help_label") }}'>?</button>
+          </div>
+          <div class="range" role="group" aria-labelledby="c-len-label">
+            <label class="range-lbl" for="c-min" data-i18n="clip.min">{{ t("clip.min") }}</label>
             <input id="c-min" class="input" type="number" min="10" max="180" step="1" inputmode="numeric">
             <span aria-hidden="true">–</span>
-            <label class="sr-only" for="c-max" data-i18n="clip.max">{{ t("clip.max") }}</label>
+            <label class="range-lbl" for="c-max" data-i18n="clip.max">{{ t("clip.max") }}</label>
             <input id="c-max" class="input" type="number" min="10" max="180" step="1" inputmode="numeric">
           </div>
         </div>
@@ -252,6 +258,8 @@
           </select>
         </div>
       </div>
+      <p class="hint" id="c-count-help" data-i18n="clip.count_help" hidden>{{ t("clip.count_help") }}</p>
+      <p class="hint" id="c-len-help" data-i18n="clip.len_help" hidden>{{ t("clip.len_help") }}</p>
       <div class="row">
         <label class="sr-only" for="c-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
         <select id="c-aspect" class="input">

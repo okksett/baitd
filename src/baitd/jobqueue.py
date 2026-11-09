@@ -22,7 +22,7 @@ _FINISHED = ("done", "error", "cancelled")
 _RETRYABLE = ("error", "cancelled")
 _UNFINISHED = ("pending", "running")
 _HOLDING = (*_UNFINISHED, *_RETRYABLE)  # items whose source (and analysis) must stay: they may still run
-_PUBLIC = ("id", "topic", "status", "step", "step_index", "percent", "error", "output",
+_PUBLIC = ("id", "topic", "status", "step", "step_index", "percent", "step_percent", "error", "output",
            "profile_name", "created_at", "kind", "analysis_id")
 _CLIP_RUNNERS = {"clip_auto": clip_pipeline.run_clip_auto, "clip_analyze": clip_pipeline.run_clip_analyze,
                  "clip_export": clip_pipeline.run_clip_export}
@@ -85,12 +85,13 @@ class JobQueue:
         try:
             step_index = int(d.get("step_index") or 0)
             percent = float(d.get("percent") or 0.0)
+            step_percent = float(d.get("step_percent") or 0.0)
         except (TypeError, ValueError):
-            step_index, percent = 0, 0.0
+            step_index, percent, step_percent = 0, 0.0, 0.0
         return {
             "id": d["id"], "topic": d["topic"], "status": status,
             "step": d.get("step") or "", "step_index": step_index,
-            "percent": percent, "error": d.get("error") or "",
+            "percent": percent, "step_percent": step_percent, "error": d.get("error") or "",
             "output": d.get("output") or "", "profile_name": d.get("profile_name") or "",
             "created_at": d.get("created_at") or "",
             "profile": d["profile"],
@@ -107,7 +108,7 @@ class JobQueue:
 
     @staticmethod
     def _reset_pending(item: dict) -> None:
-        item.update(status="pending", step="", step_index=0, percent=0.0, error="", output="")
+        item.update(status="pending", step="", step_index=0, percent=0.0, step_percent=0.0, error="", output="")
 
     # --- public API ---
 
@@ -123,7 +124,7 @@ class JobQueue:
                 script = (scripts or {}).get(topic)
                 item = {
                     "id": uuid.uuid4().hex[:12], "topic": topic, "status": "pending",
-                    "step": "", "step_index": 0, "percent": 0.0, "error": "", "output": "",
+                    "step": "", "step_index": 0, "percent": 0.0, "step_percent": 0.0, "error": "", "output": "",
                     "profile_name": profile.name, "created_at": now,
                     "profile": snapshot, "script": script.to_dict() if script else None,
                     "kind": "short", "payload": None, "analysis_id": "",
@@ -142,7 +143,7 @@ class JobQueue:
         analysis_id = payload.get("analysis_id") if kind == "clip_export" else ""
         item = {
             "id": uuid.uuid4().hex[:12], "topic": topic, "status": "pending",
-            "step": "", "step_index": 0, "percent": 0.0, "error": "", "output": "",
+            "step": "", "step_index": 0, "percent": 0.0, "step_percent": 0.0, "error": "", "output": "",
             "profile_name": profile.name, "created_at": datetime.now().isoformat(timespec="seconds"),
             "profile": profile.to_dict(), "script": None,
             "kind": kind, "payload": copy.deepcopy(payload),
@@ -382,12 +383,13 @@ class JobQueue:
                 self._save()
 
     def _progress(self, id: str, step: str, index: int, total: int, pct: float) -> None:
-        overall = round(((index - 1) + max(0.0, min(100.0, pct)) / 100) / (total or 6) * 100, 1)
+        pct = max(0.0, min(100.0, pct))
+        overall = round(((index - 1) + pct / 100) / (total or 6) * 100, 1)
         with self._lock:
             item = self._find(id)
             if item is None or item["status"] != "running":
                 return
             changed = item["step"] != step
-            item.update(step=step, step_index=index, percent=overall)
+            item.update(step=step, step_index=index, percent=overall, step_percent=pct)
             if changed:
                 self._save()

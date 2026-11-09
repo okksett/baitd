@@ -254,6 +254,15 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 .row .input[type="number"] { padding-right: 8px; }
 .clip-row .num { flex: 0 1 5.5em; }
 .range { display: flex; align-items: center; gap: 6px; }
+.range .range-lbl { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+.lbl-row { display: flex; align-items: center; gap: 6px; }
+.help {
+  flex: none; width: 20px; height: 20px; padding: 0; margin-top: 4px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+  font-size: 12px; line-height: 1; font-weight: 600;
+}
+.help:hover, .help[aria-expanded="true"] { color: var(--text); border-color: var(--b1); }
+.help:focus-visible { outline: 2px solid var(--b1); outline-offset: 2px; }
 .range .input { min-width: 0; width: 5.5em; }
 .rights { font-size: 12px; margin-top: 12px; }
 .why { color: var(--warn); font-size: 13px; margin: 12px 0 0; }

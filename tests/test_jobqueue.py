@@ -166,6 +166,7 @@ def test_snapshot_script_settings_and_progress(tmp_path):
     item = q.list()[0]
     assert (item["status"], item["step"], item["step_index"], item["percent"]) == ("running", "voice", 3, 41.7)
     assert item["profile_name"] == "Por defecto" and item["created_at"]
+    assert item["step_percent"] == 50
     proceed.set()
     assert wait_for(lambda: statuses(q) == ["done"])
     q.stop()
@@ -330,3 +331,20 @@ def test_retry_rejects_running_and_done(tmp_path):
     release.set()
     assert wait_for(lambda: statuses(q) == ["done"] * 3)
     q.stop()
+
+
+def test_step_percent_exposed_reset_and_defaults_for_old_items(tmp_path):
+    q = make_queue(tmp_path, lambda *a, **k: tmp_path)
+    q.add(["a"], config.default_profile())
+    assert q.list()[0]["step_percent"] == 0
+    item = q._items[0]
+    item["status"] = "running"
+    q._progress(item["id"], "source", 1, 6, 45)
+    assert q.list()[0]["step_percent"] == 45
+    q._progress(item["id"], "transcribe", 2, 6, 0)  # a new step starts from zero
+    assert q.list()[0]["step_percent"] == 0
+    q._progress(item["id"], "transcribe", 2, 6, 30)
+    q._reset_pending(item)
+    assert q.list()[0]["step_percent"] == 0
+    old = {k: v for k, v in item.items() if k != "step_percent"}
+    assert q._normalize(old)["step_percent"] == 0

@@ -706,3 +706,21 @@ def test_settings_dialog_has_the_ai_block(client):
     assert 'id="s-llm_model_pick"' in dialog and 'id="llm-models-refresh"' in dialog and 'id="llm-hint"' in dialog
     assert 'id="f-llm"' not in html and 'id="f-model"' not in html
     assert dialog.index('data-setting="compat_key"') < dialog.index('data-setting="llm_provider"') < dialog.index('data-setting="output_dir"')
+
+
+def test_clipping_form_help_toggles_and_visible_min_max(client):
+    html = client.get("/").text
+    es = json.loads(ES.read_text("utf-8"))
+    en = json.loads((ES.parent / "en.json").read_text("utf-8"))
+    for key in ("count", "len"):
+        assert f'id="c-{key}-help"' in html and f'aria-controls="c-{key}-help"' in html
+        assert re.search(rf'<p[^>]*class="hint"[^>]*id="c-{key}-help"[^>]*\bhidden\b', html)
+    assert re.search(r'<button[^>]*type="button"[^>]*id="c-count-help-btn"[^>]*aria-expanded="false"', html)
+    assert 'data-i18n-aria="clip.count_help_label"' in html
+    assert re.search(r'role="group"[^>]*aria-labelledby="c-len-label"', html)
+    assert 'class="sr-only" for="c-min"' not in html and 'class="sr-only" for="c-max"' not in html
+    assert (es["clip.min"], es["clip.max"]) == ("mín", "máx")
+    assert (en["clip.min"], en["clip.max"]) == ("min", "max")
+    assert es["progress.step_pct"] == "{step} · {n} %" and en["progress.step_pct"] == "{step} · {n} %"
+    for k in ("clip.count_help_label", "clip.count_help", "clip.len_help"):
+        assert es[k] and en[k]
