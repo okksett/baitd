@@ -45,6 +45,7 @@ _LOCAL_HOSTS = ("127.0.0.1", "localhost")
 _POSITIONS = ("bottom", "middle", "top")
 _MAX_OUTLINE = 20  # px; the presets use 0-6
 _LLM_PROVIDERS = tuple(llm.DEFAULT_MODELS)
+_MAX_LLM_MODEL = 80
 _UPLOAD_PATH = "/api/uploads"
 _UPLOAD_CHUNK_PATH = re.compile(r"/api/uploads/[0-9a-f]{12}")  # PUT: one chunk of a chunked upload
 _UPLOAD_MAX = 40 * 1024**3  # a whole long-video upload, declared when it begins
@@ -139,8 +140,8 @@ def _parse_profile(d: dict) -> Profile:
     ok = (
         isinstance(p.name, str) and p.name.strip() and len(p.name) <= 60
         and isinstance(p.language, str) and 0 < len(p.language.strip()) <= 20
-        and p.llm_provider in _LLM_PROVIDERS and p.tts_provider in tts.PROVIDERS
-        and all(isinstance(v, str) for v in (p.llm_model, p.tone, p.voice, p.music))
+        and p.tts_provider in tts.PROVIDERS
+        and all(isinstance(v, str) for v in (p.tone, p.voice, p.music))
         and -50 <= p.rate <= 50 and 0 <= p.music_volume <= 1
         and p.music in _music_choices()
         and s.preset in captions.PRESETS and s.position in _POSITIONS
@@ -369,6 +370,10 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
             value = value.strip()
             if key in KEY_FIELDS and value.startswith(MASK):
                 continue  # the masked placeholder came back unchanged
+            if key == "llm_provider" and value not in _LLM_PROVIDERS:
+                raise UserError("Proveedor de IA no válido", "Elige Gemini, OpenAI o un servidor compatible")
+            if key == "llm_model" and len(value) > _MAX_LLM_MODEL:
+                raise UserError("El nombre del modelo es demasiado largo", f"Usa como máximo {_MAX_LLM_MODEL} caracteres")
             update[key] = value
         if "ui_lang" in update and update["ui_lang"] not in UI_LANGS:
             raise UserError("Idioma de la interfaz no válido", "Elige español o inglés")
@@ -380,6 +385,14 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         with voice_lock:
             voice_cache.clear()  # a new key can change which voices are available
         return jsonify(_masked_settings())
+
+    @app.get("/api/llm/models")
+    def get_llm_models():
+        provider = request.args.get("provider", "")
+        if provider not in _LLM_PROVIDERS:
+            raise UserError("Proveedor de IA no válido", "Elige Gemini, OpenAI o un servidor compatible")
+        return jsonify(models=llm.list_models(provider, config.load_settings()),
+                       default=llm.DEFAULT_MODELS[provider])
 
     # --- profiles ---
 

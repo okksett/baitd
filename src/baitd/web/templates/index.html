@@ -174,19 +174,6 @@
     <details class="acc" id="acc-ai">
       <summary><span data-i18n="ai.title">{{ t("ai.title") }}</span><span class="sum" id="sum-ai"></span></summary>
       <div class="acc-body">
-        <div class="field">
-          <label class="lbl" for="f-llm" data-i18n="ai.provider">{{ t("ai.provider") }}</label>
-          <select id="f-llm" class="input">
-            <option value="gemini" data-i18n="llm.gemini">{{ t("llm.gemini") }}</option>
-            <option value="openai" data-i18n="llm.openai">{{ t("llm.openai") }}</option>
-            <option value="compat" data-i18n="llm.compat">{{ t("llm.compat") }}</option>
-          </select>
-        </div>
-        <div class="field">
-          <label class="lbl" for="f-model" data-i18n="ai.model">{{ t("ai.model") }}</label>
-          <input id="f-model" class="input" type="text" autocomplete="off" maxlength="80"
-                 data-i18n-placeholder="ai.model_placeholder" placeholder='{{ t("ai.model_placeholder") }}'>
-        </div>
         <div class="field wide">
           <label class="lbl" for="f-tone" data-i18n="ai.tone">{{ t("ai.tone") }}</label>
           <input id="f-tone" class="input" type="text" autocomplete="off" maxlength="200"
@@ -472,6 +459,32 @@
         <div class="key-input"><input id="s-compat_key" class="input" type="password" autocomplete="off" spellcheck="false" data-setting="compat_key">
           <button type="button" class="pill show-btn" aria-pressed="false" aria-controls="s-compat_key" data-i18n="key.show">{{ t("key.show") }}</button></div>
       </div>
+    </div>
+    <h3 class="lbl" data-i18n="settings.ai">{{ t("settings.ai") }}</h3>
+    <div class="keys">
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="s-llm_provider" data-i18n="ai.provider">{{ t("ai.provider") }}</label>
+          <select id="s-llm_provider" class="input" data-setting="llm_provider" aria-describedby="llm-hint">
+            <option value="gemini" data-i18n="llm.gemini">{{ t("llm.gemini") }}</option>
+            <option value="openai" data-i18n="llm.openai">{{ t("llm.openai") }}</option>
+            <option value="compat" data-i18n="llm.compat">{{ t("llm.compat") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="s-llm_model_pick" data-i18n="ai.model">{{ t("ai.model") }}</label>
+          <select id="s-llm_model_pick" class="input" aria-describedby="llm-hint"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label class="lbl" for="s-llm_model" data-i18n="ai.model_name">{{ t("ai.model_name") }}</label>
+        <input id="s-llm_model" class="input" type="text" autocomplete="off" spellcheck="false" maxlength="80" hidden
+               data-setting="llm_model" data-i18n-placeholder="ai.model_placeholder" placeholder='{{ t("ai.model_placeholder") }}'>
+      </div>
+      <div>
+        <button type="button" class="pill" id="llm-models-refresh" data-i18n="ai.refresh">{{ t("ai.refresh") }}</button>
+      </div>
+      <p class="hint" id="llm-hint" data-i18n="ai.hint">{{ t("ai.hint") }}</p>
     </div>
     <h3 class="lbl" data-i18n="settings.general">{{ t("settings.general") }}</h3>
     <div class="keys">

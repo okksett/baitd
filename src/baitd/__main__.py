@@ -163,6 +163,10 @@ def main(argv: list[str] | None = None) -> None:
 
 def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     handlers = _setup_logging()
+    try:  # 0.3: the AI provider/model moved from the profiles to the settings
+        config.migrate_llm_settings()
+    except OSError:
+        log.exception("No se pudo migrar el proveedor de IA a los ajustes")
     queue = JobQueue(config.data_dir() / "queue.json")
     try:  # before the server can accept an upload: nothing in flight can be mistaken for a leftover
         queue.sweep_clip_data(keep_sources=bool(config.load_settings().get("keep_sources")))

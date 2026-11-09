@@ -346,8 +346,6 @@
     fillSubtitle("f");
     renderMusicSelect();
     $("#f-volume").value = String(Math.round(p.music_volume * 100));
-    $("#f-llm").value = p.llm_provider;
-    $("#f-model").value = p.llm_model;
     $("#f-tone").value = p.tone;
     renderDerived();
   }
@@ -366,8 +364,6 @@
     readSubtitle("f", target);
     p.music = $("#f-music").value || "none";
     p.music_volume = Math.round(Number($("#f-volume").value)) / 100;
-    p.llm_provider = $("#f-llm").value;
-    p.llm_model = $("#f-model").value.trim();
     p.tone = $("#f-tone").value;
   }
 
@@ -449,7 +445,7 @@
     }
     $("#sum-subs").textContent = `${tr(`preset.${p.subtitle.preset}`)} · ${tr(`pos.${p.subtitle.position}`)}`;
     $("#sum-music").textContent = `${musicLabel(p.music)} · ${Math.round(p.music_volume * 100)} %`;
-    $("#sum-ai").textContent = p.llm_model ? `${tr(`llm.${p.llm_provider}`)} · ${p.llm_model}` : tr(`llm.${p.llm_provider}`);
+    $("#sum-ai").textContent = p.tone.trim() || tr("ai.sum_default");
   }
 
   function renderSampleSub() {
@@ -1468,6 +1464,7 @@
     try {
       const s = await api("GET", "/api/settings");
       $$("[data-setting]", dlg).forEach((el) => { el.value = s[el.dataset.setting] || ""; });
+      loadModels(); // fills the model list for the saved provider; does not block the dialog
       $("#s-keep_sources").checked = s.keep_sources === true;
       $("#ytdlp-status").textContent = "";
       showError($("#ytdlp-error"), null);
@@ -1479,6 +1476,63 @@
       return;
     }
     dlg.showModal();
+  }
+
+  // AI model picker: "Por defecto ({model})", the models the saved key can use, "Otro…" (free text).
+  const MODEL_OTHER = "__other__";
+  let modelsSeq = 0; // a late reply for a provider that is no longer selected is dropped
+
+  // Fills the select from `models` and selects `current` ("" = default, unlisted = Otro…).
+  function fillModelPicker(models, def, current) {
+    const pick = $("#s-llm_model_pick");
+    const opt = (value, text) => Object.assign(document.createElement("option"), { value, textContent: text });
+    pick.replaceChildren(
+      opt("", def ? tr("ai.model_default", { model: def }) : tr("ai.model_default_plain")),
+      ...models.map((m) => opt(m, m)),
+      opt(MODEL_OTHER, tr("ai.model_other")),
+    );
+    pick.value = current === "" ? "" : (models.includes(current) ? current : MODEL_OTHER);
+    syncModelInput(false);
+  }
+
+  // Keeps the text input (the saved setting) in step with the select; it shows only for "Otro…".
+  function syncModelInput(fromUser) {
+    const pick = $("#s-llm_model_pick").value;
+    const input = $("#s-llm_model");
+    if (pick !== MODEL_OTHER) input.value = pick;
+    input.hidden = pick !== MODEL_OTHER;
+    if (fromUser && pick === MODEL_OTHER) input.focus();
+  }
+
+  function setModelHint(message) {
+    const hint = $("#llm-hint");
+    if (message) {
+      hint.removeAttribute("data-i18n");
+      hint.textContent = message;
+    } else {
+      hint.dataset.i18n = "ai.hint";
+      hint.textContent = tr("ai.hint");
+    }
+  }
+
+  async function loadModels() {
+    const seq = ++modelsSeq;
+    const provider = $("#s-llm_provider").value;
+    const current = $("#s-llm_model").value.trim();
+    const btn = $("#llm-models-refresh");
+    btn.disabled = true;
+    let models = [], def = "", message = "";
+    try {
+      const r = await api("GET", `/api/llm/models?provider=${encodeURIComponent(provider)}`);
+      models = r.models;
+      def = r.default;
+    } catch (e) {
+      message = e.message; // no key yet, no connection...: "Por defecto" and "Otro…" still work
+    }
+    if (seq !== modelsSeq) return;
+    btn.disabled = false;
+    setModelHint(message);
+    fillModelPicker(models, def, current);
   }
 
   function setShown(btn, shown) {
@@ -1639,6 +1693,12 @@
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
     $("#quit-app").addEventListener("click", quitApp);
+    $("#llm-models-refresh").addEventListener("click", loadModels);
+    $("#s-llm_provider").addEventListener("change", () => {
+      $("#s-llm_model").value = ""; // a model name belongs to one provider
+      loadModels();
+    });
+    $("#s-llm_model_pick").addEventListener("change", () => syncModelInput(true));
     $("#ytdlp-update").addEventListener("click", updateYtdlp);
     $$("#settings [data-close]").forEach((b) => b.addEventListener("click", () => $("#settings").close()));
     $$("#settings .show-btn").forEach((b) => b.addEventListener("click", () => {

@@ -138,8 +138,6 @@ class Profile:
     aspect: Literal["9:16", "16:9"]
     fps: Literal[30, 60]
     seconds: Literal[30, 45, 60]
-    llm_provider: str
-    llm_model: str
     tone: str
     tts_provider: str
     voice: str

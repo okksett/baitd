@@ -82,7 +82,7 @@ def request(method: str, url: str, provider: str, model: str = "", *, noun: str 
         raise AuthError(f"La clave {_of(provider)} no es válida", "Revísala en Ajustes")
     if status == 404:
         raise NotFoundError(f"{_cap(noun)} '{model}' no existe en {provider}",
-                            not_found_fix or f"Cambia {noun} en el perfil")
+                            not_found_fix or ("Cambia el modelo en Ajustes" if noun == "el modelo" else f"Cambia {noun} en el perfil"))
     if status == 429:
         raise UserError(f"{_cap(provider)} alcanzó el límite de peticiones o de cuota",
                         "Espera un momento o revisa tu plan")

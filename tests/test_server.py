@@ -657,3 +657,52 @@ def test_small_ui_items_are_wired():
     assert "if (body.theme === dlg.dataset.themeShown) delete body.theme" in js  # M8
     assert '$("#profile").disabled = busy' in js and '$("#profile-menu-btn").disabled = busy' in js  # M9
     assert "const previous = state.savePromise" in js  # M9: saves are chained
+
+
+# ---- Task 2: AI provider and model in Ajustes ----
+
+def test_settings_llm_provider_and_model_validation(client):
+    assert client.post("/api/settings", json={"llm_provider": "zzz"}).status_code == 400
+    r = client.post("/api/settings", json={"llm_model": "m" * 81})
+    assert r.status_code == 400 and "→" in r.json["error"]
+    assert config.load_settings()["llm_provider"] == "gemini"
+    r = client.post("/api/settings", json={"llm_provider": "openai", "llm_model": "m" * 80})
+    assert r.status_code == 200 and r.json["llm_provider"] == "openai"
+    assert config.load_settings()["llm_model"] == "m" * 80
+
+
+def test_profile_without_llm_fields_is_valid(client):
+    p = client.get("/api/profiles").json["profiles"][0]
+    assert "llm_provider" not in p and "llm_model" not in p
+    assert client.post("/api/profiles", json=dict(p, llm_provider="zzz")).status_code == 200  # ignored
+
+
+def test_llm_models_route(client, monkeypatch):
+    seen = {}
+
+    def fake(provider, settings):
+        seen["provider"], seen["key"] = provider, settings["gemini_key"]
+        return ["gemini-3.6-flash"]
+
+    monkeypatch.setattr(server.llm, "list_models", fake)
+    client.post("/api/settings", json={"gemini_key": "g-secret-1234"})
+    r = client.get("/api/llm/models?provider=gemini")
+    assert r.status_code == 200
+    assert r.json == {"models": ["gemini-3.6-flash"], "default": "gemini-3.6-flash"}
+    assert seen == {"provider": "gemini", "key": "g-secret-1234"} and "g-secret" not in r.text
+    assert client.get("/api/llm/models?provider=zzz").status_code == 400
+    assert client.get("/api/llm/models").status_code == 400
+
+
+def test_llm_models_route_without_key_is_a_400(client):
+    r = client.get("/api/llm/models?provider=gemini")
+    assert r.status_code == 400 and r.json["error"] == "Falta la clave de Gemini → Añádela en Ajustes"
+
+
+def test_settings_dialog_has_the_ai_block(client):
+    html = client.get("/").text
+    dialog = html[html.index('<dialog id="settings"'):]
+    assert 'data-setting="llm_provider"' in dialog and 'data-setting="llm_model"' in dialog
+    assert 'id="s-llm_model_pick"' in dialog and 'id="llm-models-refresh"' in dialog and 'id="llm-hint"' in dialog
+    assert 'id="f-llm"' not in html and 'id="f-model"' not in html
+    assert dialog.index('data-setting="compat_key"') < dialog.index('data-setting="llm_provider"') < dialog.index('data-setting="output_dir"')

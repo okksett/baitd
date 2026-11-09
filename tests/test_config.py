@@ -8,7 +8,7 @@ from baitd.config import (
     save_profile, save_settings, slugify, data_dir,
 )
 from baitd.models import JobCancelled, Profile, SubtitleStyle, UserError
-from baitd import ffmpeg
+from baitd import config, ffmpeg
 
 
 def test_settings_roundtrip(tmp_data):
@@ -46,7 +46,7 @@ def test_profile_roundtrip_json():
 def test_default_profile_values():
     p = default_profile()
     assert (p.language, p.aspect, p.fps, p.seconds) == ("es", "9:16", 30, 45)
-    assert (p.llm_provider, p.tts_provider, p.voice, p.rate) == ("gemini", "edge", "es-ES-ElviraNeural", 0)
+    assert (p.tts_provider, p.voice, p.rate) == ("edge", "es-ES-ElviraNeural", 0)
     assert (p.subtitle.preset, p.music, p.music_volume) == ("caja_azul", "lofi", 0.15)
 
 
@@ -132,3 +132,46 @@ def test_bad_clipping_block_keeps_the_profile(tmp_data, caplog):
     assert [(p.name, p.tone) for p in profiles] == [("Mío", "serio")]
     assert profiles[0].clipping == ClipProfile()
     assert any("clipping" in r.getMessage().lower() for r in caplog.records)
+
+
+def _write_profiles(tmp_data, *entries):
+    import json
+    (tmp_data / "profiles.json").write_text(json.dumps(list(entries)), encoding="utf-8")
+
+
+def test_migrate_llm_settings_moves_profile_model_once(tmp_data):
+    _write_profiles(tmp_data, {"id": "a", "name": "A", "llm_provider": "gemini", "llm_model": ""},
+                    {"id": "b", "name": "B", "llm_provider": "openai", "llm_model": "gpt-x"})
+    config.migrate_llm_settings()
+    s = config.raw_settings()
+    assert (s["llm_provider"], s["llm_model"]) == ("openai", "gpt-x")  # first profile WITH a model
+    _write_profiles(tmp_data, {"id": "a", "name": "A", "llm_provider": "compat", "llm_model": "otro"})
+    config.migrate_llm_settings()
+    assert (config.raw_settings()["llm_provider"], config.raw_settings()["llm_model"]) == ("openai", "gpt-x")
+
+
+def test_migrate_llm_settings_uses_first_profile_without_models(tmp_data):
+    _write_profiles(tmp_data, {"id": "a", "name": "A", "llm_provider": "compat", "llm_model": ""})
+    config.migrate_llm_settings()
+    assert config.raw_settings() == {"llm_provider": "compat"}
+
+
+def test_migrate_llm_settings_ignores_invalid_provider(tmp_data):
+    _write_profiles(tmp_data, {"id": "a", "name": "A", "llm_provider": "zzz", "llm_model": "m"})
+    config.migrate_llm_settings()
+    assert config.raw_settings() == {"llm_provider": "gemini", "llm_model": "m"}
+
+
+def test_migrate_llm_settings_noop_without_profiles(tmp_data):
+    config.migrate_llm_settings()
+    assert config.raw_settings() == {}
+    _write_profiles(tmp_data)
+    config.migrate_llm_settings()
+    assert config.raw_settings() == {}
+
+
+def test_old_profile_with_llm_fields_still_loads():
+    d = default_profile().to_dict()
+    d.update(llm_provider="openai", llm_model="gpt-x")
+    p = Profile.from_dict(d)
+    assert p == default_profile() and not hasattr(p, "llm_model")
