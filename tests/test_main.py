@@ -68,6 +68,8 @@ def test_port_is_free_detects_reuseaddr_listener():
 
 def test_busy_port_reported_before_server_starts(tmp_data, monkeypatch):
     # a port taken by another program is reported with the Spanish message, and no server is built
+    # (the probe runs only on Windows; pin the platform so this passes on the macOS/Linux CI runners)
+    monkeypatch.setattr(app_main.sys, "platform", "win32")
     monkeypatch.setattr(app_main, "port_is_free", lambda port: False)
     monkeypatch.setattr(app_main, "build_server",
                         lambda *a, **k: pytest.fail("build_server must not run on a busy port"))
