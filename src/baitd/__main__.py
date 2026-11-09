@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import signal
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -30,6 +31,21 @@ def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, 0))
         return s.getsockname()[1]
+
+
+def port_is_free(port: int) -> bool:
+    """False when another program already holds the port. waitress sets SO_REUSEADDR, which on
+    Windows lets it bind a port that another SO_REUSEADDR socket already listens on, so the probe
+    takes the port exclusively there (SO_EXCLUSIVEADDRUSE) and uses a plain bind elsewhere."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if sys.platform == "win32" and exclusive is not None:
+            s.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        try:
+            s.bind((HOST, port))
+        except OSError:
+            return False
+    return True
 
 
 def build_server(port: int, queue: JobQueue):
@@ -174,6 +190,11 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         log.exception("No se pudo limpiar fuentes/ y analisis/")
     global _server
     try:
+        if args.port is not None and not port_is_free(args.port):  # waitress would share it silently
+            log.error("No se pudo abrir el puerto %s: está en uso", args.port)
+            raise SystemExit(
+                f"No se pudo abrir el puerto {args.port} (está en uso) → Cierra la otra ventana de "
+                "Baitd o inicia con --port <otro número>")
         port = args.port or find_free_port()
         try:
             server = build_server(port, queue)
