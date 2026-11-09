@@ -343,6 +343,29 @@ def test_settings_keep_sources(client):
     assert config.load_settings()["keep_sources"] is True
 
 
+def test_settings_youtube_cookies_browser(client):
+    assert client.get("/api/settings").get_json()["yt_cookies_browser"] == ""
+    assert client.post("/api/settings", json={"yt_cookies_browser": "firefox"}).get_json()["yt_cookies_browser"] == "firefox"
+    r = client.post("/api/settings", json={"yt_cookies_browser": "netscape"})
+    assert r.status_code == 400 and "navegador" in r.get_json()["error"]
+    assert config.load_settings()["yt_cookies_browser"] == "firefox"
+    assert client.post("/api/settings", json={"yt_cookies_browser": ""}).get_json()["yt_cookies_browser"] == ""
+
+
+def test_settings_youtube_cookies_file(client, tmp_path):
+    good = tmp_path / "cookies.txt"
+    good.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-value\n", encoding="utf-8")
+    body = client.post("/api/settings", json={"yt_cookies_file": f'"{good}"'}).get_json()
+    assert body["yt_cookies_file"] == str(good)  # quotes from "Copy as path" are dropped
+    assert "secret-value" not in json.dumps(body)  # the path is stored, never the cookies
+    bad = tmp_path / "notas.txt"
+    bad.write_text("no son cookies", encoding="utf-8")
+    for value in (str(bad), str(tmp_path / "missing.txt")):
+        assert client.post("/api/settings", json={"yt_cookies_file": value}).status_code == 400
+    assert config.load_settings()["yt_cookies_file"] == str(good)
+    assert client.post("/api/settings", json={"yt_cookies_file": ""}).get_json()["yt_cookies_file"] == ""
+
+
 def test_delete_unused_upload(client, profile_id, queue, make_mp4):
     src = _source(make_mp4, seconds=2)
     assert client.delete(f"/api/sources/{src.id}", data=b"{}", headers=UP).status_code == 415  # JSON only

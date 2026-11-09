@@ -500,6 +500,30 @@
     <h3 class="lbl" data-i18n="settings.clipping">{{ t("settings.clipping") }}</h3>
     <label class="check"><input type="checkbox" id="s-keep_sources" aria-describedby="keep-hint"> <span data-i18n="settings.keep_sources">{{ t("settings.keep_sources") }}</span></label>
     <p class="hint" id="keep-hint" data-i18n="settings.keep_hint">{{ t("settings.keep_hint") }}</p>
+    <p class="lbl" data-i18n="settings.yt_session">{{ t("settings.yt_session") }}</p>
+    <p class="hint" id="yt-hint" data-i18n="settings.yt_hint">{{ t("settings.yt_hint") }}</p>
+    <div class="keys">
+      <div class="key-row">
+        <label for="s-yt_cookies_browser" data-i18n="settings.yt_browser">{{ t("settings.yt_browser") }}</label>
+        <select id="s-yt_cookies_browser" class="input" data-setting="yt_cookies_browser" aria-describedby="yt-hint">
+          <option value="" data-i18n="settings.yt_browser_none">{{ t("settings.yt_browser_none") }}</option>
+          <option value="firefox" data-i18n="browser.firefox">{{ t("browser.firefox") }}</option>
+          <option value="chrome" data-i18n="browser.chrome">{{ t("browser.chrome") }}</option>
+          <option value="edge" data-i18n="browser.edge">{{ t("browser.edge") }}</option>
+          <option value="brave" data-i18n="browser.brave">{{ t("browser.brave") }}</option>
+          <option value="opera" data-i18n="browser.opera">{{ t("browser.opera") }}</option>
+          <option value="vivaldi" data-i18n="browser.vivaldi">{{ t("browser.vivaldi") }}</option>
+          <option value="safari" data-i18n="browser.safari">{{ t("browser.safari") }}</option>
+        </select>
+      </div>
+      <div class="key-row">
+        <label for="s-yt_cookies_file" data-i18n="settings.yt_file">{{ t("settings.yt_file") }}</label>
+        <input id="s-yt_cookies_file" class="input" type="text" autocomplete="off" spellcheck="false" data-setting="yt_cookies_file"
+               aria-describedby="yt-file-hint"
+               data-i18n-placeholder="settings.yt_file_placeholder" placeholder='{{ t("settings.yt_file_placeholder") }}'>
+      </div>
+    </div>
+    <p class="hint" id="yt-file-hint" data-i18n="settings.yt_file_hint">{{ t("settings.yt_file_hint") }}</p>
     <div class="ytdlp">
       <button type="button" class="pill" id="ytdlp-update" aria-describedby="ytdlp-hint" data-i18n="settings.ytdlp">{{ t("settings.ytdlp") }}</button>
       <p class="hint" id="ytdlp-hint" data-i18n="settings.ytdlp_hint">{{ t("settings.ytdlp_hint") }}</p>

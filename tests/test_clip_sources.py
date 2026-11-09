@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import zipfile
+from pathlib import Path
 
 import pytest
 import requests
@@ -48,6 +49,121 @@ def test_fetch_uses_id_not_title_in_path(fake_ytdlp, tmp_data):
     assert fake_ytdlp.opts["noplaylist"] and "cookiefile" not in fake_ytdlp.opts
     assert "bv*[height<=2160]" in fake_ytdlp.opts["format"]
     assert sources.load_source(s.id) == s
+
+
+_COOKIES = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-value\n"
+
+
+def _cookie_file(tmp_path, text=_COOKIES):
+    p = tmp_path / "mis cookies.txt"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_no_cookies_unless_configured(fake_ytdlp, tmp_data):
+    _go()
+    assert "cookiefile" not in fake_ytdlp.opts and "cookiesfrombrowser" not in fake_ytdlp.opts
+
+
+def test_cookies_from_the_chosen_browser(fake_ytdlp, tmp_data):
+    from baitd import config
+    config.save_settings({"yt_cookies_browser": "firefox"})
+    _go()
+    assert fake_ytdlp.opts["cookiesfrombrowser"] == ("firefox",)
+    assert "cookiefile" not in fake_ytdlp.opts
+
+
+def test_cookie_file_is_read_from_a_copy_and_never_rewritten(fake_ytdlp, tmp_data, tmp_path):
+    # yt-dlp writes its whole cookie jar back to `cookiefile` on close; the user's file must stay as exported
+    from baitd import config
+    user_file = _cookie_file(tmp_path)
+    config.save_settings({"yt_cookies_file": str(user_file), "yt_cookies_browser": "firefox"})
+    _go()
+    used = Path(fake_ytdlp.opts["cookiefile"])
+    assert used != user_file and fake_ytdlp.cookiefile_seen == _COOKIES
+    assert not used.exists()  # the copy is deleted afterwards
+    assert user_file.read_text(encoding="utf-8") == _COOKIES
+    assert "cookiesfrombrowser" not in fake_ytdlp.opts  # the file wins; browser cookies never land in a file
+
+
+def test_missing_cookie_file_says_so(fake_ytdlp, tmp_data, tmp_path):
+    from baitd import config
+    config.save_settings({"yt_cookies_file": str(tmp_path / "borrado.txt")})
+    with pytest.raises(UserError, match="archivo de cookies") as e:
+        _go()
+    assert "Ajustes" in e.value.fix
+    assert list((tmp_data / "fuentes").iterdir()) == []
+
+
+_BOT = "ERROR: [youtube] x: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies"
+
+
+def test_bot_check_points_to_the_setting(fake_ytdlp, tmp_data):
+    from yt_dlp.utils import DownloadError
+    fake_ytdlp.extract_error = DownloadError(_BOT)
+    with pytest.raises(UserError, match="no eres un bot") as e:
+        _go()
+    assert "Ajustes" in e.value.fix and "cookies.txt" in e.value.fix
+    assert "--cookies" not in e.value.cause  # yt-dlp's CLI advice means nothing in the app
+
+
+def test_bot_check_with_cookies_set_says_the_session_expired(fake_ytdlp, tmp_data, tmp_path):
+    from yt_dlp.utils import DownloadError
+    from baitd import config
+    config.save_settings({"yt_cookies_file": str(_cookie_file(tmp_path))})
+    fake_ytdlp.extract_error = DownloadError(_BOT)
+    with pytest.raises(UserError, match="no eres un bot") as e:
+        _go()
+    assert "caducó" in e.value.fix
+
+
+@pytest.mark.parametrize("browser, err, cause, fix", [
+    ("edge", "DownloadError:Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927",
+     "cookies de Edge", "cookies.txt"),
+    ("chrome", "DownloadError:Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271",
+     "cookies de Chrome", "Cierra Chrome"),
+    ("firefox", "FileNotFoundError:could not find firefox cookies database in 'C:\\Users\\x\\Mozilla'",
+     "Firefox", "otro navegador"),
+])
+def test_browser_cookie_failures_are_explained(fake_ytdlp, tmp_data, browser, err, cause, fix):
+    from yt_dlp.utils import DownloadError
+    from baitd import config
+    kind, msg = err.split(":", 1)
+    config.save_settings({"yt_cookies_browser": browser})
+    fake_ytdlp.extract_error = DownloadError(msg) if kind == "DownloadError" else FileNotFoundError(msg)
+    with pytest.raises(UserError) as e:
+        _go()
+    assert cause in e.value.cause and fix in e.value.fix
+    assert "Users" not in e.value.cause + e.value.fix  # no local paths in the message
+
+
+@pytest.mark.parametrize("text, ok", [
+    (_COOKIES, True),
+    ("# HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t0\tA\tb\n", True),
+    (".youtube.com\tTRUE\t/\tFALSE\t0\tA\tb\n", True),  # some exporters skip the header
+    ("hola, esto no son cookies\n", False),
+    ('[{"name": "SID", "value": "x"}]', False),  # JSON export: yt-dlp cannot read it
+])
+def test_check_cookie_file_accepts_only_netscape_format(tmp_path, text, ok):
+    p = _cookie_file(tmp_path, text)
+    if ok:
+        assert sources.check_cookie_file(str(p)) == p
+    else:
+        with pytest.raises(UserError, match="cookies.txt"):
+            sources.check_cookie_file(str(p))
+
+
+def test_check_cookie_file_strips_quotes_and_rejects_missing_or_huge(tmp_path):
+    p = _cookie_file(tmp_path)
+    assert sources.check_cookie_file(f'  "{p}"  ') == p  # Windows "Copy as path" wraps it in quotes
+    with pytest.raises(UserError, match="No se encontró"):
+        sources.check_cookie_file(str(tmp_path / "no.txt"))
+    with pytest.raises(UserError, match="No se encontró"):
+        sources.check_cookie_file(str(tmp_path))  # a folder, not a file
+    big = tmp_path / "big.txt"
+    big.write_text(_COOKIES + "x" * (sources.MAX_COOKIE_BYTES + 1), encoding="utf-8")
+    with pytest.raises(UserError, match="cookies.txt"):
+        sources.check_cookie_file(str(big))
 
 
 def test_fetch_reports_progress(fake_ytdlp, tmp_data):

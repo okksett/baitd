@@ -66,6 +66,7 @@ La pestaña **Clipping** convierte un video largo (podcast, entrevista, stream) 
 - **Encuadre vertical** (se cambia por clip en la revisión): **Cara** (por defecto, sigue a quien habla), **Centro** (recorte fijo al centro, útil para pantallas y juegos) y **Completo** (el video entero con fondo difuminado, sin ampliar).
 - **Dónde se guarda:** los originales en `fuentes/` y las transcripciones y candidatos en `analisis/`, dentro de la carpeta de datos; los clips terminados van a `salidas/`. Los originales se borran al exportar todos sus clips, salvo que marques "Guardar videos originales" en Ajustes. No cuentan para el tope de 3 GB de la caché.
 - **Actualizar yt-dlp:** si una descarga deja de funcionar, usa el botón **Actualizar yt-dlp** en **Ajustes** y reinicia Baitd.
+- **«Confirma que no eres un bot»:** si YouTube bloquea la descarga, ve a **Ajustes → Clipping → Sesión de YouTube**. Elige Firefox, o pega la ruta de un archivo `cookies.txt` exportado con la extensión «Get cookies.txt LOCALLY» con tu sesión de YouTube abierta. En Windows, Chrome y Edge no dejan leer sus cookies: ahí usa el archivo. Baitd guarda solo la ruta y usa una copia temporal; las cookies no salen de tu ordenador.
 
 > **Derechos:** si usas videos de otros canales, respeta sus derechos y las reglas de cada plataforma.
 
@@ -158,6 +159,7 @@ The **Clipping** tab turns a long video (podcast, interview, stream) into severa
 - **Vertical framing** (changeable per clip during review): **Face** (default, follows the speaker), **Center** (fixed centre crop, good for screens and games) and **Full** (the whole video over a blurred background, no zoom).
 - **Where things live:** sources in `fuentes/` and transcripts and candidates in `analisis/`, inside the data folder; finished clips go to `salidas/`. Sources are deleted once all their clips are exported unless you tick "Keep original videos" in Settings. They do not count toward the 3 GB cache cap.
 - **Updating yt-dlp:** if downloads stop working, use the **Update yt-dlp** button in **Settings (Ajustes)** and restart Baitd.
+- **“Confirm you’re not a bot”:** if YouTube blocks the download, go to **Settings → Clipping → YouTube session**. Pick Firefox, or paste the path of a `cookies.txt` exported with the “Get cookies.txt LOCALLY” extension while signed in to YouTube. On Windows, Chrome and Edge don’t let other apps read their cookies: use the file there. Baitd stores only the path and reads a temporary copy; cookies never leave your computer.
 
 > **Rights:** if you use other channels' videos, respect their rights and each platform's rules.
 

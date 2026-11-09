@@ -561,6 +561,7 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert 'id="tpl-moment"' in html
     # settings dialog: keep sources and the yt-dlp updater
     assert 'id="s-keep_sources"' in html and 'id="ytdlp-update"' in html
+    assert 'data-setting="yt_cookies_browser"' in html and 'data-setting="yt_cookies_file"' in html
     js = JS.read_text("utf-8")
     assert "new XMLHttpRequest()" in js and ".abort()" in js and '"X-Baitd-Upload", "1"' in js
     # chunked uploads (F3): 64 MiB PUTs in order, the extension checked first, abort deletes the partial upload

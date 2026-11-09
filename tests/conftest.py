@@ -124,21 +124,30 @@ class FakeYtdlp:
         self.utils = types.SimpleNamespace(DownloadError=DownloadError, YoutubeDLError=YoutubeDLError)
         self.info = {"id": "x", "title": "Video", "uploader": "Canal", "duration": 60, "is_live": False}
         self.error: Exception | None = None  # raised by download()
+        self.extract_error: Exception | None = None  # raised by extract_info() (bot checks, cookie reads)
         self.in_download = None  # callable run between progress hooks
         self.opts: dict = {}
+        self.cookiefile_seen: str | None = None  # contents of opts["cookiefile"] when yt-dlp read it
         fake = self
 
         class YoutubeDL:
             def __init__(self, opts):
                 fake.opts = opts
+                if opts.get("cookiefile"):
+                    fake.cookiefile_seen = Path(opts["cookiefile"]).read_text(encoding="utf-8")
 
             def __enter__(self):
                 return self
 
             def __exit__(self, *exc):
+                if fake.opts.get("cookiefile"):  # real yt-dlp saves its cookie jar back to cookiefile on close
+                    with open(fake.opts["cookiefile"], "a", encoding="utf-8") as fh:
+                        fh.write(".youtube.com\tTRUE\t/\tTRUE\t0\tWRITTEN_BACK\t1\n")
                 return False
 
             def extract_info(self, url, download=True):
+                if fake.extract_error:
+                    raise fake.extract_error
                 return dict(fake.info)
 
             def download(self, urls):

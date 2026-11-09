@@ -354,6 +354,16 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
                     raise UserError("Valor no válido para 'keep_sources'", "Revisa los ajustes")
                 update[key] = value
                 continue
+            if key == "yt_cookies_browser":
+                if value not in ("", *clip_sources.COOKIE_BROWSERS):
+                    raise UserError("Ese navegador no sirve para la sesión de YouTube", "Elige uno de la lista")
+                update[key] = value
+                continue
+            if key == "yt_cookies_file":
+                if not isinstance(value, str):
+                    raise UserError("Valor no válido para el archivo de cookies", "Revisa los ajustes")
+                update[key] = str(clip_sources.check_cookie_file(value)) if value.strip().strip('"').strip() else ""
+                continue
             if not isinstance(value, str):
                 raise UserError(f"Valor no válido para '{key}'", "Revisa los ajustes")
             value = value.strip()
