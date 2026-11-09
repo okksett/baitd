@@ -7,10 +7,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -27,6 +29,26 @@ SUMS_NAME = "SHA256SUMS"
 _CHUNK = 64 * 1024
 
 state: dict = {"latest": None}
+install_lock = threading.Lock()  # one download/verify/launch at a time
+
+_ASSET_PATH = re.compile(rf"/{re.escape(REPO)}/releases/download/([^/%]+)/(?:{re.escape(SETUP_NAME)}|{re.escape(SUMS_NAME)})")
+
+
+def is_release_asset_url(url) -> bool:
+    """True only for https://github.com/okksett/baitd/releases/download/<tag>/<Baitd-Setup.exe|SHA256SUMS>.
+    A plain startswith() would accept dot segments that resolve to another repository."""
+    if not isinstance(url, str):
+        return False
+    try:
+        p = urlsplit(url)
+        port = p.port
+    except ValueError:
+        return False
+    if (p.scheme != "https" or p.hostname != "github.com" or p.netloc != "github.com" or port is not None
+            or p.query or p.fragment or "?" in url or "#" in url or "\\" in url):
+        return False
+    m = _ASSET_PATH.fullmatch(p.path)
+    return bool(m) and m.group(1) not in (".", "..")
 
 
 def parse_version(s: str) -> tuple[int, ...]:
@@ -43,7 +65,7 @@ def _asset_url(assets, name: str) -> str:
     for a in assets if isinstance(assets, list) else []:
         if isinstance(a, dict) and a.get("name") == name:
             url = a.get("browser_download_url")
-            if isinstance(url, str) and url.startswith(DOWNLOAD_PREFIX):
+            if is_release_asset_url(url):
                 return url
     return ""
 
@@ -91,12 +113,20 @@ def _expected_hash(sums: str, name: str) -> str | None:
     return None
 
 
+def _file_digest(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_CHUNK):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def download_and_verify(latest: dict, dest_dir: Path, get=requests.get) -> Path:
     """Download the installer into dest_dir and return it once its SHA-256 matches the release's
     SHA256SUMS. Earlier downloads in dest_dir are removed first."""
     bad_verify = UserError("No se pudo verificar la actualización", "Descárgala desde la página de Baitd")
     setup_url, sums_url = latest.get("setup_url") or "", latest.get("sums_url") or ""
-    if not (setup_url.startswith(DOWNLOAD_PREFIX) and sums_url.startswith(DOWNLOAD_PREFIX)):
+    if not (is_release_asset_url(setup_url) and is_release_asset_url(sums_url)):
         raise bad_verify
     version = ".".join(map(str, parse_version(str(latest.get("version", ""))))) or "nueva"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +152,8 @@ def download_and_verify(latest: dict, dest_dir: Path, get=requests.get) -> Path:
         except requests.RequestException as e:
             raise UserError("No se pudo descargar la actualización",
                             "Inténtalo de nuevo o descárgala desde la página de Baitd") from e
-        if digest.hexdigest() != expected:
+        # the bytes that get launched are the bytes on disk: hash the closed file again
+        if digest.hexdigest() != expected or _file_digest(part) != expected:
             raise bad_verify
         os.replace(part, final)
         return final

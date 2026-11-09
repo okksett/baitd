@@ -1618,9 +1618,15 @@
     const v = updateInfo.latest.version;
     const yes = await ask({ title: tr("update.install"), text: tr("settings.update_confirm", { v }), ok: tr("update.install") });
     if (!yes) return;
+    const btn = $("#update-install");
+    btn.disabled = true;
+    $("#update-text").textContent = tr("settings.update_downloading");
+    showError($("#top-error"), null);
     try {
       await api("POST", "/api/update/install", {});
     } catch (e) {
+      btn.disabled = false;
+      $("#update-text").textContent = tr("update.available", { v });
       showError($("#top-error"), e);
       return;
     }

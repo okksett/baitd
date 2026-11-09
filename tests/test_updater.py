@@ -201,3 +201,54 @@ def test_serve_starts_check_only_when_enabled(monkeypatch, tmp_data):
     from baitd import __version__
     assert _serve(monkeypatch, True) == [__version__]
     assert _serve(monkeypatch, False) == []
+
+
+@pytest.mark.parametrize("url", [
+    PFX + "../../../../attacker/repo/releases/download/v1/Baitd-Setup.exe",
+    PFX + "v1/../../../../attacker/repo/releases/download/v1/Baitd-Setup.exe",
+    PFX + "%2e%2e/%2e%2e/x/Baitd-Setup.exe",
+    PFX + "../Baitd-Setup.exe",
+    "https://evil.example/okksett/baitd/releases/download/v1/Baitd-Setup.exe",
+    "https://github.com/attacker/baitd/releases/download/v1/Baitd-Setup.exe",
+    PFX + "v1/extra/Baitd-Setup.exe",
+    PFX + "v1/Other.exe",
+    PFX + "v1/Baitd-Setup.exe?x=1",
+    PFX + "v1/Baitd-Setup.exe#frag",
+    "http://github.com/okksett/baitd/releases/download/v1/Baitd-Setup.exe",
+    "https://user@github.com/okksett/baitd/releases/download/v1/Baitd-Setup.exe",
+    "https://github.com:444/okksett/baitd/releases/download/v1/Baitd-Setup.exe",
+    "https://github.com.evil.example/okksett/baitd/releases/download/v1/Baitd-Setup.exe",
+    "", None,
+])
+def test_asset_url_rejected(url):
+    assert updater.is_release_asset_url(url) is False
+
+
+def test_asset_url_valid():
+    assert updater.is_release_asset_url(PFX + "v0.4.0/Baitd-Setup.exe")
+    assert updater.is_release_asset_url(PFX + "v0.4.0/SHA256SUMS")
+
+
+def test_dot_segment_url_is_dropped_by_check_and_refused_by_download(tmp_path):
+    evil = PFX + "../../../../attacker/repo/releases/download/v1/Baitd-Setup.exe"
+    latest = updater.check("0.3.0", get=lambda *a, **k: Resp(release(setup=evil)))
+    assert latest["setup_url"] == ""
+    calls = []
+    with pytest.raises(UserError):
+        updater.download_and_verify({"version": "0.4.0", "setup_url": evil, "sums_url": SUMS}, tmp_path,
+                                    get=fake_get("", calls=calls))
+    assert calls == []
+
+
+def test_part_altered_on_disk_is_rejected_and_deleted(tmp_path, monkeypatch):
+    good = hashlib.sha256(INSTALLER).hexdigest()
+    real = updater._file_digest
+
+    def tampered(path):
+        path.write_bytes(b"evil")  # swapped after the stream was hashed
+        return real(path)
+
+    monkeypatch.setattr(updater, "_file_digest", tampered)
+    with pytest.raises(UserError):
+        updater.download_and_verify(LATEST, tmp_path, get=fake_get(f"{good}  Baitd-Setup.exe"))
+    assert list(tmp_path.iterdir()) == []

@@ -292,6 +292,7 @@
   "update.download": "Download",
   "update.dismiss": "Hide this notice",
   "settings.update_confirm": "Baitd will close, install version {v} and open again. A video in progress goes back to the queue.",
+  "settings.update_downloading": "Downloading the update…",
   "settings.update_installing": "Installing the update… Baitd will reopen on its own.",
   "settings.check_updates": "Check for updates on startup",
   "settings.keep_sources": "Keep original videos",

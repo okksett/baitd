@@ -292,6 +292,7 @@
   "update.download": "Descargar",
   "update.dismiss": "Ocultar este aviso",
   "settings.update_confirm": "Se cerrará Baitd, se instalará la versión {v} y se volverá a abrir. Un video en curso volverá a la cola.",
+  "settings.update_downloading": "Descargando la actualización…",
   "settings.update_installing": "Instalando la actualización… Baitd se abrirá solo.",
   "settings.check_updates": "Buscar actualizaciones al abrir",
   "settings.keep_sources": "Guardar videos originales",

@@ -734,8 +734,13 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         latest = updater.state.get("latest")
         if not updater.can_install(latest):
             return jsonify(error="Esta instalación no se puede actualizar sola → Descarga la versión nueva desde la página de Baitd"), 409
-        path = updater.download_and_verify(latest, config.data_dir() / "actualizaciones")
-        updater.launch_installer(path)
+        if not updater.install_lock.acquire(blocking=False):
+            return jsonify(error=str(UserError("Ya se está descargando la actualización", "Espera a que termine"))), 409
+        try:
+            path = updater.download_and_verify(latest, config.data_dir() / "actualizaciones")
+            updater.launch_installer(path)
+        finally:
+            updater.install_lock.release()
 
         def stop() -> None:
             queue.stop()  # a running job goes back to pending

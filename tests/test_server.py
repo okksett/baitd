@@ -810,3 +810,34 @@ def test_install_failed_verification_does_not_launch(client, monkeypatch):
     monkeypatch.setattr(updater, "launch_installer", lambda p: pytest.fail("must not launch"))
     r = client.post("/api/update/install", json={})
     assert r.status_code == 400 and "verificar" in r.json["error"]
+
+
+def test_second_concurrent_install_gets_409(queue, monkeypatch, tmp_data):
+    from baitd import updater
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    monkeypatch.setattr(updater, "state", {"latest": {"version": "9.9.9", "setup_url": "u", "sums_url": "s"}})
+    monkeypatch.setattr(updater, "can_install", lambda l: True)
+
+    def slow(l, dest, **k):
+        calls.append("download")
+        started.set()
+        assert release.wait(5)
+        return dest / "s.exe"
+
+    monkeypatch.setattr(updater, "download_and_verify", slow)
+    monkeypatch.setattr(updater, "launch_installer", lambda p: calls.append("launch"))
+    app = server.create_app(queue)
+    app.test_client_class = LocalClient
+    first = {}
+    t = threading.Thread(target=lambda: first.update(r=app.test_client().post("/api/update/install", json={})))
+    t.start()
+    assert started.wait(3)
+    r2 = app.test_client().post("/api/update/install", json={})
+    assert r2.status_code == 409 and "Ya se está descargando la actualización" in r2.json["error"]
+    assert calls == ["download"]  # the second request did not touch the first
+    release.set()
+    t.join(5)
+    assert first["r"].status_code == 200 and calls == ["download", "launch"]
+    assert updater.install_lock.acquire(blocking=False)  # released afterwards
+    updater.install_lock.release()
