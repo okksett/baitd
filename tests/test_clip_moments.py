@@ -10,6 +10,7 @@ from baitd.clip import moments
 from baitd.clip.models import ClipProfile, Moment, Transcript
 from baitd.config import default_profile
 from baitd.ffmpeg import JobCancelled, ffmpeg_exe
+from baitd.llm._http import ContentBlocked
 from baitd.models import UserError, Word
 
 
@@ -54,12 +55,12 @@ OPTS = ClipProfile(min_s=10, max_s=30)
 
 
 def test_windows_overlap_and_cover_all():
-    t = Transcript("es", [Word("a", 0, 1)], duration=1000.0)
+    t = Transcript("es", [Word("a", 0, 1)], duration=3000.0)
     w = moments.windows(t)
-    assert moments.WINDOW_S == 480.0 and moments.OVERLAP_S == 60.0
-    assert w[0] == (0.0, 480.0)
-    assert w[1][0] == 420.0 and w[0][1] - w[1][0] == 60.0  # overlap
-    assert w[-1][1] == 1000.0
+    assert moments.WINDOW_S == 1200.0 and moments.OVERLAP_S == 60.0
+    assert w[0] == (0.0, 1200.0)
+    assert w[1][0] == 1140.0 and w[0][1] - w[1][0] == 60.0  # overlap
+    assert w[-1][1] == 3000.0
     for (_, e1), (s2, _) in zip(w, w[1:]):
         assert s2 < e1  # no gaps
     assert moments.windows(Transcript("es", [], duration=100.0)) == [(0.0, 100.0)]
@@ -163,7 +164,7 @@ def test_bad_json_retried_then_window_skipped(make_wav, caplog):
 
     calls.clear()
     # a second window of garbage is skipped with a warning; the other window still counts
-    long = make_transcript(n_sentences=200)  # ~ 2 windows
+    long = make_transcript(n_sentences=600)  # ~ 2 windows
     n = len(moments.windows(long))
     assert n >= 2
 
@@ -187,8 +188,45 @@ def test_zero_moments_raises_no_speech(make_wav):
     assert "No se encontraron momentos" in e.value.cause
 
 
+def test_ideas_scale_with_window_length():
+    assert moments.ideas_for(1200) == 7
+    assert moments.ideas_for(480) == 3 and moments.ideas_for(30) == 3
+    assert "up to 7 moments" in moments.build_prompt("[00:00] hola", OPTS, "es", moments.ideas_for(1200))
+
+
+def test_blocked_window_is_retried_in_pieces(make_wav, caplog):
+    t = make_transcript(n_sentences=600)  # 2 windows; s10 (26 s) lies only in the first piece of window 1
+    assert len(moments.windows(t)) == 2
+    pieces = moments._spans(*moments.windows(t)[0], moments.BLOCKED_WINDOW_S)
+    calls = []
+
+    def complete(p):
+        calls.append(p)
+        if "s10w0" in p:
+            raise ContentBlocked("Gemini bloqueó el texto con su filtro de contenido (PROHIBITED_CONTENT)", "x")
+        return reply(item(sent_start(500), sent_end(505)))
+
+    with caplog.at_level(logging.WARNING):
+        out = moments.find_moments(t, make_wav(2), OPTS, default_profile(), {}, 5, threading.Event(),
+                                   lambda f: None, complete=complete)
+    assert out  # the rest of the video still yields moments
+    assert len(calls) == 2 + len(pieces)  # both windows, then window 1 again in pieces
+    assert "up to 3 moments" in calls[1]  # pieces ask for fewer ideas
+    msgs = [r.message for r in caplog.records]
+    assert any("se reintenta en partes" in m for m in msgs) and any("se omite" in m for m in msgs)
+
+
+def test_everything_blocked_explains_the_filter(make_wav):
+    def complete(p):
+        raise ContentBlocked("Gemini bloqueó el texto con su filtro de contenido (PROHIBITED_CONTENT)", "x")
+
+    with pytest.raises(ContentBlocked):
+        moments.find_moments(make_transcript(), make_wav(2), OPTS, default_profile(), {}, 5, threading.Event(),
+                             lambda f: None, complete=complete)
+
+
 def test_progress_per_window_and_cancel(make_wav):
-    t = make_transcript(n_sentences=200)
+    t = make_transcript(n_sentences=600)
     n = len(moments.windows(t))
     prog = []
     moments.find_moments(t, make_wav(2), OPTS, default_profile(), {}, 5, threading.Event(), prog.append,

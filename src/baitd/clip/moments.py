@@ -13,17 +13,24 @@ from typing import Callable
 
 from .. import ffmpeg, llm
 from ..ffmpeg import JobCancelled
+from ..llm._http import ContentBlocked
 from ..models import _SENTENCE_END, Profile, Word
 from .models import KINDS, ClipProfile, Moment, Transcript
 from .transcribe import no_speech
 
-__all__ = ["WINDOW_S", "OVERLAP_S", "windows", "build_prompt", "parse_moments", "snap_to_sentences",
+__all__ = ["WINDOW_S", "BLOCKED_WINDOW_S", "OVERLAP_S", "windows", "ideas_for", "build_prompt", "parse_moments", "snap_to_sentences",
            "energy_curve", "energy_bonus", "find_moments"]
 
 log = logging.getLogger(__name__)
 
-WINDOW_S = 480.0
+# One AI request per window. 20 min keeps a 2 h video at ~7 requests (Gemini's free tier allows
+# 20 a day per model); a window the provider's content filter blocks is retried in BLOCKED_WINDOW_S
+# pieces so only the sensitive stretch is lost. Measured on a 1 h interview: 8 min windows gave 9
+# requests and 14 candidates, 20 min windows 4 requests but only 6 candidates, hence IDEAS_EVERY_S.
+WINDOW_S = 1200.0
+BLOCKED_WINDOW_S = 480.0
 OVERLAP_S = 60.0
+IDEAS_EVERY_S = 180.0  # ask for about one candidate moment per 3 minutes of transcript
 PAUSE_S = 0.8  # a silence this long ends a sentence even without punctuation (ruling T5a)
 SILENCE_LUFS = -70.0
 MAX_BONUS = 15
@@ -83,23 +90,35 @@ def _parse_time(v) -> float:
 def windows(t: Transcript) -> list[tuple[float, float]]:
     """Overlapping (start, end) windows of WINDOW_S seconds, stepping WINDOW_S - OVERLAP_S, covering the whole transcript."""
     dur = max(t.duration, t.words[-1].end if t.words else 0.0)
+    return _spans(0.0, dur, WINDOW_S)
+
+
+def _spans(w0: float, w1: float, size: float) -> list[tuple[float, float]]:
+    """Overlapping (start, end) pieces of `size` seconds covering [w0, w1], stepping size - OVERLAP_S."""
     out: list[tuple[float, float]] = []
-    start = 0.0
+    start = w0
     while True:
-        end = min(start + WINDOW_S, dur)
+        end = min(start + size, w1)
         out.append((start, end))
-        if end >= dur:
+        if end >= w1:
             return out
-        start += WINDOW_S - OVERLAP_S
+        start += size - OVERLAP_S
 
 
-def build_prompt(lines: str, opts: ClipProfile, language: str) -> str:
+def ideas_for(seconds: float) -> int:
+    """How many candidate moments to ask for in a window this long (at least 3)."""
+    return max(3, round(seconds / IDEAS_EVERY_S))
+
+
+def build_prompt(lines: str, opts: ClipProfile, language: str, ideas: int = 3) -> str:
     kinds = KINDS if opts.kind == "todos" else (opts.kind,)
     return "\n".join([
         "You find the best moments of a long video to cut into viral vertical short clips "
         "(TikTok, Reels, Shorts).",
         "Below is the transcript, one sentence per line, as [mm:ss] text (h:mm:ss after the first hour).",
         f"Pick the moments that would work best as standalone clips of {opts.min_s} to {opts.max_s} seconds.",
+        f"Propose up to {ideas} moments from different parts of the transcript, best first; "
+        "fewer is fine, never pad the list with weak ones.",
         "Score each from 0 to 100 on these criteria:",
         "- the first sentence hooks the viewer;",
         "- the clip is understandable without any context from the rest of the video;",
@@ -304,15 +323,34 @@ def find_moments(t: Transcript, audio: Path, opts: ClipProfile, profile: Profile
     sentences = _sentences(t.words)
     wins = windows(t)
     found: list[Moment] = []
-    for i, (w0, w1) in enumerate(wins):
+    blocked: list[ContentBlocked] = []
+
+    def ask_span(w0: float, w1: float) -> None:
         if cancel.is_set():
             raise JobCancelled()
         lines = _window_lines(sentences, t.words, w0, w1)
-        if lines:
-            for m in _ask(build_prompt(lines, opts, t.language), t, opts, complete):
-                m.score = min(100, m.score + energy_bonus(m, curve))
-                found.append(m)
+        if not lines:
+            return
+        try:
+            asked = _ask(build_prompt(lines, opts, t.language, ideas_for(w1 - w0)), t, opts, complete)
+        except ContentBlocked as e:  # one sensitive stretch must not sink the whole video
+            if w1 - w0 > BLOCKED_WINDOW_S:
+                log.warning("La IA bloqueó el tramo %s-%s; se reintenta en partes", _ts(w0), _ts(w1))
+                for a, b in _spans(w0, w1, BLOCKED_WINDOW_S):
+                    ask_span(a, b)
+                return
+            log.warning("La IA bloqueó el tramo %s-%s por su filtro de contenido; se omite", _ts(w0), _ts(w1))
+            blocked.append(e)
+            return
+        for m in asked:
+            m.score = min(100, m.score + energy_bonus(m, curve))
+            found.append(m)
+
+    for i, (w0, w1) in enumerate(wins):
+        ask_span(w0, w1)
         on_progress((i + 1) / len(wins))
     if not found:
+        if blocked:
+            raise blocked[-1]
         raise no_speech()
     return sorted(_dedupe(found), key=lambda m: -m.score)[:want]
