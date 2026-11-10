@@ -345,6 +345,71 @@ def test_request_keeps_rate_limit_message_after_retries(monkeypatch):
     assert "límite de peticiones" in e.value.cause
 
 
+def gemini_429(quota_id: str, retry_delay: str, value: str = "20"):
+    """Shape of a real Gemini 429 (captured 2026-11-10), minus the help link."""
+    return FakeResp(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "quota", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+            {"quotaId": quota_id, "quotaValue": value,
+             "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests"}]},
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry_delay},
+    ]}})
+
+
+def test_daily_quota_is_not_retried_and_says_so(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or gemini_429(
+        "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "84005s"))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Gemini", "gemini-3.6-flash", retry=True)
+    assert len(calls) == 1
+    assert e.value.cause == ("Se acabó la cuota de Gemini para el modelo 'gemini-3.6-flash' "
+                             "(20 peticiones al día en el plan gratis)")
+    assert "otro modelo en Ajustes" in e.value.fix
+
+
+def test_per_minute_quota_waits_what_gemini_asks(monkeypatch):
+    replies = iter([gemini_429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "37.2s"),
+                    FakeResp(200, {"ok": 1})])
+    delays = []
+    monkeypatch.setattr(_http, "_sleep", lambda seconds, cancel=None: delays.append(seconds))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: next(replies))
+    assert _http.request("post", "http://x", "Gemini", "m", retry=True).status_code == 200
+    assert delays == [39]
+
+
+def test_long_retry_delay_is_not_waited(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(429, {"error": {
+        "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "3600s"}]}}))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "Gemini", "m", retry=True)
+    assert len(calls) == 1 and e.value.cause.startswith("Se acabó la cuota de Gemini")
+
+
+def test_openai_insufficient_quota_is_not_retried(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or FakeResp(
+        429, {"error": {"code": "insufficient_quota", "type": "insufficient_quota", "message": "x"}}))
+    with pytest.raises(UserError) as e:
+        _http.request("post", "http://x", "OpenAI", "gpt-4o-mini", retry=True)
+    assert len(calls) == 1
+    assert e.value.cause == "Se acabó la cuota de OpenAI para el modelo 'gpt-4o-mini'"
+
+
+@pytest.mark.parametrize("body", [
+    {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {"promptTokenCount": 7993}},
+    {"candidates": [{"finishReason": "SAFETY", "content": {}}]},
+])
+def test_gemini_content_filter_is_typed(monkeypatch, body):
+    from baitd.llm import gemini
+    from baitd.llm._http import ContentBlocked
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp(200, body))
+    with pytest.raises(ContentBlocked) as e:
+        gemini.complete("x", "gemini-3.6-flash", {"gemini_key": "k"})
+    assert "filtro de contenido" in e.value.cause and "otro proveedor" in e.value.fix
+
+
 @pytest.mark.parametrize("status", [404, 401])
 def test_request_does_not_retry_404_or_401(monkeypatch, status):
     calls = []
