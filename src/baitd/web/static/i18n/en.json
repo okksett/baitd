@@ -323,7 +323,6 @@
   "settings.ytdlp_running": "Updating yt-dlp…",
   "settings.ytdlp_done": "yt-dlp {version} installed → Restart Baitd to use it",
   "err.clip_source": "The video is missing → Paste a link or upload a file",
-  "err.clip_url": "That link is not valid → Paste an http or https link",
   "err.clip_count": "Invalid number of clips → Choose between 1 and 20",
   "err.clip_len": "Invalid length → Use 10 to 180 s, with the minimum not above the maximum",
   "err.upload": "The upload failed → Upload the file again",

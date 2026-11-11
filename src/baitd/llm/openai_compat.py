@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from ..models import UserError
+from . import ollama
 from ._http import post_json, unexpected
 
 OPENAI_BASE = "https://api.openai.com/v1"
@@ -20,6 +21,8 @@ def complete(prompt: str, model: str, settings: dict, provider: str = "openai",
         label, base, key = "el servidor compatible", settings.get("compat_base_url", "").rstrip("/"), settings.get("compat_key", "")
         if not base:
             raise UserError("Falta la dirección del servidor compatible", "Indícala en Ajustes")
+        if ollama.is_ollama(base):  # its own API can size the context; /v1 cannot
+            return ollama.complete(prompt, model, base, key, cancel=cancel)
     if key:
         headers["Authorization"] = f"Bearer {key}"
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.8}

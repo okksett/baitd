@@ -34,6 +34,35 @@ def test_invalid_links(url):
         sources.check_url(url)
 
 
+@pytest.mark.parametrize("pasted, link", [
+    ("youtube.com/watch?v=abc", "https://youtube.com/watch?v=abc"),
+    ("www.youtube.com/watch?v=abc&t=10s", "https://www.youtube.com/watch?v=abc&t=10s"),
+    ("youtu.be/abc", "https://youtu.be/abc"),
+    ("m.youtube.com/watch?v=abc", "https://m.youtube.com/watch?v=abc"),
+    ("  https://youtu.be/abc?si=x  ", "https://youtu.be/abc?si=x"),
+    ("Mira este video https://youtu.be/abc", "https://youtu.be/abc"),
+    ("Mira este video: https://youtu.be/abc.", "https://youtu.be/abc"),
+    ("https://youtu.be/abc\nhttps://youtu.be/def", "https://youtu.be/abc"),
+    ("(https://www.youtube.com/watch?v=abc)", "https://www.youtube.com/watch?v=abc"),
+    ("HTTPS://WWW.YOUTUBE.COM/watch?v=abc", "HTTPS://WWW.YOUTUBE.COM/watch?v=abc"),
+])
+def test_pasted_links_are_normalized_and_accepted(pasted, link):
+    assert sources.normalize_url(pasted) == link
+    sources.check_url(sources.normalize_url(pasted))
+
+
+@pytest.mark.parametrize("pasted", ["ftp://example.com/a", "file:///c:/a.mp4", "javascript:alert(1)",
+                                    "nonsense", "", "hola que tal"])
+def test_normalizing_does_not_rescue_non_links(pasted):
+    with pytest.raises(UserError, match="no es válido"):
+        sources.check_url(sources.normalize_url(pasted))
+
+
+def test_normalized_shorts_are_still_blocked():
+    with pytest.raises(UserError, match="TikTok/Reels/Shorts"):
+        sources.check_url(sources.normalize_url("youtube.com/shorts/abc"))
+
+
 def test_normal_links_pass():
     sources.check_url("https://www.youtube.com/watch?v=abc")
     sources.check_url("https://www.instagram.com/p/abc/")

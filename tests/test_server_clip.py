@@ -230,6 +230,14 @@ def test_clips_auto_and_review_create_jobs(client, profile_id, queue, make_mp4):
     assert b["kind"] == "clip_analyze" and b["payload"]["source"] == {"source_id": src.id}
 
 
+def test_clips_accepts_links_pasted_without_https_or_inside_text(client, profile_id, queue):
+    for pasted in ("youtu.be/abc", "Mira este video https://youtu.be/abc."):
+        r = client.post("/api/clips", json={"profile_id": profile_id, "mode": "auto", "url": pasted})
+        assert r.status_code == 200, r.get_json()
+        job = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])
+        assert job["payload"]["source"] == {"url": "https://youtu.be/abc"}
+
+
 def test_clips_rejects_blocked_url_and_bad_source_args(client, profile_id, make_mp4):
     def post(**kw):
         return client.post("/api/clips", json={"profile_id": profile_id, "mode": "auto", **kw})

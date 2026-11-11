@@ -1059,8 +1059,7 @@
       if (problem) throw new Error(problem);
       if (state.clip.source) body.source_id = state.clip.source.source_id;
       else if (!url) throw new Error(tr("err.clip_source"));
-      else if (!/^https?:\/\/\S+$/i.test(url)) throw new Error(tr("err.clip_url"));
-      else body.url = url;
+      else body.url = url; // the server fixes "youtu.be/x" or "Mira este video https://…" and says if it is no link
       body.overrides = { ...state.current.clipping }; // what the screen shows, even if the save lags or failed
       setBusy(true);
       await flushSave();

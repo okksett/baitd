@@ -8,6 +8,13 @@ def no_real_waits(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_ollama(monkeypatch):
+    """No test asks a real Ollama whether it is there (a developer may have one running)."""
+    monkeypatch.setattr("baitd.llm.ollama._probe", lambda root: False)
+    monkeypatch.setattr("baitd.llm.ollama._found", set())
+
+
+@pytest.fixture(autouse=True)
 def installer_not_launched(monkeypatch):
     """A test that launches the (fake) installer must not leave later tests with a 409."""
     monkeypatch.setattr("baitd.updater.installing", False)
