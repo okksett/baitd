@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -58,6 +59,33 @@ def import_ytdlp():
             sys.path.insert(0, str(z))
             importlib.invalidate_caches()
     return importlib.import_module("yt_dlp")
+
+
+def deno_path() -> str | None:
+    """The Deno yt-dlp runs YouTube's JavaScript challenges with: the copy inside the frozen app, the
+    `deno` Python package's, or one on PATH. None when there is none."""
+    name = "deno.exe" if os.name == "nt" else "deno"
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle and (Path(bundle) / "deno" / name).is_file():
+        return str(Path(bundle) / "deno" / name)
+    try:
+        import deno
+        found = deno.find_deno_bin()
+        if found and Path(found).is_file():
+            return str(found)
+    except Exception:  # package missing, or no binary for this platform
+        pass
+    return shutil.which("deno")
+
+
+def js_runtime_opts() -> dict:
+    """yt-dlp options for YouTube's JavaScript challenges. Without a runtime yt-dlp falls back to one
+    client, whose downloads YouTube answers with 403 on some connections. "ejs:github" lets a newer
+    yt-dlp (the user can update it) fetch the solver scripts it needs if the bundled ones are too old."""
+    path = deno_path()
+    if not path:
+        return {}
+    return {"js_runtimes": {"deno": {"path": path}}, "remote_components": ["ejs:github"]}
 
 
 def _stream(url: str, cancel: threading.Event | None, sink) -> None:

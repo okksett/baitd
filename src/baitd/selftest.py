@@ -166,6 +166,25 @@ def _check_clip_deps() -> None:
         ytdlp_loader.import_ytdlp()
     except Exception as e:
         raise SelftestError(f"yt-dlp no se puede cargar: {type(e).__name__}: {e}") from e
+    _check_deno(ytdlp_loader.deno_path())
+
+
+def _check_deno(path: str | None) -> None:
+    """YouTube downloads need Deno (JS challenges) and yt-dlp's solver scripts: both ship with the app."""
+    if not path:
+        raise SelftestError("Falta Deno (YouTube lo necesita para descargar)")
+    try:
+        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SelftestError(f"Deno no arranca: {type(e).__name__}: {e}") from e
+    if out.returncode != 0 or not out.stdout.startswith("deno "):
+        raise SelftestError(f"Deno no arranca (código {out.returncode})")
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        from yt_dlp_ejs.yt import solver  # noqa: F401
+    except Exception as e:
+        raise SelftestError(f"Faltan los scripts de yt-dlp para YouTube: {type(e).__name__}: {e}") from e
 
 
 def run_selftest(workdir: Path | None = None) -> float:

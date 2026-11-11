@@ -275,6 +275,38 @@ def test_download_error_message_has_no_url(fake_ytdlp, tmp_data):
     assert list((tmp_data / "fuentes").iterdir()) == []
 
 
+def test_forbidden_download_explains_instead_of_suggesting_an_update(fake_ytdlp, tmp_data):
+    fake_ytdlp.error = fake_ytdlp.utils.DownloadError(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    with pytest.raises(UserError) as e:
+        _go()
+    assert e.value.cause == "YouTube bloqueó la descarga (error 403)"
+    assert "Reintentar" in e.value.fix and "cookies.txt" in e.value.fix and "Actualiza" not in e.value.fix
+
+
+def test_youtube_gets_deno_for_its_js_challenges(fake_ytdlp, tmp_data, monkeypatch):
+    monkeypatch.setattr(ytdlp_loader, "deno_path", lambda: "/app/deno/deno")
+    _go()
+    assert fake_ytdlp.opts["js_runtimes"] == {"deno": {"path": "/app/deno/deno"}}
+    assert fake_ytdlp.opts["remote_components"] == ["ejs:github"]
+
+
+def test_no_deno_leaves_yt_dlp_on_its_defaults(fake_ytdlp, tmp_data, monkeypatch):
+    monkeypatch.setattr(ytdlp_loader, "deno_path", lambda: None)
+    _go()
+    assert "js_runtimes" not in fake_ytdlp.opts and "remote_components" not in fake_ytdlp.opts
+
+
+def test_deno_path_prefers_the_copy_inside_the_frozen_app(tmp_path, monkeypatch):
+    import os
+    import sys
+    name = "deno.exe" if os.name == "nt" else "deno"
+    (tmp_path / "deno").mkdir()
+    (tmp_path / "deno" / name).write_bytes(b"x")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert ytdlp_loader.deno_path() == str(tmp_path / "deno" / name)
+
+
 def test_download_error_long_message_is_truncated(fake_ytdlp, tmp_data):
     fake_ytdlp.error = fake_ytdlp.utils.DownloadError("ERROR: " + "boom " * 100)
     with pytest.raises(UserError) as e:

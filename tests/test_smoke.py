@@ -55,6 +55,20 @@ def test_selftest_checks_clip_dependencies(monkeypatch):
     assert calls == ["yunet", "ytdlp"]
 
 
+def test_selftest_runs_the_bundled_deno():
+    from baitd.clip import ytdlp_loader
+    path = ytdlp_loader.deno_path()
+    assert path, "the deno package is a dependency, so a Deno must be found"
+    selftest._check_deno(path)  # runs `deno --version` and imports yt-dlp's solver scripts
+
+
+def test_selftest_fails_without_deno(tmp_path):
+    with pytest.raises(selftest.SelftestError, match="Falta Deno"):
+        selftest._check_deno(None)
+    with pytest.raises(selftest.SelftestError, match="Deno no arranca"):
+        selftest._check_deno(str(tmp_path / "no-such-deno.exe"))
+
+
 def test_selftest_fails_when_detector_breaks(monkeypatch):
     from baitd.clip import framing
     def boom(size):
