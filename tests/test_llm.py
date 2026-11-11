@@ -410,6 +410,111 @@ def test_gemini_content_filter_is_typed(monkeypatch, body):
     assert "filtro de contenido" in e.value.cause and "otro proveedor" in e.value.fix
 
 
+def _ollama_up(monkeypatch, reply=None, status=200):
+    from baitd.llm import ollama
+    monkeypatch.setattr(ollama, "_probe", lambda root: root == "http://localhost:11434")
+    sent = []
+
+    def post(url, **kw):
+        sent.append((url, kw))
+        return FakeResp(status, reply if reply is not None else {"message": {"content": VALID}})
+    monkeypatch.setattr(requests, "post", post)
+    return sent
+
+
+def test_compat_address_that_is_ollama_uses_its_native_api(monkeypatch):
+    sent = _ollama_up(monkeypatch)
+    s = generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat", "llm_model": "qwen2.5"})
+    assert s.title == "Leer cambia tu mente"
+    url, kw = sent[0]
+    assert url == "http://localhost:11434/api/chat"  # /v1 dropped: the native API lives at the root
+    body = kw["json"]
+    assert body["model"] == "qwen2.5" and body["stream"] is False and body["format"] == "json"
+    assert body["options"]["num_ctx"] >= 4096
+    assert kw["timeout"] == 900  # a local model may need minutes
+
+
+def test_ollama_context_fits_a_20_minute_clipping_window(monkeypatch):
+    from baitd.llm import ollama
+    window = "x" * 23610  # a real 20 min window prompt: 23,610 chars, ~8,600 tokens
+    assert ollama.context_for(window) >= 8600 + 2048
+    assert ollama.context_for(window) % 1024 == 0
+    assert ollama.context_for("hola") == 4096 and ollama.context_for("x" * 10 ** 6) == 32768
+    sent = _ollama_up(monkeypatch, {"message": {"content": "{}"}})
+    llm.complete(window, profile(), {**SETTINGS, "llm_provider": "compat"})
+    assert sent[0][1]["json"]["options"]["num_ctx"] == ollama.context_for(window)
+
+
+def test_ollama_is_detected_once_and_other_servers_keep_v1(monkeypatch):
+    from baitd.llm import ollama
+    probes = []
+    monkeypatch.setattr(ollama, "_probe", lambda root: probes.append(root) or root.endswith(":11434"))
+    urls = []
+    monkeypatch.setattr(requests, "post", lambda url, **kw: urls.append(url) or (
+        FakeResp(200, {"message": {"content": "{}"}}) if "/api/chat" in url else openai_reply("{}")))
+    for _ in range(2):
+        llm.complete("p", profile(), {**SETTINGS, "llm_provider": "compat"})
+    llm.complete("p", profile(), {**SETTINGS, "llm_provider": "compat", "compat_base_url": "http://lmstudio:1234/v1"})
+    assert urls == ["http://localhost:11434/api/chat"] * 2 + ["http://lmstudio:1234/v1/chat/completions"]
+    assert probes.count("http://localhost:11434") == 1  # a yes is remembered
+
+
+def test_ollama_cloud_keeps_the_v1_path(monkeypatch):
+    from baitd.llm import ollama
+    monkeypatch.setattr(ollama, "_probe", lambda root: True)  # ollama.com does answer /api/version
+    urls = []
+    monkeypatch.setattr(requests, "post", lambda url, **kw: urls.append(url) or openai_reply("{}"))
+    llm.complete("p", profile(), {**SETTINGS, "llm_provider": "compat", "compat_base_url": "https://ollama.com/v1",
+                                  "compat_key": "k"})
+    assert urls == ["https://ollama.com/v1/chat/completions"]
+
+
+def test_ollama_missing_model_says_how_to_get_it(monkeypatch):
+    _ollama_up(monkeypatch, {"error": "model 'qwen9' not found"}, status=404)
+    with pytest.raises(NotFoundError) as e:
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat", "llm_model": "qwen9"})
+    assert "qwen9" in e.value.cause and e.value.fix == "Descárgalo con: ollama pull qwen9"
+
+
+def test_cancel_does_not_wait_for_a_slow_ollama(monkeypatch):
+    import time
+    from baitd.llm import ollama
+    monkeypatch.setattr(ollama, "_found", {"http://localhost:11434"})
+    monkeypatch.setattr(ollama, "CANCEL_POLL_S", 0.05)
+    release = threading.Event()
+
+    def slow_post(*a, **k):
+        release.wait(5)  # a local model still thinking
+        return FakeResp(200, {"message": {"content": "{}"}})
+    monkeypatch.setattr(requests, "post", slow_post)
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(JobCancelled):
+        llm.complete("p", profile(), {**SETTINGS, "llm_provider": "compat"}, cancel=cancel)
+    assert time.monotonic() - t0 < 2
+    release.set()
+
+
+def test_ollama_errors_reach_the_caller_through_the_worker_thread(monkeypatch):
+    _ollama_up(monkeypatch, {"error": "model 'm' not found"}, status=404)
+    with pytest.raises(NotFoundError):
+        llm.complete("p", profile(), {**SETTINGS, "llm_provider": "compat", "llm_model": "m"},
+                     cancel=threading.Event())
+
+
+def test_ollama_down_says_to_open_it(monkeypatch):
+    from baitd.llm import ollama
+    monkeypatch.setattr(ollama, "_found", {"http://localhost:11434"})  # was up a moment ago
+
+    def boom(*a, **k):
+        raise requests.ConnectionError("refused")
+    monkeypatch.setattr(requests, "post", boom)
+    with pytest.raises(UserError) as e:
+        generate_script("x", profile(), {**SETTINGS, "llm_provider": "compat"})
+    assert e.value.cause == "Sin conexión con Ollama" and e.value.fix == "¿Está abierto Ollama?"
+
+
 @pytest.mark.parametrize("status", [404, 401])
 def test_request_does_not_retry_404_or_401(monkeypatch, status):
     calls = []

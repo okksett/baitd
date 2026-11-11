@@ -66,6 +66,24 @@ def _too_long() -> UserError:
 
 # ---- links ----
 
+_LINK_IN_TEXT = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_BARE_ADDRESS = re.compile(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/?#]\S*)?$", re.IGNORECASE)
+_TRAILING = ".,;:!?)]}»”’"
+
+
+def normalize_url(text: str) -> str:
+    """The link people meant, from what they pasted: the first http(s) link inside a text ("Mira este
+    video https://youtu.be/x", several lines, a trailing period), or a bare address with https://
+    added ("youtube.com/watch?v=x", "youtu.be/x"). Anything else comes back stripped, for check_url."""
+    text = (text or "").strip()
+    found = _LINK_IN_TEXT.search(text)
+    if found:
+        return found.group(0).rstrip(_TRAILING)
+    if _BARE_ADDRESS.match(text):
+        return "https://" + text.rstrip(_TRAILING)
+    return text
+
+
 def check_url(url: str) -> None:
     """Reject non-http(s) links and TikTok / Instagram Reels / YouTube Shorts."""
     try:

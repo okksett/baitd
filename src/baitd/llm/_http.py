@@ -96,7 +96,7 @@ def _quota_hint(resp: requests.Response) -> tuple[float | None, bool, str]:
 
 def request(method: str, url: str, provider: str, model: str = "", *, noun: str = "el modelo",
             connect_fix: str | None = None, not_found_fix: str | None = None,
-            retry: bool = False, cancel: threading.Event | None = None,
+            retry: bool = False, cancel: threading.Event | None = None, timeout: float = TIMEOUT,
             **kwargs) -> requests.Response:
     """Send an HTTP request (requests.<method>) and return the 200 response; map failures to UserError.
 
@@ -114,7 +114,7 @@ def request(method: str, url: str, provider: str, model: str = "", *, noun: str 
             if cancel is not None and cancel.is_set():
                 raise JobCancelled()
         try:
-            resp = getattr(requests, method)(url, timeout=TIMEOUT, **kwargs)
+            resp = getattr(requests, method)(url, timeout=timeout, **kwargs)
         except requests.Timeout:
             raise UserError(f"{_cap(provider)} tardó demasiado en responder",
                             "Inténtalo de nuevo o prueba otro modelo") from None

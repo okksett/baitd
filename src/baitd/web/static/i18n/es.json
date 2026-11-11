@@ -323,7 +323,6 @@
   "settings.ytdlp_running": "Actualizando yt-dlp…",
   "settings.ytdlp_done": "yt-dlp {version} instalado → Reinicia Baitd para usarlo",
   "err.clip_source": "Falta el video → Pega un enlace o sube un archivo",
-  "err.clip_url": "Ese enlace no es válido → Pega un enlace http o https",
   "err.clip_count": "Número de clips no válido → Elige entre 1 y 20",
   "err.clip_len": "Duración no válida → Usa entre 10 y 180 s, con el mínimo menor o igual que el máximo",
   "err.upload": "La subida falló → Vuelve a subir el archivo",

@@ -695,8 +695,9 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
         if url is not None:
             if not isinstance(url, str) or not url.strip():
                 raise UserError("Ese enlace no es válido", "Pega un enlace http o https de YouTube u otro sitio")
+            url = clip_sources.normalize_url(url)  # "youtu.be/x", "Mira este video https://…"
             clip_sources.check_url(url)
-            source = {"url": url.strip()}
+            source = {"url": url}
         else:
             source = {"source_id": clip_sources.load_source(source_id).id}
         job_id = queue.add_clip_job("clip_auto" if mode == "auto" else "clip_analyze",
