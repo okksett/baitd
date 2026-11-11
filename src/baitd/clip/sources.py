@@ -182,6 +182,17 @@ def _bot_check(err: BaseException, cookies_set: bool) -> UserError | None:
                      "En Ajustes, sección Clipping, elige tu navegador o un archivo cookies.txt con tu sesión de YouTube")
 
 
+def _forbidden(err: BaseException) -> UserError | None:
+    """YouTube refused the video data (HTTP 403). Updating yt-dlp rarely helps here; retrying later,
+    a signed-in session or uploading the file does."""
+    msg = str(err).lower()
+    if "403" not in msg and "forbidden" not in msg:
+        return None
+    return UserError("YouTube bloqueó la descarga (error 403)",
+                     "Pulsa Reintentar en unos minutos; si sigue, elige tu navegador o un cookies.txt "
+                     "en Ajustes, sección Clipping, o sube el archivo")
+
+
 def _cookie_opts(settings: dict, tmp_dir: Path) -> tuple[dict, str]:
     """yt-dlp options for the user's YouTube session and the browser in use ("" when none).
 
@@ -237,6 +248,7 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
         "outtmpl": str(folder / "source.%(ext)s"), "noplaylist": True, "playlist_items": "1",
         "quiet": True, "no_warnings": True, "noprogress": True, "socket_timeout": 20, "retries": 3,
         "progress_hooks": [hook],
+        **ytdlp_loader.js_runtime_opts(),
     }
     failures = (ytdlp.utils.DownloadError, getattr(ytdlp.utils, "YoutubeDLError", ytdlp.utils.DownloadError))
     with tempfile.TemporaryDirectory(prefix="baitd-cookies-") as cookie_tmp:
@@ -275,7 +287,7 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
             if cancel.is_set():  # yt-dlp may have wrapped the hook's JobCancelled in its own error
                 raise JobCancelled() from e
             if isinstance(e, (*failures, OSError)):
-                friendly = _cookie_error(e, browser) or _bot_check(e, bool(cookie_opts))
+                friendly = _cookie_error(e, browser) or _bot_check(e, bool(cookie_opts)) or _forbidden(e)
                 if friendly is not None:
                     raise friendly from None
             if isinstance(e, failures):
