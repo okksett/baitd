@@ -21,7 +21,7 @@ from ..models import JobCancelled, Profile, ProgressFn, RenderOptions, UserError
 from ..pipeline import _create_output_dir
 from . import framing, sources, transcribe
 from .models import FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
-from .moments import find_moments
+from .moments import _sentences, find_moments
 from .render import clip_fps, render_clip
 
 __all__ = ["CLIP_STEPS", "CLIP_STEP_LABELS", "MODEL_STEP", "CLIP_JOB_KINDS", "ClipProviders", "analyses_dir",
@@ -346,8 +346,12 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
             faces = None
             if providers.detect_faces is not None and mode == "cara":
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
+            # sentence spans, clip-relative: with two people in a shot the crop follows whoever talks
+            span = [w for w in words if w.end > m.start and w.start < m.end]
+            talk = [(s0 - m.start, s1 - m.start) for s0, s1, _, _ in _sentences(span)] if span else None
             try:
-                plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces))
+                plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces,
+                                               talk=talk))
             except (JobCancelled, UserError):
                 raise
             except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip
