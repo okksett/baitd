@@ -273,7 +273,8 @@ def _listed_clips(folder: Path) -> list[dict]:
     return clips
 
 
-def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> Flask:
+def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
+               focus: Callable[[], bool] | None = None) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_DIR / "templates"),
                 static_folder=str(WEB_DIR / "static"), static_url_path="/static")
     app.json.ensure_ascii = False
@@ -812,5 +813,11 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None) -> F
                 shutdown()
         threading.Timer(0.3, stop).start()  # after this response has been sent
         return jsonify(ok=True)
+
+    @app.post("/api/focus")
+    def post_focus():
+        """Baitd was opened again: bring the window to the front. ok=False when it runs in a browser,
+        so the second start opens the browser instead."""
+        return jsonify(ok=bool(focus and focus()))
 
     return app

@@ -13,7 +13,7 @@ import webbrowser
 
 from waitress import create_server
 
-from . import __version__, config, instance, updater
+from . import __version__, config, desktop, instance, updater
 from .jobqueue import JobQueue
 from .web.server import UPLOAD_CHUNK_MAX, create_app
 
@@ -50,7 +50,8 @@ def port_is_free(port: int) -> bool:
 
 def build_server(port: int, queue: JobQueue):
     """A threaded WSGI server bound to 127.0.0.1 only; already listening when it returns."""
-    return create_server(create_app(queue, shutdown=request_shutdown), host=HOST, port=port, ident="Baitd",
+    return create_server(create_app(queue, shutdown=request_shutdown, focus=desktop.focus_window),
+                         host=HOST, port=port, ident="Baitd",
                          max_request_body_size=MAX_BODY)  # uploads come in chunks; the route checks too
 
 
@@ -116,18 +117,34 @@ def _point_at_running_instance(lock_path, no_browser: bool) -> None:
                 "Baitd ya está abierto en otra ventana, pero no responde → Cierra esa ventana "
                 "(o el proceso Baitd en el administrador de tareas) y vuelve a abrir la app")
         time.sleep(0.25)
-    print(f"Baitd ya está abierto en {url}", flush=True)
-    if not no_browser:
+    _say(f"Baitd ya está abierto en {url}")
+    if not no_browser and not _ask_to_focus(url):
         webbrowser.open(url)
+
+
+def _ask_to_focus(url: str) -> bool:
+    """Ask the running Baitd to bring its window to the front. False when it has no window (it runs
+    in the browser) or does not answer, so the caller opens the browser instead."""
+    import json
+    import urllib.request
+    req = urllib.request.Request(url + "api/focus", data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return bool(json.loads(resp.read().decode("utf-8")).get("ok"))
+    except (OSError, ValueError):
+        return False
 
 
 def _setup_logging() -> list[logging.Handler]:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     file_handler = logging.handlers.RotatingFileHandler(
         config.data_dir() / "baitd.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
-    console = logging.StreamHandler()
-    console.setLevel(logging.WARNING)
-    handlers = [file_handler, console]
+    handlers: list[logging.Handler] = [file_handler]
+    if sys.stderr is not None:  # the windowed build started by a double-click has no console
+        console = logging.StreamHandler()
+        console.setLevel(logging.WARNING)
+        handlers.append(console)
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     for h in handlers:
@@ -141,15 +158,54 @@ def _selftest() -> int:
     try:
         seconds = selftest.run_selftest()
     except selftest.SelftestError as e:
-        print(f"SELFTEST FAILED: {e}", flush=True)
+        _say(f"SELFTEST FAILED: {e}")
         return 1
-    print(f"SELFTEST OK {seconds:.1f}", flush=True)
+    _say(f"SELFTEST OK {seconds:.1f}")
     return 0
 
 
+def _say(text: str) -> None:
+    """print() that never takes Baitd down: the windowed build may have nowhere to write, and a pipe
+    can be gone by the time we write (PowerShell does not wait for a windowed program)."""
+    try:
+        print(text, flush=True)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def _reattach_stdio() -> None:
+    """The Windows build has no console (Baitd has its own window), so print() would go nowhere. When
+    a pipe or a terminal started it (CI's --selftest, someone running Baitd.exe from cmd), write there."""
+    if sys.platform != "win32" or (sys.stdout is not None and sys.stderr is not None):
+        return
+    import ctypes
+    import msvcrt
+    import os
+    kernel32 = ctypes.windll.kernel32
+    attached = False
+    for std, name in ((-11, "stdout"), (-12, "stderr")):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+        if getattr(sys, name) is not None:
+            continue
+        handle = kernel32.GetStdHandle(std)
+        try:
+            if handle not in (0, -1, None):  # an inherited pipe or file
+                stream = open(msvcrt.open_osfhandle(handle, os.O_WRONLY), "w", encoding="utf-8",
+                              errors="replace", buffering=1)
+            elif attached or kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS: started from cmd
+                attached = True
+                stream = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+            else:  # double-clicked: nobody to write to
+                continue
+        except OSError:
+            continue
+        setattr(sys, name, stream)
+
+
 def main(argv: list[str] | None = None) -> None:
+    _reattach_stdio()
     parser = argparse.ArgumentParser(prog="baitd", description="Baitd: de un tema a un video corto, y clips de un video largo.")
-    parser.add_argument("--no-browser", action="store_true", help="no abrir el navegador, solo mostrar la URL")
+    parser.add_argument("--no-browser", action="store_true", help="no abrir ventana ni navegador, solo mostrar la URL")
+    parser.add_argument("--browser", action="store_true", help="abrir Baitd en el navegador en vez de en su ventana")
     parser.add_argument("--port", type=int, default=None, help="puerto (por defecto, uno libre)")
     parser.add_argument("--selftest", action="store_true",
                         help="comprobar la instalación: genera un vídeo de prueba sin conexión y sale")
@@ -165,8 +221,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         acquired = lock.acquire()
     except OSError as e:  # data folder missing/read-only: explain instead of a traceback
-        print(f"No se puede usar la carpeta de datos {lock.path.parent} ({e.strerror or e}) → "
-              "Revisa que exista y que tengas permiso de escritura.")
+        _say(f"No se puede usar la carpeta de datos {lock.path.parent} ({e.strerror or e}) → "
+             "Revisa que exista y que tengas permiso de escritura.")
         raise SystemExit(1)
     if not acquired:
         _point_at_running_instance(lock.path, args.no_browser)
@@ -213,18 +269,17 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
             _install_stop_signals()  # same clean path as Ctrl+C (KeyboardInterrupt in run())
         queue.start()
         log.info("Servidor en %s", url)
-        print(url, flush=True)
-        print("Pulsa Ctrl+C para cerrar", flush=True)
-        if not args.no_browser:
-            webbrowser.open(url)
+        _say(url)
+        _say("Pulsa Ctrl+C para cerrar")
         if config.load_settings().get("check_updates", True):
             updater.start_background_check(__version__)
-        try:
-            server.run()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.close()
+        if args.no_browser:
+            _run_server(server)
+        elif getattr(args, "browser", False):
+            webbrowser.open(url)
+            _run_server(server)
+        else:
+            _run_with_window(server, url)
     finally:
         with _server_lock:
             _server = None
@@ -232,6 +287,50 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         for h in handlers:
             logging.getLogger().removeHandler(h)
             h.close()
+
+
+def _run_server(server) -> None:
+    """Serve until Salir, the updater or Ctrl+C (and the console's ✕, which arrive as KeyboardInterrupt)."""
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.close()
+
+
+def _run_with_window(server, url: str) -> None:
+    """Baitd's own window in front (main thread), the server behind it (a thread). Closing the window
+    quits; Salir or the updater stop the server, which then closes the window. With no window
+    possible here, the browser opens and the server runs as before."""
+    stopped = threading.Event()
+
+    def serve() -> None:
+        try:
+            server.run()
+        except Exception:  # the window must still close and the process end
+            log.exception("El servidor se detuvo por un error")
+        finally:
+            server.close()
+            stopped.set()
+            desktop.close_window()
+
+    worker = threading.Thread(target=serve, name="baitd-server", daemon=True)
+    worker.start()
+    try:
+        shown = desktop.run_window(url, config.data_dir() / "ventana")
+    except KeyboardInterrupt:
+        shown = True
+    if shown:
+        request_shutdown()  # the window closed (or Salir closed it): stop the server too
+    else:
+        webbrowser.open(url)
+    try:
+        while not stopped.wait(0.5):  # short waits so Ctrl+C still gets through
+            pass
+    except KeyboardInterrupt:
+        request_shutdown()
+        stopped.wait(10)
 
 
 if __name__ == "__main__":
