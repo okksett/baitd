@@ -3,6 +3,7 @@ data_dir()/fuentes/<id>/; the id is random hex, so titles and filenames never re
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -34,6 +35,7 @@ def _quality(settings: dict) -> int:
 _DEFAULT_BYTES_PER_S = 2_000_000
 _ID = re.compile(r"[0-9a-f]{12}")
 _PARTIAL = "upload.json"  # in a source folder while a chunked upload is still arriving
+log = logging.getLogger(__name__)
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _URL = re.compile(r"https?://\S+")
 
@@ -182,15 +184,58 @@ def _bot_check(err: BaseException, cookies_set: bool) -> UserError | None:
                      "En Ajustes, sección Clipping, elige tu navegador o un archivo cookies.txt con tu sesión de YouTube")
 
 
-def _forbidden(err: BaseException) -> UserError | None:
-    """YouTube refused the video data (HTTP 403). Updating yt-dlp rarely helps here; retrying later,
-    a signed-in session or uploading the file does."""
+def _is_forbidden(err: BaseException) -> bool:
     msg = str(err).lower()
-    if "403" not in msg and "forbidden" not in msg:
+    return "403" in msg or "forbidden" in msg
+
+
+def _forbidden(err: BaseException) -> UserError | None:
+    """YouTube refused the video data (HTTP 403) on every attempt. Updating yt-dlp rarely helps here;
+    another network, a signed-in session, or uploading the file does."""
+    if not _is_forbidden(err):
         return None
     return UserError("YouTube bloqueó la descarga (error 403)",
-                     "Pulsa Reintentar en unos minutos; si sigue, elige tu navegador o un cookies.txt "
-                     "en Ajustes, sección Clipping, o sube el archivo")
+                     "Baitd ya probó otras formas de bajarlo. Pulsa Reintentar más tarde o desde otra red "
+                     "(sin VPN); si sigue, elige tu navegador o un cookies.txt en Ajustes, sección Clipping, "
+                     "o sube el archivo")
+
+
+# What fetch_url tries when YouTube answers 403. The video links a client gets are tied to it and to the
+# connection, so one being refused says little about the others. IPv4 first: some ISPs' IPv6 ranges get
+# 403s. Then clients that, on a video checked on 2026-11-11, still gave 1080p (web_embedded) or 360p.
+_IPV4 = {"source_address": "0.0.0.0"}
+_YOUTUBE_FALLBACKS = (
+    ("IPv4 + cliente web_embedded", {**_IPV4, "extractor_args": {"youtube": {"player_client": ["web_embedded"]}}}),
+    ("IPv4 + clientes de 360p", {**_IPV4, "extractor_args": {"youtube": {
+        "player_client": ["mweb", "android_vr", "tv_simply"]}}}),
+)
+
+
+def _attempts(url: str) -> list[tuple[str, dict]]:
+    """(label for the log, extra yt-dlp options) for each try, the normal one first."""
+    host = (urlparse(url).hostname or "").lower()
+    youtube = any(host == d or host.endswith("." + d) for d in ("youtube.com", "youtu.be"))
+    return [("normal", {}), ("IPv4", _IPV4), *(_YOUTUBE_FALLBACKS if youtube else ())]
+
+
+def _download_once(ytdlp, url: str, opts: dict, folder: Path) -> dict:
+    """One extract + download with `opts`; returns the video's info. Refuses live streams, videos over
+    the length limit, and downloads that would not fit on the disk."""
+    with ytdlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
+        if info.get("entries"):
+            info = next(iter(info["entries"]), None) or {}
+        if _is_live(info):
+            raise UserError("Ese video es una transmisión en vivo", "Espera a que termine y usa la grabación")
+        if (info.get("duration") or 0) > MAX_SECONDS:
+            raise _too_long()
+        need = _estimate_bytes(info) * 1.2
+        if need > free_bytes(sources_dir()):
+            raise UserError(f"No hay espacio suficiente para descargar el video (~{need / 1e9:.1f} GB)",
+                            "Libera espacio en el disco")
+        folder.mkdir(parents=True, exist_ok=True)
+        ydl.download([url])
+    return info
 
 
 def _cookie_opts(settings: dict, tmp_dir: Path) -> tuple[dict, str]:
@@ -255,22 +300,26 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
         cookie_opts, browser = _cookie_opts(settings, Path(cookie_tmp))
         opts.update(cookie_opts)
         try:
-            if cancel.is_set():
-                raise JobCancelled()
-            with ytdlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False) or {}
-                if info.get("entries"):
-                    info = next(iter(info["entries"]), None) or {}
-                if _is_live(info):
-                    raise UserError("Ese video es una transmisión en vivo", "Espera a que termine y usa la grabación")
-                if (info.get("duration") or 0) > MAX_SECONDS:
-                    raise _too_long()
-                need = _estimate_bytes(info) * 1.2
-                if need > free_bytes(sources_dir()):
-                    raise UserError(f"No hay espacio suficiente para descargar el video (~{need / 1e9:.1f} GB)",
-                                    "Libera espacio en el disco")
-                folder.mkdir(parents=True, exist_ok=True)
-                ydl.download([url])
+            attempts = _attempts(url)
+            for n, (label, extra) in enumerate(attempts, 1):
+                if cancel.is_set():
+                    raise JobCancelled()
+                try:
+                    info = _download_once(ytdlp, url, {**opts, **extra}, folder)
+                except failures as e:
+                    if cancel.is_set() or not _is_forbidden(e):
+                        raise
+                    log.warning("YouTube respondió 403 (intento %d de %d: %s): %s · Deno: %s · yt-dlp %s",
+                                n, len(attempts), label, _short_reason(e, url),
+                                "sí" if opts.get("js_runtimes") else "no",
+                                getattr(getattr(ytdlp, "version", None), "__version__", "?"))
+                    if n == len(attempts):
+                        raise
+                    shutil.rmtree(folder, ignore_errors=True)
+                    continue
+                if n > 1:
+                    log.info("Descarga lograda en el intento %d de %d (%s)", n, len(attempts), label)
+                break
             path = _find_download(folder)
             if path is None:
                 raise UserError("No se pudo descargar el video: no se creó ningún archivo",

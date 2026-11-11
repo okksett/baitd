@@ -13,7 +13,9 @@ from baitd.ffmpeg import probe
 from baitd.jobqueue import JobQueue
 from baitd.models import JobCancelled, UserError, Word
 
-WAIT = 60.0
+# Only a guard against a stuck queue: _wait returns as soon as the jobs end. Two real exports take ~15 s on
+# a dev PC but went past 60 s on GitHub's macos-15-intel runner (the whole suite runs ~4x slower there).
+WAIT = 300.0
 SECONDS = 40
 
 

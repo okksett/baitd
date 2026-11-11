@@ -729,7 +729,7 @@ def test_clipping_form_help_toggles_and_visible_min_max(client):
 def test_boot_carries_version_and_page_shows_it(client):
     import baitd
     html = client.get("/").text
-    assert baitd.__version__ == "0.3.4"
+    assert baitd.__version__ == "0.3.5"
     assert f'"version": "{baitd.__version__}"' in html
     assert 'id="app-version"' in html
     es = json.loads(ES.read_text("utf-8"))

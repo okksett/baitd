@@ -284,6 +284,65 @@ def test_forbidden_download_explains_instead_of_suggesting_an_update(fake_ytdlp,
     assert "Reintentar" in e.value.fix and "cookies.txt" in e.value.fix and "Actualiza" not in e.value.fix
 
 
+def _forbid_until(fake, ok):
+    """Make every download answer HTTP 403 until `ok(opts)`; return the list of tries as (ipv4?, clients)."""
+    tries = []
+
+    def check():
+        if tries and tries[-1][2] == id(fake.opts):
+            return  # second progress step of the same try
+        clients = tuple(fake.opts.get("extractor_args", {}).get("youtube", {}).get("player_client", ()))
+        tries.append((fake.opts.get("source_address") == "0.0.0.0", clients, id(fake.opts)))
+        if not ok(fake.opts):
+            raise RuntimeError("unable to download video data: HTTP Error 403: Forbidden")
+    fake.in_download = check
+    return tries
+
+
+def test_403_is_retried_over_ipv4_first(fake_ytdlp, tmp_data, caplog):
+    tries = _forbid_until(fake_ytdlp, lambda o: o.get("source_address") == "0.0.0.0")
+    with caplog.at_level("INFO"):
+        src = _go()
+    assert src.path.is_file()
+    assert [t[:2] for t in tries] == [(False, ()), (True, ())]
+    assert any("403 (intento 1 de 4: normal)" in r.message for r in caplog.records)
+    assert any("intento 2 de 4 (IPv4)" in r.message for r in caplog.records)
+    assert len(list((tmp_data / "fuentes").iterdir())) == 1  # the failed try left nothing behind
+
+
+def test_403_then_tries_other_youtube_clients(fake_ytdlp, tmp_data):
+    tries = _forbid_until(fake_ytdlp, lambda o: "extractor_args" in o and "mweb" in str(o["extractor_args"]))
+    _go()
+    assert [t[:2] for t in tries] == [(False, ()), (True, ()), (True, ("web_embedded",)),
+                                     (True, ("mweb", "android_vr", "tv_simply"))]
+
+
+def test_403_on_every_try_gives_the_403_message(fake_ytdlp, tmp_data, caplog):
+    tries = _forbid_until(fake_ytdlp, lambda o: False)
+    with caplog.at_level("WARNING"), pytest.raises(UserError) as e:
+        _go()
+    assert len(tries) == 4 and e.value.cause == "YouTube bloqueó la descarga (error 403)"
+    assert "otra red" in e.value.fix
+    logged = [r.message for r in caplog.records if "403" in r.message]
+    assert len(logged) == 4 and all("youtube.com" not in m for m in logged)
+    assert list((tmp_data / "fuentes").iterdir()) == []
+
+
+def test_403_retries_skip_youtube_clients_on_other_sites(fake_ytdlp, tmp_data):
+    tries = _forbid_until(fake_ytdlp, lambda o: False)
+    with pytest.raises(UserError):
+        _go("https://vimeo.com/123")
+    assert [t[:2] for t in tries] == [(False, ()), (True, ())]
+
+
+def test_other_download_errors_are_not_retried(fake_ytdlp, tmp_data):
+    tries = []
+    fake_ytdlp.in_download = lambda: (tries.append(1), (_ for _ in ()).throw(RuntimeError("Video unavailable")))
+    with pytest.raises(UserError) as e:
+        _go()
+    assert len(tries) == 1 and "Video unavailable" in e.value.cause
+
+
 def test_youtube_gets_deno_for_its_js_challenges(fake_ytdlp, tmp_data, monkeypatch):
     monkeypatch.setattr(ytdlp_loader, "deno_path", lambda: "/app/deno/deno")
     _go()
