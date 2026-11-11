@@ -1,7 +1,7 @@
 # PyInstaller spec: one-folder build named "Baitd" (run from the repo root:
 #   pyinstaller packaging/baitd.spec).
-# Windows and Linux keep a console window (the URL and "Pulsa Ctrl+C para cerrar" are shown there);
-# the macOS .app is windowed and quits from the Settings dialog ("Salir de Baitd").
+# Windows and macOS are windowed: Baitd shows in its own window and quits when it closes (or from
+# "Salir de Baitd"). Linux keeps a console window (the URL and "Pulsa Ctrl+C para cerrar" show there).
 import sys
 from pathlib import Path
 
@@ -49,7 +49,10 @@ exe = EXE(
     a.scripts,
     exclude_binaries=True,
     name="Baitd",
-    console=sys.platform != "darwin",
+    # Windows and macOS open Baitd in its own window (pywebview), so no console window behind it;
+    # __main__ reattaches print() to a terminal or pipe when there is one (--selftest in CI).
+    # Linux keeps the console: without GTK/Qt the app falls back to the browser and the console.
+    console=sys.platform not in ("darwin", "win32"),
     icon=str(ROOT / "packaging" / "baitd.ico"),
     upx=False,
 )

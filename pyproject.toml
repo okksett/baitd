@@ -19,6 +19,7 @@ dependencies = [
     "yt-dlp>=2026.10,<2027",
     "yt-dlp-ejs>=0.8,<0.9",   # YouTube's JS challenge solver scripts, matched to the yt-dlp above
     "deno>=2.5,<3",           # the JavaScript runtime yt-dlp runs them with (bundled in the app)
+    "pywebview>=6.2,<7",      # Baitd's own window (WebView2 on Windows, WebKit on macOS)
     "faster-whisper>=1.2,<2",
     "opencv-python-headless>=5,<6",
     "numpy>=2,<3",

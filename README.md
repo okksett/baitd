@@ -15,10 +15,10 @@ Baitd es una aplicación gratuita y de código abierto (licencia MIT) que convie
 **Cualquier sistema, en un paquete:**
 
 1. Ve a la página de **Releases** del repositorio y descarga el paquete de tu sistema (Windows, macOS Intel / Apple Silicon o Linux). Mientras no haya una Release, cada ejecución de **GitHub Actions** (pestaña *Actions* → workflow *build*) deja los paquetes como *artifacts*: `Baitd-windows-x64.zip`, `Baitd-macos-arm64.zip`, `Baitd-macos-x64.zip` y `Baitd-linux-x64.tar.gz`.
-2. Descomprímelo y abre Baitd con doble clic. Se abre el navegador con la app.
+2. Descomprímelo y abre Baitd con doble clic. Baitd se abre en su propia ventana.
 3. Primer arranque: la app no está firmada, así que tu sistema avisará (ver abajo).
 
-En Windows y Linux se abre también una ventana de consola con la dirección y "Pulsa Ctrl+C para cerrar"; en macOS la app no tiene consola y se cierra con **⚙ Ajustes → Salir de Baitd**.
+En Windows y macOS, Baitd es una ventana normal: se cierra con la **✕** o con **⚙ Ajustes → Salir de Baitd**, y si la abres otra vez vuelve al frente la que ya estaba abierta. En Windows usa WebView2 de Microsoft Edge, que ya trae Windows 10 y 11; si falta, Baitd se abre en el navegador. En Linux se abre en el navegador, con una ventana de consola que muestra la dirección y "Pulsa Ctrl+C para cerrar".
 
 **Si algo no funciona**, abre la app desde una terminal con `--selftest` (por ejemplo `Baitd.exe --selftest`): genera un vídeo de prueba sin conexión y sin tocar tus datos, y termina con `SELFTEST OK <segundos>` o con la causa del fallo.
 
@@ -34,9 +34,9 @@ Necesitas Python 3.10 o superior ([python.org/downloads](https://www.python.org/
 
 1. Descarga o clona el repositorio.
 2. **Windows:** doble clic en `iniciar.bat`. **macOS / Linux:** `./iniciar.sh`.
-3. La primera vez crea `.venv` e instala las dependencias; luego abre el navegador en la app.
+3. La primera vez crea `.venv` e instala las dependencias; luego abre la app en su ventana.
 
-Opciones del comando: `python -m baitd --no-browser` (solo muestra la URL) y `--port 8765` (puerto fijo).
+Opciones del comando: `python -m baitd --browser` (en el navegador en vez de en su ventana), `--no-browser` (sin ventana ni navegador, solo muestra la URL) y `--port 8765` (puerto fijo).
 
 > **Windows:** mantén la carpeta en una ruta corta, por ejemplo `C:\proyectos\baitd`. Las rutas muy largas (y las carpetas sincronizadas como OneDrive) hacen fallar la creación del entorno.
 
@@ -124,10 +124,10 @@ Baitd is a free, open-source (MIT) app that turns **a topic** (e.g. "the benefit
 **Any system, as a package:**
 
 1. Open the repository's **Releases** page and download the package for your system (Windows, macOS Intel / Apple Silicon, or Linux). Until there is a Release, every **GitHub Actions** run (*Actions* tab → *build* workflow) leaves the packages as *artifacts*: `Baitd-windows-x64.zip`, `Baitd-macos-arm64.zip`, `Baitd-macos-x64.zip` and `Baitd-linux-x64.tar.gz`.
-2. Unzip it and double-click Baitd. Your browser opens on the app.
+2. Unzip it and double-click Baitd. It opens in its own window.
 3. First launch: the app is unsigned, so your system will warn you (see below).
 
-On Windows and Linux a console window also opens showing the address and "Pulsa Ctrl+C para cerrar" (press Ctrl+C to quit); on macOS the app has no console and quits from **⚙ Settings → Quit Baitd**.
+On Windows and macOS Baitd is a normal window: close it with **✕** or **⚙ Settings → Quit Baitd**, and opening it again brings the open window to the front. On Windows it uses Microsoft Edge WebView2, which Windows 10 and 11 already include; without it, Baitd opens in your browser. On Linux it opens in your browser, with a console window showing the address and "Pulsa Ctrl+C para cerrar" (press Ctrl+C to quit).
 
 **Troubleshooting:** run the app from a terminal with `--selftest` (e.g. `Baitd.exe --selftest`): it renders an offline test video without touching your data and ends with `SELFTEST OK <seconds>` or the cause of the failure.
 
@@ -143,9 +143,9 @@ You need Python 3.10 or newer ([python.org/downloads](https://www.python.org/dow
 
 1. Download or clone the repository.
 2. **Windows:** double-click `iniciar.bat`. **macOS / Linux:** `./iniciar.sh`.
-3. The first run creates `.venv` and installs dependencies, then opens the app in your browser.
+3. The first run creates `.venv` and installs dependencies, then opens the app in its window.
 
-Command options: `python -m baitd --no-browser` (only print the URL) and `--port 8765` (fixed port).
+Command options: `python -m baitd --browser` (in your browser instead of its window), `--no-browser` (no window or browser, only print the URL) and `--port 8765` (fixed port).
 
 > **Windows:** keep the folder in a short path such as `C:\proyectos\baitd`. Very long paths (and synced folders like OneDrive) can break virtual-environment creation.
 
