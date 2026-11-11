@@ -108,6 +108,87 @@ def test_alternating_order_keeps_one_track():
     assert max(xs) - min(xs) < 120
 
 
+def _two_people(talker_at, seconds=10.0, fps=8.0, seed=1):
+    """Left (cx 300) and right (cx 1600) faces of equal size; `talker_at(t)` -> "L", "R" or None says whose
+    mouth moves at time t (the other one's barely changes). A talker's mouth rests on ~30% of samples,
+    as real speech pauses between words."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    still = {s: rng.normal(size=(framing.MOUTH_H, framing.MOUTH_W)).astype(np.float32) for s in "LR"}
+    out = []
+    for i in range(int(seconds * fps)):
+        t = i / fps
+        faces = []
+        for side, cx in (("L", 300), ("R", 1600)):
+            if talker_at(t) == side and rng.random() < 0.7:
+                mouth = rng.normal(size=(framing.MOUTH_H, framing.MOUTH_W)).astype(np.float32)
+            else:
+                mouth = still[side] + 0.05 * rng.normal(size=still[side].shape).astype(np.float32)
+            faces.append((*_box(cx, size=160), mouth))
+        out.append((t, faces))
+    return out
+
+
+def _x_at(plan, t):
+    return [x for tt, x in plan.keys if tt <= t][-1]
+
+
+def test_two_people_crop_follows_whoever_talks():
+    faces = _two_people(lambda t: "L" if t < 5 else "R")
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=faces, cuts=[],
+                     talk=[(0.2, 4.6), (5.0, 9.6)])
+    assert _x_at(plan, 4.9) < 200 and _x_at(plan, 9.9) > 1100
+    at = [x for t, x in plan.keys if t == 5.0]
+    assert len(at) == 2 and at[0] < at[1]  # a cut at the start of the sentence, not a slide
+
+
+def test_speaker_who_opens_the_shot_is_the_first_clear_talker():
+    faces = _two_people(lambda t: "R")
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=faces, cuts=[], talk=[(1.0, 9.0)])
+    assert _x_at(plan, 0.0) > 1100  # not the bigger-or-more-central default
+
+
+def test_short_replies_do_not_move_the_crop():
+    def talker(t):
+        return "R" if 4.0 <= t < 4.5 else "L"  # a "Sí." from the listener
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=_two_people(talker), cuts=[],
+                     talk=[(0.0, 3.9), (4.0, 4.5), (4.6, 9.9)])
+    xs = [x for _, x in plan.keys]
+    assert max(xs) < 200  # stays on the left person the whole time
+
+
+def test_switch_back_waits_min_hold_then_happens():
+    def talker(t):
+        return "R" if 3.0 <= t < 4.4 else "L"
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=_two_people(talker), cuts=[],
+                     talk=[(0.0, 2.9), (3.0, 4.4), (4.5, 9.9)])
+    assert _x_at(plan, 4.0) > 1100   # right took the turn at 3.0 ...
+    assert _x_at(plan, 4.6) > 1100   # ... and holds it: the left one's 4.5 comes only 1.5 s later ...
+    assert _x_at(plan, 5.1) < 200    # ... so the crop goes back at 3.0 + MIN_HOLD_S = 5.0
+    assert [x for t, x in plan.keys if t == 5.0][-1] < 200
+    assert _x_at(plan, 9.9) < 200
+
+
+def test_no_sentences_or_no_clear_talker_keeps_one_face():
+    faces = _two_people(lambda t: "L" if t < 5 else "R")
+    for talk in (None, []):
+        plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=faces, cuts=[], talk=talk)
+        xs = [x for _, x in plan.keys]
+        assert max(xs) - min(xs) < 120
+    both = _two_people(lambda t: None)
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=both, cuts=[], talk=[(0.0, 9.9)])
+    xs = [x for _, x in plan.keys]
+    assert max(xs) - min(xs) < 120
+
+
+def test_faces_without_mouth_crops_keep_the_old_behaviour():
+    per = lambda i: [_box(300, size=160), _box(1600, size=160)]  # noqa: E731
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=_samples(40, per), cuts=[],
+                     talk=[(0.0, 4.0), (5.0, 9.0)])
+    xs = [x for _, x in plan.keys]
+    assert max(xs) - min(xs) < 120
+
+
 def test_decimation_keeps_jump_pairs():
     keys = [(i * 0.01, (i * 7) % 600) for i in range(500)]
     keys.insert(250, (keys[249][0], 123))  # jump pair at t = keys[249][0]
@@ -169,8 +250,10 @@ def test_detect_faces_runs_on_synthetic_frames(make_mp4):
     ts = [t for t, _ in out]
     assert ts == sorted(ts) and ts[0] == pytest.approx(0.0, abs=0.01)
     for _, boxes in out:
-        for x, y, w, h, s in boxes:
+        for box in boxes:
+            x, y, w, h, s = box[:5]
             assert s >= 0.6 and 0 <= x < 1280 and 0 <= y < 720
+            assert box[5] is None or box[5].shape == (framing.MOUTH_H, framing.MOUTH_W)
 
 
 def test_detect_faces_cancel_kills_ffmpeg(make_mp4):
