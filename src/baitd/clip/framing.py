@@ -36,6 +36,9 @@ SPEAKER_MIN_AREA = 0.25   # ... and at least a quarter of the biggest face's are
 SWITCH_RATIO = 1.15       # the talker's mouth must move 15% more than anyone else's
 MIN_TURN_S = 1.0          # shorter sentences ("Sí.", "No.") never move the crop
 MIN_HOLD_S = 2.0          # stay on a speaker at least this long
+# With two voices told apart (clip.voices), each voice is matched to a side of the frame once per clip;
+# the summed mouth motion must favour one matching by this much (on a podcast with a guest eating: 0.2).
+VOICE_SIDE_MARGIN = 0.05
 MAX_KEYS = 200
 SHARPEN = "unsharp=5:5:0.5:5:5:0.0"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "assets" / "models" / "face_detection_yunet_2023mar.onnx"
@@ -226,16 +229,7 @@ def _speaker_segments(shot, b0: float, b1: float, talk: list[tuple[float, float]
     move if that comes later and still leaves MIN_TURN_S of the sentence."""
     import statistics
 
-    tracks = _tracks(shot, src_w)
-    if len(tracks) < 2:
-        return None
-
-    def area(tr):
-        return statistics.mean(f[2] * f[3] for f in tr["hits"].values())
-
-    biggest = max(area(tr) for tr in tracks)
-    people = [tr for tr in tracks
-              if len(tr["hits"]) >= SPEAKER_MIN_SHARE * len(shot) and area(tr) >= SPEAKER_MIN_AREA * biggest]
+    people = _people(shot, src_w)
     if len(people) < 2:
         return None
     acts = [_mouth_activity(tr["hits"]) for tr in people]
@@ -257,12 +251,30 @@ def _speaker_segments(shot, b0: float, b1: float, talk: list[tuple[float, float]
         best = order[0]
         if scores[best] <= 0 or scores[best] < SWITCH_RATIO * scores[order[1]]:
             continue
-        if not switches:
-            switches.append((b0, best))  # the first clear turn also decides who opens the shot
-        elif best != switches[-1][1]:
-            at = max(s0, switches[-1][0] + MIN_HOLD_S)  # too soon after the last move: move later
-            if s1 - at >= MIN_TURN_S:
-                switches.append((at, best))
+        _add_turn(switches, best, s0, s1, b0)
+    return _segments(switches, people, b1)
+
+
+def _people(shot, src_w: int) -> list[dict]:
+    """The tracks in a shot that count as people (present at least half the time and not tiny next to the
+    biggest face), left to right."""
+    import statistics
+
+    tracks = _tracks(shot, src_w)
+    if len(tracks) < 2:
+        return tracks
+
+    def area(tr):
+        return statistics.mean(f[2] * f[3] for f in tr["hits"].values())
+
+    biggest = max(area(tr) for tr in tracks)
+    people = [tr for tr in tracks
+              if len(tr["hits"]) >= SPEAKER_MIN_SHARE * len(shot) and area(tr) >= SPEAKER_MIN_AREA * biggest]
+    return sorted(people, key=lambda tr: statistics.mean(f[0] + f[2] / 2 for f in tr["hits"].values()))
+
+
+def _segments(switches: list[tuple[float, int]], people: list[dict], b1: float):
+    """[(t0, t1, {t: face})] from the (time, index into people) moves; None when there was no move."""
     if not switches:
         return None
     segments = []
@@ -272,22 +284,92 @@ def _speaker_segments(shot, b0: float, b1: float, talk: list[tuple[float, float]
     return segments
 
 
+def _add_turn(switches: list[tuple[float, int]], who: int, s0: float, s1: float, b0: float) -> None:
+    """Move the crop to `who` for a turn [s0, s1): at s0, or MIN_HOLD_S after the last move if that comes
+    later and still leaves MIN_TURN_S of the turn. The first turn also decides who opens the shot."""
+    if not switches:
+        switches.append((b0, who))
+    elif who != switches[-1][1]:
+        at = max(s0, switches[-1][0] + MIN_HOLD_S)
+        if s1 - at >= MIN_TURN_S:
+            switches.append((at, who))
+
+
+def _voice_sides(samples, cuts: list[float], duration: float, talk: list[tuple[float, float]],
+                 voices: list[int | None], src_w: int) -> dict[int, int] | None:
+    """Which side of the frame (0 = left, 1 = right) each of the two voices belongs to, or None when the
+    clip does not say so clearly. Every two-person shot adds how much the left and the right mouth move
+    during each voice's sentences, each mouth against its own average in that shot (a mouth that chews or
+    sits behind a microphone moves more or less all the time). Cameras keep people on their side (the 180°
+    rule), so the sides can be added up across shots."""
+    import statistics
+
+    totals = {(v, side): [] for v in (0, 1) for side in (0, 1)}
+    bounds = [0.0, *sorted(c for c in cuts if 0.0 < c < duration), float("inf")]
+    for i in range(len(bounds) - 1):
+        b0, b1 = bounds[i], bounds[i + 1]
+        people = _people([(t, fs) for t, fs in samples if b0 <= t < b1], src_w)
+        if len(people) < 2:
+            continue
+        for side, tr in ((0, people[0]), (1, people[-1])):
+            act = _mouth_activity(tr["hits"])
+            if len(act) < 8:
+                continue
+            mean = statistics.mean(v for _, v in act) or 1e-6
+            for (s0, s1), voice in zip(talk, voices):
+                vals = [v for t, v in act if max(s0, b0) <= t <= min(s1, b1)]
+                if voice is not None and vals:
+                    totals[(voice, side)].append(statistics.mean(vals) / mean)
+    if any(not v for v in totals.values()):
+        return None
+    avg = {k: statistics.mean(v) for k, v in totals.items()}
+    straight = avg[(0, 0)] + avg[(1, 1)]  # voice 0 on the left, voice 1 on the right
+    crossed = avg[(0, 1)] + avg[(1, 0)]
+    if abs(straight - crossed) < VOICE_SIDE_MARGIN:
+        return None
+    return {0: 0, 1: 1} if straight > crossed else {0: 1, 1: 0}
+
+
+def _voice_segments(shot, b0: float, b1: float, talk: list[tuple[float, float]], voices: list[int | None],
+                    sides: dict[int, int], src_w: int):
+    """Split a two-person shot by voice: each sentence goes to the person on its voice's side."""
+    people = _people(shot, src_w)
+    if len(people) < 2:
+        return None
+    ends = (0, len(people) - 1)  # the leftmost and rightmost person
+    switches: list[tuple[float, int]] = []
+    for (s0, s1), voice in zip(talk, voices):
+        s0, s1 = max(s0, b0), min(s1, b1)
+        if voice is None or s1 - s0 < MIN_TURN_S:
+            continue
+        _add_turn(switches, ends[sides[voice]], s0, s1, b0)
+    return _segments(switches, people, b1)
+
+
 def _clamp(x: float, hi: int) -> int:
     return int(round(min(max(x, 0.0), float(hi))))
 
 
 def _plan_keys(samples, cuts: list[float], duration: float, src_w: int, crop_w: int,
-               talk: list[tuple[float, float]] | None = None) -> list[tuple[float, int]]:
+               talk: list[tuple[float, float]] | None = None,
+               voices: list[int | None] | None = None) -> list[tuple[float, int]]:
     """Crop x keys. Each shot (between scene cuts) follows one face, or, with `talk` (clip-relative
-    sentence spans), whoever is talking; every change of shot or speaker is a jump, not a slide."""
+    sentence spans), whoever is talking: by voice when `voices` (one per sentence) and the faces agree
+    which side each voice is on, else by mouth motion. Every change of shot or speaker is a jump."""
     hi = src_w - crop_w
     centre = hi // 2
     bounds = [0.0, *sorted(c for c in cuts if 0.0 < c < duration), float("inf")]
+    sides = None
+    if talk and voices and len(voices) == len(talk) and {0, 1} <= set(voices):
+        sides = _voice_sides(samples, cuts, duration, talk, voices, src_w)
     segments: list[tuple[float, dict[float, Face]]] = []  # (start, the face to follow)
     for i in range(len(bounds) - 1):
         b0, b1 = bounds[i], bounds[i + 1]
         shot = [(t, fs) for t, fs in samples if b0 <= t < b1]
-        split = _speaker_segments(shot, b0, b1, talk, src_w) if talk else None
+        if sides is not None:
+            split = _voice_segments(shot, b0, b1, talk, voices, sides, src_w)
+        else:
+            split = _speaker_segments(shot, b0, b1, talk, src_w) if talk else None
         if split is None:
             segments.append((b0, _main_track(shot, src_w)))
         else:
@@ -330,8 +412,10 @@ def _even(v: float) -> int:
 
 
 def plan_crop(src: SourceInfo, start: float, end: float, out_w: int, out_h: int, mode: str, cancel,
-              faces=None, cuts=None, talk: list[tuple[float, float]] | None = None) -> CropPlan:
-    """`talk`: clip-relative (start, end) of each sentence; with it a shot of two people follows the speaker."""
+              faces=None, cuts=None, talk: list[tuple[float, float]] | None = None,
+              voices: list[int | None] | None = None) -> CropPlan:
+    """`talk`: clip-relative (start, end) of each sentence; with it a shot of two people follows the speaker.
+    `voices`: for each sentence 0, 1 (which of two voices, from clip.voices) or None."""
     scale = required_scale(src.width, src.height, out_w, out_h)
     if scale > MAX_UPSCALE or mode == "completo":
         return CropPlan("completo", src.width, src.height, [(0.0, 0)], False)
@@ -346,7 +430,7 @@ def plan_crop(src: SourceInfo, start: float, end: float, out_w: int, out_h: int,
     if faces is None:
         faces = detect_faces(src, start, end, SAMPLE_FPS, cancel)
     if any(fs for _, fs in faces):
-        keys = _plan_keys(faces, cuts, end - start, src.width, crop_w, talk)
+        keys = _plan_keys(faces, cuts, end - start, src.width, crop_w, talk, voices)
     else:
         keys = [(0.0, centre)]
     return CropPlan("cara", crop_w, crop_h, keys, sharpen)

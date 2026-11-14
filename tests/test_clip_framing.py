@@ -189,6 +189,38 @@ def test_faces_without_mouth_crops_keep_the_old_behaviour():
     assert max(xs) - min(xs) < 120
 
 
+def test_voices_follow_the_speaker_even_while_the_listener_chews():
+    # The right person chews the whole time (mouth always moving); by mouth alone they look like the
+    # talker throughout. Voices say who talks: L, R, L. The clip as a whole still shows the right mouth
+    # moving more during voice 1 than during voice 0 (it also talks then), which ties voice 1 to the right.
+    def talker(t):
+        return "R" if 4.0 <= t < 7.0 else "L"
+    faces = _two_people(talker)
+    chewed = []
+    import numpy as np
+    rng = np.random.default_rng(7)
+    for t, fs in faces:
+        left, right = fs
+        boost = 1.8 if 4.0 <= t < 7.0 else 1.6  # chewing all along (more than a talking mouth), more when talking
+        mouth = right[5] + boost * rng.normal(size=right[5].shape).astype(np.float32)
+        chewed.append((t, [left, (*right[:5], mouth)]))
+    talk, voices = [(0.2, 3.8), (4.0, 7.0), (7.2, 9.8)], [0, 1, 0]
+    by_mouth = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=chewed, cuts=[], talk=talk)
+    assert _x_at(by_mouth, 1.0) > 1100  # the chewer wins by mouth motion: the bug this fixes
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=chewed, cuts=[], talk=talk, voices=voices)
+    assert _x_at(plan, 1.0) < 200 and _x_at(plan, 5.0) > 1100 and _x_at(plan, 9.0) < 200
+    assert [x for t, x in plan.keys if t == 4.0][-1] > 1100  # the move comes at the start of the turn
+
+
+def test_voices_that_do_not_match_a_side_fall_back_to_mouth_motion():
+    faces = _two_people(lambda t: "L" if t < 5 else "R")
+    talk = [(0.2, 4.6), (5.0, 9.6)]
+    by_mouth = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=faces, cuts=[], talk=talk)
+    for voices in ([0, 0], [None, None], [0, 1, 1]):  # one voice only, unknown, or not one per sentence
+        plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=faces, cuts=[], talk=talk, voices=voices)
+        assert plan.keys == by_mouth.keys
+
+
 def test_decimation_keeps_jump_pairs():
     keys = [(i * 0.01, (i * 7) % 600) for i in range(500)]
     keys.insert(250, (keys[249][0], 123))  # jump pair at t = keys[249][0]
