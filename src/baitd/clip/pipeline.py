@@ -19,7 +19,7 @@ from typing import Callable
 from .. import config, ffmpeg
 from ..models import JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
-from . import framing, sources, transcribe
+from . import framing, sources, transcribe, voices
 from .models import FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
 from .moments import _sentences, find_moments
 from .render import clip_fps, render_clip
@@ -328,6 +328,30 @@ def _write_texts(folder: Path, moments: list[Moment]) -> None:
     (folder / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+VOICE_CONTEXT_S = 90.0  # sentences this far around a clip help tell its two voices apart
+
+
+def _talk_and_voices(src: SourceInfo, m: Moment, words: list[Word], mode: str, cancel: threading.Event
+                     ) -> tuple[list[tuple[float, float]] | None, list[int | None] | None]:
+    """The clip's sentences (clip-relative spans) and, for the face crop, which of two voices says each
+    one (None when the voices do not split clearly). With two people in a shot the crop follows the
+    speaker: by voice when possible, else by mouth motion."""
+    near = [w for w in words if w.end > m.start - VOICE_CONTEXT_S and w.start < m.end + VOICE_CONTEXT_S]
+    sentences = [(s0, s1) for s0, s1, _, _ in _sentences(near)]
+    inside = [i for i, (s0, s1) in enumerate(sentences) if s1 > m.start and s0 < m.end]
+    talk = [(sentences[i][0] - m.start, sentences[i][1] - m.start) for i in inside] or None
+    if not talk or mode != "cara":
+        return talk, None
+    try:
+        labels, _ = voices.sentence_voices(src.path, sentences, cancel)
+    except JobCancelled:
+        raise
+    except Exception:  # the mouth-motion fallback still makes a usable crop
+        log.warning("No se pudieron separar las voces de %s", m.title, exc_info=True)
+        return talk, None
+    return talk, [labels[i] for i in inside]
+
+
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,
                 folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders) -> None:
     """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order."""
@@ -346,12 +370,10 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
             faces = None
             if providers.detect_faces is not None and mode == "cara":
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
-            # sentence spans, clip-relative: with two people in a shot the crop follows whoever talks
-            span = [w for w in words if w.end > m.start and w.start < m.end]
-            talk = [(s0 - m.start, s1 - m.start) for s0, s1, _, _ in _sentences(span)] if span else None
+            talk, voice_labels = _talk_and_voices(src, m, words, mode, cancel)
             try:
                 plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces,
-                                               talk=talk))
+                                               talk=talk, voices=voice_labels))
             except (JobCancelled, UserError):
                 raise
             except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip
