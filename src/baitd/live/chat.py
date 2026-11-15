@@ -24,6 +24,13 @@ log = logging.getLogger("baitd.live.chat")
 
 MAX_FAILS = 5
 KICK_TOKEN_REFRESH_S = 40 * 60       # the guest token lasts ~45 min
+TWITCH_READ_S = 360                  # Twitch PINGs about every 5 min: longer silence = dead socket
+KICK_READ_S = 90                     # Centrifugo pings `{}` about every 25 s
+BACKOFF_S = (2, 4, 8, 16, 30)        # waits after consecutive failures: five attempts span about a minute
+
+
+def backoff(fails: int) -> float:
+    return float(BACKOFF_S[min(max(fails, 1), len(BACKOFF_S)) - 1])
 _NAMES = {"twitch": "Twitch", "kick": "Kick", "youtube": "YouTube"}
 _BROWSER_UA = {"User-Agent": "Mozilla/5.0"}
 # YouTube refuses the live_chat page ("older version of your browser") unless the User-Agent looks current
@@ -178,7 +185,7 @@ class ChatReader(threading.Thread):
                 except Exception:
                     log.exception("on_event falló")
                 return
-            wait = self._retry_wait if self._retry_wait is not None else min(2.0 * max(fails, 1), 15.0)
+            wait = self._retry_wait if self._retry_wait is not None else backoff(fails)
             await asyncio.sleep(wait)
 
 
@@ -196,18 +203,27 @@ async def _twitch(r: ChatReader) -> None:
             await ws.send_str("PASS SCHMOOPIIE")
             await ws.send_str(f"NICK justinfan{random.randint(10000, 99999)}")
             await ws.send_str(f"JOIN #{login}")
-            async for msg in ws:
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        break
-                    continue
-                if " JOIN " in msg.data or " 366 " in msg.data:
-                    r.healthy = True
-                texts, ping = twitch_privmsgs(msg.data)
-                if ping:
-                    await ws.send_str("PONG :tmi.twitch.tv")
-                for t in texts:
-                    r.emit(t)
+            await _twitch_loop(r, ws)
+
+
+async def _twitch_loop(r: ChatReader, ws, read_s: float = TWITCH_READ_S) -> None:
+    """Read until the socket closes or goes silent for `read_s` (the session then ends and reconnects)."""
+    while True:
+        try:
+            msg = await ws.receive(timeout=read_s)
+        except asyncio.TimeoutError:
+            return
+        if msg.type != aiohttp.WSMsgType.TEXT:
+            if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                return
+            continue
+        if " JOIN " in msg.data or " 366 " in msg.data:
+            r.healthy = True
+        texts, ping = twitch_privmsgs(msg.data)
+        if ping:
+            await ws.send_str("PONG :tmi.twitch.tv")
+        for t in texts:
+            r.emit(t)
 
 
 async def _kick(r: ChatReader) -> None:
@@ -224,35 +240,41 @@ async def _kick(r: ChatReader) -> None:
         async with s.ws_connect(_KICK_WS, headers={"Origin": "https://kick.com", **_BROWSER_UA}, heartbeat=None) as ws:
             await ws.send_str(json.dumps({"id": 1, "connect": {"token": token, "name": "js"}}))
             await ws.send_str(json.dumps({"id": 2, "subscribe": {"channel": f"chatrooms.{room}.v2"}}))
-            while True:
-                left = KICK_TOKEN_REFRESH_S - (time.monotonic() - started)
-                if left <= 0:
-                    return                      # reconnect with a fresh token
-                try:
-                    msg = await ws.receive(timeout=left)
-                except asyncio.TimeoutError:
-                    return
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
-                        return
-                    continue
-                for line in msg.data.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        frame = json.loads(line)
-                    except ValueError:
-                        continue
-                    if frame == {}:
-                        await ws.send_str("{}")
-                        continue
-                    if "connect" in frame or "subscribe" in frame:
-                        r.healthy = True
-                        continue
-                    text = kick_text(frame)
-                    if text:
-                        r.emit(text)
+            await _kick_loop(r, ws, started)
+
+
+async def _kick_loop(r: ChatReader, ws, started: float, token_s: float = KICK_TOKEN_REFRESH_S,
+                     read_s: float = KICK_READ_S) -> None:
+    """Read until the socket closes, goes silent for `read_s`, or the token window ends."""
+    while True:
+        left = token_s - (time.monotonic() - started)
+        if left <= 0:
+            return                      # reconnect with a fresh token
+        try:
+            msg = await ws.receive(timeout=min(left, read_s))
+        except asyncio.TimeoutError:
+            return
+        if msg.type != aiohttp.WSMsgType.TEXT:
+            if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                return
+            continue
+        for line in msg.data.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                frame = json.loads(line)
+            except ValueError:
+                continue
+            if frame == {}:
+                await ws.send_str("{}")
+                continue
+            if "connect" in frame or "subscribe" in frame:
+                r.healthy = True
+                continue
+            text = kick_text(frame)
+            if text:
+                r.emit(text)
 
 
 async def _youtube(r: ChatReader) -> None:
@@ -267,13 +289,23 @@ async def _youtube(r: ChatReader) -> None:
         if not mv or not mc:
             raise ValueError("chat no disponible")
         version, cont = mv.group(1), mc.group(1)
-        while cont:
-            body = {"context": {"client": {"clientName": "WEB", "clientVersion": version}}, "continuation": cont}
+
+        async def fetch(c: str) -> dict:
+            body = {"context": {"client": {"clientName": "WEB", "clientVersion": version}}, "continuation": c}
             async with s.post(_YT_POLL, json=body, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 resp.raise_for_status()
-                data = await resp.json(content_type=None)
-            texts, cont, delay = youtube_parse(data)
+                return await resp.json(content_type=None)
+
+        await _youtube_loop(r, fetch, cont)
+
+
+async def _youtube_loop(r: ChatReader, fetch, cont: str | None) -> None:
+    """Poll until a reply carries no continuation. Healthy only once a reply had a continuation or messages."""
+    while cont:
+        texts, cont, delay = youtube_parse(await fetch(cont))
+        if cont or texts:
             r.healthy = True
-            for t in texts:
-                r.emit(t)
+        for t in texts:
+            r.emit(t)
+        if cont:
             await asyncio.sleep(max(delay, 1000) / 1000)

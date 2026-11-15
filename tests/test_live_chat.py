@@ -137,3 +137,82 @@ def test_network_youtube_chat():
         pytest.skip("no live YouTube channel found")
     ch = Channel(id="y", platform="youtube", handle="x", url="https://youtube.com/watch?v=" + vid)
     assert len(_collect(ch, vid)) >= 1
+
+
+class _Msg:
+    def __init__(self, type_, data=""):
+        self.type, self.data = type_, data
+
+
+class _SilentWs:
+    """A half-open socket: some messages, then nothing ever again."""
+
+    def __init__(self, first):
+        self.first, self.sent = list(first), []
+
+    async def receive(self, timeout=None):
+        import asyncio
+        if self.first:
+            return self.first.pop(0)
+        await asyncio.sleep(timeout)
+        raise asyncio.TimeoutError
+
+    async def send_str(self, s):
+        self.sent.append(s)
+
+
+def _reader(platform="kick"):
+    got = []
+    ch = Channel(id="1", platform=platform, handle="x", url="u")
+    return chat.ChatReader(ch, lambda t, s: got.append(s), lambda k, d: None), got
+
+
+def test_twitch_silent_socket_ends_session():
+    import asyncio
+    import aiohttp
+    r, got = _reader("twitch")
+    ws = _SilentWs([_Msg(aiohttp.WSMsgType.TEXT, ":u!u@u PRIVMSG #c :hola\r\n")])
+    t0 = time.time()
+    asyncio.run(chat._twitch_loop(r, ws, read_s=0.2))
+    assert got == ["hola"] and time.time() - t0 < 3
+
+
+def test_kick_silent_socket_ends_session():
+    import asyncio
+    import aiohttp
+    r, got = _reader()
+    ws = _SilentWs([_Msg(aiohttp.WSMsgType.TEXT, "{}")])
+    t0 = time.time()
+    asyncio.run(chat._kick_loop(r, ws, time.monotonic(), read_s=0.2))
+    assert ws.sent == ["{}"] and time.time() - t0 < 3
+
+
+def test_youtube_empty_reply_is_not_healthy():
+    import asyncio
+    r, _ = _reader("youtube")
+
+    async def fetch(c):
+        return {}
+
+    asyncio.run(chat._youtube_loop(r, fetch, "C1"))
+    assert r.healthy is False
+
+
+def test_youtube_empty_replies_give_up():
+    ch = Channel(id="1", platform="youtube", handle="x", url="u")
+    events = []
+
+    async def session(reader):
+        async def fetch(c):
+            return {}
+        await chat._youtube_loop(reader, fetch, "C1")
+
+    r = chat.ChatReader(ch, lambda t, s: None, lambda k, d: events.append(k), connect=session, retry_wait=0.0)
+    r.start()
+    r.join(10)
+    assert events == ["chat_off"]
+
+
+def test_backoff_schedule_spans_about_a_minute():
+    assert [chat.backoff(n) for n in range(1, 6)] == [2, 4, 8, 16, 30]
+    assert chat.backoff(9) == 30 and chat.backoff(0) == 2
