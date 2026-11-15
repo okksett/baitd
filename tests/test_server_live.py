@@ -153,3 +153,34 @@ def test_hotkey_setting_is_stored_canonical_and_reloads(client, live, monkeypatc
         r = client.post("/api/settings", json={"live_hotkey": bad})
         assert r.status_code == 400 and "Esa tecla no se puede usar" in r.get_json()["error"]
     assert config.load_settings()["live_hotkey"] == "Ctrl+Shift+F9" and calls == [1]
+
+
+def test_ai_route_queues_job(client, queue, make_mp4):
+    cut = Cut(make_mp4(seconds=12, w=320, h=180, fps=15), 1.0, 11.0, 12.0, False)
+    ch = SimpleNamespace(platform="kick", handle="westcol", mine=False, framing="cara", url="https://kick.com/westcol")
+    aid = store.save_moment(cut, channel=ch, title="Gran jugada", reason="manual", at=1_700_000_000.0,
+                            session_id="s1", framing="cara")
+    profile = config.default_profile()
+    r = client.post(f"/api/live/moments/{aid}/ai", json={"profile_id": profile.id})
+    assert r.status_code == 200, r.get_json()
+    job = next(j for j in queue.list() if j["id"] == r.get_json()["job_id"])
+    assert (job["kind"], job["analysis_id"], job["status"]) == ("live_title", aid, "pending")
+    assert job["topic"] == "Gran jugada"
+    assert client.post(f"/api/live/moments/{aid}/ai", json={}).status_code == 200  # the first profile
+    assert client.post(f"/api/live/moments/{'0' * 12}/ai", json={}).status_code == 404
+    assert client.post("/api/live/moments/zzz/ai", json={}).status_code == 404
+    assert client.post(f"/api/live/moments/{aid}/ai", data="x", content_type="text/plain").status_code == 415
+    other = clip_pipeline_analysis(aid)
+    assert client.post(f"/api/live/moments/{other}/ai", json={}).status_code == 404  # not a live moment
+
+
+def clip_pipeline_analysis(aid):
+    """A copy of the live analysis without its live marks: an ordinary Clipping analysis."""
+    import json
+
+    from baitd.clip import pipeline as clip_pipeline
+    data = clip_pipeline.load_analysis(aid)
+    data.pop("origin"), data.pop("live")
+    other = "c" * 12
+    (clip_pipeline.analyses_dir() / f"{other}.json").write_text(json.dumps(data), encoding="utf-8")
+    return other

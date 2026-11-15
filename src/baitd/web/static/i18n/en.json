@@ -285,6 +285,7 @@
   "kind.clip_auto": "Clips",
   "kind.clip_analyze": "Moments",
   "kind.clip_export": "Clips",
+  "kind.live_title": "AI title",
   "step.source": "Getting the video…",
   "step.transcribe": "Transcribing…",
   "step.model": "Downloading the transcription model…",

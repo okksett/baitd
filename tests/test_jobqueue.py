@@ -348,3 +348,37 @@ def test_step_percent_exposed_reset_and_defaults_for_old_items(tmp_path):
     assert q.list()[0]["step_percent"] == 0
     old = {k: v for k, v in item.items() if k != "step_percent"}
     assert q._normalize(old)["step_percent"] == 0
+
+
+def test_live_title_kind(tmp_path):
+    from baitd import jobqueue
+    from baitd.clip import pipeline as clip_pipeline
+    assert "live_title" in clip_pipeline.CLIP_JOB_KINDS
+    assert jobqueue._CLIP_RUNNERS["live_title"] is clip_pipeline.run_live_title
+    aid = "a1" * 6
+    held = clip_pipeline.analyses_dir() / f"{aid}.json"
+    held.write_text(json.dumps({"origin": "live", "source_id": "b" * 12}), encoding="utf-8")
+    seen, release = [], threading.Event()
+
+    def run(item, settings, cancel, progress, **kw):
+        seen.append(item["payload"])
+        release.wait(WAIT)
+        return held
+
+    path = tmp_path / "queue.json"
+    q = JobQueue(path, runner=lambda *a, **k: tmp_path, clip_runners={"live_title": run})
+    jid = q.add_clip_job("live_title", {"analysis_id": aid}, config.default_profile())
+    row = q.list()[0]
+    assert (row["kind"], row["analysis_id"], row["status"]) == ("live_title", aid, "pending")
+    assert aid in q.held_refs()[1] and aid in q.unfinished_refs()[1]
+    assert JobQueue(path).list()[0]["kind"] == "live_title"  # survives a reload
+    q.start()
+    assert wait_for(lambda: seen)
+    q.sweep_clip_data(keep_sources=False)
+    release.set()
+    assert wait_for(lambda: statuses(q) == ["done"])
+    q.stop()
+    row = q.list()[0]
+    assert seen == [{"analysis_id": aid}] and row["output"] == "" and row["analysis_id"] == aid
+    q.remove(jid)
+    assert held.exists()  # the moment stays for review: the title job owns nothing

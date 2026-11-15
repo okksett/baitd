@@ -31,6 +31,10 @@ class ContentBlocked(UserError):
     """The provider's content filter refused the text (callers that split a long text skip the piece)."""
 
 
+class QuotaExhausted(UserError):
+    """A 429 that waiting cannot fix: a daily quota or no balance left (callers stop asking for the session)."""
+
+
 def _cap(text: str) -> str:
     return text[:1].upper() + text[1:]
 
@@ -146,9 +150,9 @@ def request(method: str, url: str, provider: str, model: str = "", *, noun: str 
         if exhausted:
             where = f" para el modelo '{model}'" if model else ""
             extra = f" ({detail})" if detail else ""
-            raise UserError(f"Se acabó la cuota de {provider}{where}{extra}",
-                            "Elige otro modelo en Ajustes, espera a que se renueve (la diaria, mañana) "
-                            "o revisa tu plan")
+            raise QuotaExhausted(f"Se acabó la cuota de {provider}{where}{extra}",
+                                 "Elige otro modelo en Ajustes, espera a que se renueve (la diaria, mañana) "
+                                 "o revisa tu plan")
         raise UserError(f"{_cap(provider)} alcanzó el límite de peticiones o de cuota",
                         "Espera un momento o revisa tu plan")
     if retry and status >= 500:

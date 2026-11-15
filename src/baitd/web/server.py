@@ -924,6 +924,15 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
             abort(404)
         return send_file(path, mimetype="image/jpeg", conditional=True)
 
+    @app.post("/api/live/moments/<analysis_id>/ai")
+    def post_live_moment_ai(analysis_id: str):
+        """"Título con IA" in review: queue the job that asks the AI for a title (the span never moves)."""
+        data = _body()
+        if analysis_or_404(analysis_id).get("origin") != "live":
+            abort(404)
+        profile = _find_profile(data["profile_id"]) if "profile_id" in data else _profiles()[0]
+        return jsonify(job_id=queue.add_clip_job("live_title", {"analysis_id": analysis_id}, profile))
+
     @app.post("/api/ytdlp/update")
     def ytdlp_update():
         _body()

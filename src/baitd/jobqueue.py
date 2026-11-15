@@ -25,7 +25,8 @@ _HOLDING = (*_UNFINISHED, *_RETRYABLE)  # items whose source (and analysis) must
 _PUBLIC = ("id", "topic", "status", "step", "step_index", "percent", "step_percent", "error", "output",
            "profile_name", "created_at", "kind", "analysis_id")
 _CLIP_RUNNERS = {"clip_auto": clip_pipeline.run_clip_auto, "clip_analyze": clip_pipeline.run_clip_analyze,
-                 "clip_export": clip_pipeline.run_clip_export}
+                 "clip_export": clip_pipeline.run_clip_export, "live_title": clip_pipeline.run_live_title}
+_ANALYSIS_KINDS = ("clip_export", "live_title")  # jobs that work on a saved analysis (payload.analysis_id)
 _UNEXPECTED = "Error inesperado: {} → Revisa el registro y vuelve a intentarlo"
 
 
@@ -136,11 +137,12 @@ class JobQueue:
         return ids
 
     def add_clip_job(self, kind: str, payload: dict, profile: Profile) -> str:
-        """Queue a clipping job (`clip_auto`, `clip_analyze` or `clip_export`) with a profile snapshot."""
+        """Queue a clipping job (`clip_auto`, `clip_analyze`, `clip_export` or `live_title`) with a profile
+        snapshot."""
         if kind not in clip_pipeline.CLIP_JOB_KINDS or not isinstance(payload, dict):
             raise ValueError(f"bad clip job: {kind!r}")
         topic = self._clip_topic(kind, payload)
-        analysis_id = payload.get("analysis_id") if kind == "clip_export" else ""
+        analysis_id = payload.get("analysis_id") if kind in _ANALYSIS_KINDS else ""
         item = {
             "id": uuid.uuid4().hex[:12], "topic": topic, "status": "pending",
             "step": "", "step_index": 0, "percent": 0.0, "step_percent": 0.0, "error": "", "output": "",
@@ -159,7 +161,7 @@ class JobQueue:
     def _clip_topic(kind: str, payload: dict) -> str:
         """The link or file name until the job learns the source's title (on_title)."""
         try:
-            if kind == "clip_export":
+            if kind in _ANALYSIS_KINDS:
                 return clip_sources.load_source(clip_pipeline.load_analysis(payload.get("analysis_id"))["source_id"]).title
             source = payload.get("source")
             source = source if isinstance(source, dict) else {}
@@ -321,6 +323,8 @@ class JobQueue:
                 outcome = {"status": "done", "percent": 100.0, "output": str(path)}
                 if kind == "clip_analyze":  # the analysis file, not a folder: the item frees the queue
                     outcome.update(output="", analysis_id=Path(path).stem)
+                elif kind == "live_title":  # the moment's analysis, edited in place: no folder to open
+                    outcome["output"] = ""
         except JobCancelled:
             outcome = {"status": "cancelled", "output": ""}  # the pipeline removed the folder
         except UserError as e:

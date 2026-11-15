@@ -746,3 +746,116 @@ def test_moment_badge_and_cam_validation():
 
 def test_moment_accepts_partido_framing():
     assert pipeline._moment_from_dict(_moment_dict(framing="partido")).framing == "partido"
+
+
+# ---- live moments: transcribed at export, AI title on demand ----
+
+def _live_analysis(make_mp4, start=1.0, end=12.0, seconds=14):
+    from types import SimpleNamespace
+
+    from baitd.live import store
+    from baitd.live.buffer import Cut
+    cut = Cut(make_mp4(seconds=seconds, w=320, h=180, fps=15), start, end, float(seconds), False)
+    ch = SimpleNamespace(platform="kick", handle="westcol", mine=False, framing="cara", url="https://kick.com/westcol")
+    return store.save_moment(cut, channel=ch, title="Mi marca", reason="manual", at=1_700_000_000.0,
+                             session_id="s1", framing="cara")
+
+
+def _rendered(monkeypatch):
+    seen = []
+
+    def fake_render(src, m, words, plan, profile, ropts, workdir, out, cancel, on_progress):
+        seen.append((m.start, m.end))
+        out.write_bytes(b"x")
+
+    monkeypatch.setattr(pipeline, "render_clip", fake_render)
+    return seen
+
+
+def _export_item(aid):
+    return _item("clip_export", {"analysis_id": aid, "moments": pipeline.load_analysis(aid)["moments"]})
+
+
+def test_export_transcribes_live_moment_once(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    aid = _live_analysis(make_mp4)
+    assert pipeline.load_analysis(aid)["transcript"]["words"] == []
+    _rendered(monkeypatch)
+    settings = _settings(tmp_path, keep_sources=True)
+    calls = []
+    pipeline.run_clip_export(_export_item(aid), settings, threading.Event(), lambda *a: calls.append(a), providers)
+    assert providers.seen["transcribe"] == 1
+    analysis = pipeline.load_analysis(aid)
+    assert len(analysis["transcript"]["words"]) == 80 and analysis["transcript"]["language"] == "es"
+    assert analysis["origin"] == "live"
+    assert "transcribe" in {c[0] for c in calls}
+    pipeline.run_clip_export(_export_item(aid), settings, threading.Event(), lambda *a: None, providers)
+    assert providers.seen["transcribe"] == 1  # the second export reads the saved words
+
+
+def test_export_snaps_live_bounds(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    from baitd.live import store
+    monkeypatch.setattr(pipeline, "MIN_CLIP_S", 5.0)  # a clip ending at 9.6 s cannot last the real 10 s minimum
+    aid = _live_analysis(make_mp4, start=2.6, end=9.0, seconds=12)
+    words = [Word("Hola", 1.0, 1.4), Word("amigos.", 1.5, 2.0)]
+    words += [Word(f"palabra{i}", 2.5 + 0.5 * i, 2.9 + 0.5 * i) for i in range(13)]  # 2.5 .. 8.9
+    words += [Word("fin.", 9.2, 9.6), Word("Otra", 10.0, 10.4), Word("cosa.", 10.5, 11.0)]
+    store.update_moment(aid, transcript=Transcript("es", words, 12.0).to_dict())
+    seen = _rendered(monkeypatch)
+    pipeline.run_clip_export(_export_item(aid), _settings(tmp_path, keep_sources=True), threading.Event(),
+                             lambda *a: None, providers)
+    assert providers.seen["transcribe"] == 0  # the analysis already had words
+    assert seen == [(2.5, 9.6)]
+
+
+def test_export_does_not_snap_ordinary_analyses(tmp_data, tmp_path, providers, monkeypatch):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    moment = {**pipeline.load_analysis(path.stem)["moments"][0], "start": 2.2, "end": 13.3}
+    seen = _rendered(monkeypatch)
+    pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem, "moments": [moment]}),
+                             _settings(tmp_path, keep_sources=True), threading.Event(), lambda *a: None, providers)
+    assert seen == [(2.2, 13.3)] and providers.seen["transcribe"] == 1  # only the analyze run transcribed
+
+
+def _title_reply(prompt, tipo="humor"):
+    assert '"inicio"' not in prompt and "palabra" in prompt
+    return "```json\n" + json.dumps({"tipo": tipo, "titulo": "Título de la IA", "descripcion": "Lo que pasa",
+                                      "hashtags": ["risa"]}) + "\n```"
+
+
+def test_live_title_keeps_bounds(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4, start=1.5, end=12.3)
+    providers.complete = _title_reply
+    calls = []
+    item = {**_item("live_title", {"analysis_id": aid})}
+    path = pipeline.run_live_title(item, _settings(tmp_path), threading.Event(), lambda *a: calls.append(a),
+                                   providers)
+    assert path == pipeline.analyses_dir() / f"{aid}.json"
+    analysis = pipeline.load_analysis(aid)
+    m = analysis["moments"][0]
+    assert m["title"] == "Título de la IA" and m["description"] == "Lo que pasa" and m["hashtags"] == ["#risa"]
+    assert (m["start"], m["end"]) == (1.5, 12.3)
+    assert m["kind"] == "gracioso" and analysis["live"]["classified"] is True
+    assert providers.seen["transcribe"] == 1 and len(analysis["transcript"]["words"]) == 80
+    assert [c[0] for c in calls if c[1] == 3][:1] == ["moments"]
+    assert (sources.sources_dir() / analysis["source_id"]).is_dir()  # the title job never releases the source
+
+
+def test_live_title_nothing_keeps_kind(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4)
+    providers.complete = lambda prompt: _title_reply(prompt, tipo="nada")
+    pipeline.run_live_title(_item("live_title", {"analysis_id": aid}), _settings(tmp_path), threading.Event(),
+                            lambda *a: None, providers)
+    analysis = pipeline.load_analysis(aid)
+    assert analysis["moments"][0]["kind"] == "interesante" and analysis["live"]["classified"] is True
+    assert analysis["moments"][0]["title"] == "Título de la IA"
+
+
+def test_live_title_unreadable_reply_changes_nothing(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4)
+    providers.complete = lambda prompt: "no json at all"
+    with pytest.raises(UserError):
+        pipeline.run_live_title(_item("live_title", {"analysis_id": aid}), _settings(tmp_path), threading.Event(),
+                                lambda *a: None, providers)
+    analysis = pipeline.load_analysis(aid)
+    assert analysis["moments"][0]["title"] == "Mi marca" and analysis["live"]["classified"] is False
