@@ -18,11 +18,15 @@ def test_parse_and_format():
     assert format_hotkey(*parse_hotkey("shift+ctrl+a")) == "Ctrl+Shift+A"
     assert parse_hotkey("f24")[1] == "f24" and parse_hotkey("ctrl+a")[1] == "a"
     assert parse_hotkey("pause") == (frozenset(), "pause") and parse_hotkey("PageDown")[1] == "pagedown"
-    for bad in ("", "ctrl", "f25", "ctrl+ñ", "f0", "ctrl+f9+f10", "ctrl++f9", "f9+ctrl", "ctrl+ctrl+f9", None, 9, "a", "0", "z"):
+    # Shift alone is no modifier for a letter or digit (Shift+A would grab every capital A system-wide)
+    assert format_hotkey(*parse_hotkey("ctrl+shift+a")) == "Ctrl+Shift+A" and parse_hotkey("win+shift+5")[1] == "5"
+    assert parse_hotkey("alt+7")[1] == "7" and parse_hotkey("shift+f9") == (frozenset({"shift"}), "f9")
+    for bad in ("", "ctrl", "f25", "ctrl+ñ", "f0", "ctrl+f9+f10", "ctrl++f9", "f9+ctrl", "ctrl+ctrl+f9", None, 9, "a", "0", "z",
+                "shift+a", "shift+5", "SHIFT+Z"):
         with pytest.raises(HotkeyError) as e:
             parse_hotkey(bad)
         assert e.value.cause == "Esa tecla no se puede usar"
-        assert "Elige una tecla de función (F1–F24)" in e.value.fix
+        assert "Elige una tecla de función (F1–F24)" in e.value.fix and "Ctrl, Alt o Win" in e.value.fix
 
 
 class FakeUser32:

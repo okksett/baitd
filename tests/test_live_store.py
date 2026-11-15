@@ -32,6 +32,7 @@ def test_save_and_list(tmp_data, cut):
     assert first["has_thumb"] is True and first["gap"] is False and first["mine"] is False
     assert first["classified"] is False and first["kind"] == "interesante"
     assert first["title"] == "Gran jugada" and first["duration"] == pytest.approx(12.0, abs=0.5)
+    assert first["length"] == pytest.approx(6.0)  # the moment itself (end - start), not the padded file
     assert store.thumb_path(aid).is_file()
     m = clip_pipeline.load_analysis(aid)["moments"][0]
     assert m["credit"] == "@westcol" and m["badge"] == "kick" and m["cam"] is None

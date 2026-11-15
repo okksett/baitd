@@ -362,8 +362,12 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 .capture .btns { margin-top: 12px; }
 
 .notices { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.notice { padding: 7px 12px; border-radius: 10px; border: 1px solid var(--line); border-left: 3px solid var(--run); background: var(--panel); font-size: 13px; }
-.notice.warn { border-left-color: var(--warn); }
+/* status dot like the channel's live dot: blue for news, amber for a problem */
+.notice { display: flex; align-items: baseline; gap: 8px; padding: 7px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+.notice::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--run); transform: translateY(-1px); }
+.notice.warn { color: var(--warn); }
+.notice.warn::before { background: var(--warn); }
+.app-alert { margin: -12px 0 16px; }
 
 .live-moments { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
 .lm { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 14px; align-items: start; }

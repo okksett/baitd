@@ -608,6 +608,17 @@ def test_live_ui_seams():
     assert "cam:" in export
     tabs = js[js.index("function setTab"):js.index("function onTabKey")]
     assert ".tabs [role=" in tabs  # the sub-tabs are not main tabs
+    # a moment already being exported (e.g. from its review card) is never queued twice and leaves the selection
+    bulk = js[js.index("async function exportLiveMoments"):js.index("// ---------- en directo: the hotkey recorder")]
+    assert 'momentJob(id, "clip_export")' in bulk
+    card = js[js.index("function updateLiveMoment"):js.index("async function askTitle")]
+    assert "L.picked.delete(id)" in card
+    assert "state.live.picked.delete(r.analysisId)" in export
+    # Shift alone does not make a letter or digit usable as the hotkey (as hotkey.parse_hotkey)
+    rec = js[js.index("function hotkeyFromEvent"):js.index("function setHotkeyHint")]
+    assert "e.ctrlKey || e.altKey || e.metaKey" in rec
+    # no_capture and hotkey_busy are explained on every tab, not only inside the En directo panel
+    assert '"no_capture", "hotkey_busy"' in js and 'id="live-alert"' in INDEX.read_text("utf-8")
 
 
 def test_index_has_rights_notice_key(client):

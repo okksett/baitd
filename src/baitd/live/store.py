@@ -117,7 +117,9 @@ def list_moments() -> list[dict]:
                 "reason": live["reason"], "at": live["at"], "kind": moment["kind"],
                 "classified": bool(live["classified"]), "platform": live["platform"],
                 "handle": live["handle"], "mine": bool(live["mine"]),
-                "duration": float(raw["transcript"]["duration"]), "gap": bool(live["gap"]),
+                "duration": float(raw["transcript"]["duration"]),  # the file, with the review padding
+                "length": round(float(moment["end"]) - float(moment["start"]), 3),  # the moment itself
+                "gap": bool(live["gap"]),
                 "has_thumb": (sources.sources_dir() / source_id / THUMB).is_file()}
         except (KeyError, IndexError, TypeError, ValueError):
             continue

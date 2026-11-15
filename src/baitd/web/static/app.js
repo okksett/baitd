@@ -24,7 +24,8 @@
   const CHANNELS_RECHECK_MS = 5000; // the server checks the channels in the background: ask again soon
   const NOTICE_MS = 20000;
   const NOTICE_WARN_MS = 60000;
-  const NOTICE_WARN = ["ended", "error", "disk_full", "hotkey_busy", "save_error", "chat_off", "no_capture", "no_footage", "too_short"];
+  const NOTICE_WARN = ["ended", "error", "disk_full", "save_error", "chat_off", "no_footage", "too_short"];
+  const APP_NOTICES = ["no_capture", "hotkey_busy"]; // shown app-wide (#live-alert), whatever tab is open
   const CAM_ASPECT = 1080 / 768;
   // SubtitleStyle.font -> CSS family + weight (declared with @font-face in app.css)
   const FONT_CSS = {
@@ -1458,6 +1459,7 @@
     try {
       await flushSave(); // the export takes the hook title, credit and music switches from the saved profile
       await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments });
+      state.live.picked.delete(r.analysisId); // a live moment queued here must not go again with "Exportar seleccionados"
       state.clip.review = null;
       renderClipReview();
       $("#clip-status").textContent = tr("clip.added");
@@ -1871,6 +1873,7 @@
       showError($(".ch-err", li), e);
       return;
     }
+    showAppAlert(""); // "no capture" no longer applies
     renderCapture();
     renderChannels();
     pollStatus();
@@ -1974,8 +1977,21 @@
     $("#live-hotkey-hint").textContent = tr("live.hotkey_tip", { key: L.hotkey });
   }
 
+  // A hotkey press with no capture, or a hotkey the system refused, is explained on every tab (spec §6.1):
+  // in the app-wide line under the header instead of the panel's notices.
+  let appAlertTimer = null;
+
+  function showAppAlert(text) {
+    const el = $("#live-alert");
+    clearTimeout(appAlertTimer);
+    el.textContent = text;
+    el.hidden = !text;
+    if (text) appAlertTimer = setTimeout(() => showAppAlert(""), NOTICE_WARN_MS);
+  }
+
   function addNotice(ev) {
     const L = state.live;
+    if (APP_NOTICES.includes(ev.kind)) { showAppAlert(ev.text); return; }
     const warn = NOTICE_WARN.includes(ev.kind);
     L.notices.push({ id: ev.id, kind: ev.kind, text: ev.text, warn, until: Date.now() + (warn ? NOTICE_WARN_MS : NOTICE_MS) });
     L.notices = L.notices.slice(-4);
@@ -2108,10 +2124,12 @@
     $(".lm-handle", node).textContent = channelLabel(m.platform, m.handle, "");
     $(".lm-reason", node).textContent = tr(`live.reason.${m.reason}`);
     $(".lm-time", node).textContent = fmtClock(m.at);
-    $(".lm-dur", node).textContent = tr("moment.len", { s: fmtTime(m.duration, false) });
+    // the marked moment, not the file (which carries up to 20 s of review padding on each side)
+    $(".lm-dur", node).textContent = tr("moment.len", { s: fmtTime(m.length, false) });
     $(".lm-gap", node).hidden = !m.gap;
     $(".lm-unclassified", node).hidden = m.reason === "manual" || m.classified;
     const exporting = Boolean(momentJob(id, "clip_export"));
+    if (exporting) L.picked.delete(id); // already queued: the count and the export button follow
     const asking = L.aiPosting.has(id) || Boolean(momentJob(id, "live_title"));
     const busy = $(".lm-busy", node);
     busy.textContent = exporting ? tr("live.exporting") : asking ? tr("live.ai_busy") : "";
@@ -2175,7 +2193,8 @@
   // One export per ticked moment, each with the moment as stored (title, framing, credit, cam box).
   async function exportLiveMoments() {
     const L = state.live;
-    const ids = L.moments.map((m) => m.analysis_id).filter((id) => L.picked.has(id));
+    // one already in the queue (e.g. exported from its review card) is not queued a second time
+    const ids = L.moments.map((m) => m.analysis_id).filter((id) => L.picked.has(id) && !momentJob(id, "clip_export"));
     if (!ids.length || L.exporting || !state.current) return;
     L.exporting = true;
     $("#live-moments-status").textContent = "";
@@ -2221,7 +2240,8 @@
     else if (HOTKEY_NAMED[code]) key = HOTKEY_NAMED[code];
     if (!key) return { error: "live.hotkey_bad" };
     const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean);
-    if (!mods.length && key.length === 1) return { error: "live.hotkey_needs_mod" }; // it would steal typing
+    // a letter or digit alone, or with Shift only (capitals), would steal typing: it needs Ctrl, Alt or Win
+    if (key.length === 1 && !(e.ctrlKey || e.altKey || e.metaKey)) return { error: "live.hotkey_needs_mod" };
     return { value: [...mods, key].join("+") };
   }
 

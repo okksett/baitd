@@ -43,7 +43,7 @@ class HotkeyError(UserError):
 
 def _bad() -> HotkeyError:
     return HotkeyError("Esa tecla no se puede usar",
-                       "Elige una tecla de función (F1–F24) o una combinación con Ctrl, Alt o Mayús")
+                       "Elige una tecla de función (F1–F24), o una letra o un número con Ctrl, Alt o Win")
 
 
 def _valid_key(key: str) -> bool:
@@ -65,7 +65,9 @@ def parse_hotkey(spec: str) -> tuple[frozenset[str], str]:
     *mods, key = parts
     if len(set(mods)) != len(mods) or any(m not in _MODS for m in mods) or not _valid_key(key):
         raise _bad()
-    if not mods and (len(key) == 1):  # a bare letter or digit would steal typing system-wide
+    # a letter or digit with no modifier, or with Shift only (capitals, symbols), would steal typing
+    # system-wide: it needs Ctrl, Alt or Win (Shift may come on top)
+    if len(key) == 1 and not set(mods) - {"shift"}:
         raise _bad()
     return frozenset(mods), key
 
