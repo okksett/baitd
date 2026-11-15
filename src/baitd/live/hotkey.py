@@ -65,6 +65,8 @@ def parse_hotkey(spec: str) -> tuple[frozenset[str], str]:
     *mods, key = parts
     if len(set(mods)) != len(mods) or any(m not in _MODS for m in mods) or not _valid_key(key):
         raise _bad()
+    if not mods and (len(key) == 1):  # a bare letter or digit would steal typing system-wide
+        raise _bad()
     return frozenset(mods), key
 
 
@@ -150,18 +152,27 @@ class HotkeyListener:
     # ---- Windows ------------------------------------------------------------------
 
     def _start_windows(self) -> None:
-        ready = threading.Event()
+        ready, cancel = threading.Event(), threading.Event()
         outcome: list[BaseException | None] = []
-        thread = threading.Thread(target=self._message_loop, args=(ready, outcome), name="live-hotkey", daemon=True)
+        thread = threading.Thread(target=self._message_loop, args=(ready, cancel, outcome), name="live-hotkey",
+                                  daemon=True)
+        self._thread = thread  # stored first: a late thread can still be stopped
         thread.start()
         if not ready.wait(START_TIMEOUT_S):
+            cancel.set()  # the thread skips registering, or unregisters and ends if it was already past that
+            self._thread = None
+            if self._tid:
+                try:
+                    _user32().PostThreadMessageW(self._tid, WM_QUIT, 0, 0)
+                except Exception:
+                    log.exception("No se pudo avisar al hilo de la tecla rápida")
             raise HotkeyError("No se pudo activar la tecla rápida", "Usa el botón Marcar de la ventana")
         if outcome[0] is not None:
+            self._thread = None
             thread.join(STOP_TIMEOUT_S)
             raise outcome[0]  # type: ignore[misc]
-        self._thread = thread
 
-    def _message_loop(self, ready: threading.Event, outcome: list) -> None:
+    def _message_loop(self, ready: threading.Event, cancel: threading.Event, outcome: list) -> None:
         from ctypes import wintypes
         registered = False
         try:
@@ -170,10 +181,16 @@ class HotkeyListener:
             msg = wintypes.MSG()
             user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)  # creates this thread's message queue
             mods = sum(_MODS[m] for m in self._mods) | MOD_NOREPEAT
+            if cancel.is_set():  # start() gave up waiting
+                outcome.append(HotkeyError("No se pudo activar la tecla rápida", "Usa el botón Marcar de la ventana"))
+                return
             if not user32.RegisterHotKey(None, HOTKEY_ID, mods, _vk(self._key)):
                 outcome.append(HotkeyError(f"La tecla {self.spec} ya la usa otro programa", "Elige otra en Ajustes"))
                 return
             registered = True
+            if cancel.is_set():  # gave up while RegisterHotKey ran: release it and end
+                user32.UnregisterHotKey(None, HOTKEY_ID)
+                return
             outcome.append(None)
         except Exception:
             log.exception("No se pudo registrar la tecla rápida")

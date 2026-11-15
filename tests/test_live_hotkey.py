@@ -16,8 +16,9 @@ def test_parse_and_format():
     assert parse_hotkey("F9") == (frozenset(), "f9")
     assert format_hotkey(*parse_hotkey(" ALT + win + PageUp ")) == "Alt+Win+PageUp"
     assert format_hotkey(*parse_hotkey("shift+ctrl+a")) == "Ctrl+Shift+A"
-    assert parse_hotkey("f24")[1] == "f24" and parse_hotkey("0")[1] == "0"
-    for bad in ("", "ctrl", "f25", "ctrl+ñ", "f0", "ctrl+f9+f10", "ctrl++f9", "f9+ctrl", "ctrl+ctrl+f9", None, 9):
+    assert parse_hotkey("f24")[1] == "f24" and parse_hotkey("ctrl+a")[1] == "a"
+    assert parse_hotkey("pause") == (frozenset(), "pause") and parse_hotkey("PageDown")[1] == "pagedown"
+    for bad in ("", "ctrl", "f25", "ctrl+ñ", "f0", "ctrl+f9+f10", "ctrl++f9", "f9+ctrl", "ctrl+ctrl+f9", None, 9, "a", "0", "z"):
         with pytest.raises(HotkeyError) as e:
             parse_hotkey(bad)
         assert e.value.cause == "Esa tecla no se puede usar"
@@ -116,6 +117,51 @@ def test_busy_key_raises(monkeypatch):
     assert fake.unregistered == []  # nothing to release
 
 
+@windows_only
+def test_start_timeout_does_not_orphan_the_thread(monkeypatch):
+    release = threading.Event()
+    entered = threading.Event()
+
+    class Slow(FakeUser32):
+        def RegisterHotKey(self, *a):
+            entered.set()
+            release.wait(5)  # blocks past the (patched) start timeout
+            return super().RegisterHotKey(*a)
+
+    fake = Slow()
+    monkeypatch.setattr(hotkey, "_user32", lambda: fake)
+    monkeypatch.setattr(hotkey, "START_TIMEOUT_S", 0.2)
+    listener = hotkey.HotkeyListener("F9", lambda: None)
+    with pytest.raises(HotkeyError):
+        listener.start()
+    assert entered.is_set()
+    release.set()
+    t = next(t for t in threading.enumerate() if t.name == "live-hotkey")
+    t.join(3)
+    assert not t.is_alive()
+    assert fake.registered and fake.unregistered == [(None, 1)]  # registered late, released at once
+
+
+@windows_only
+def test_start_timeout_before_register_skips_it(monkeypatch):
+    gate = threading.Event()
+
+    class Slow(FakeUser32):
+        def PeekMessageW(self, *a):
+            gate.wait(5)  # the thread is slow to get going
+            return 0
+
+    fake = Slow()
+    monkeypatch.setattr(hotkey, "_user32", lambda: fake)
+    monkeypatch.setattr(hotkey, "START_TIMEOUT_S", 0.2)
+    with pytest.raises(HotkeyError):
+        hotkey.HotkeyListener("F9", lambda: None).start()
+    gate.set()
+    t = next(t for t in threading.enumerate() if t.name == "live-hotkey")
+    t.join(3)
+    assert not t.is_alive() and fake.registered == [] and fake.unregistered == []
+
+
 def test_bad_spec_fails_at_construction():
     with pytest.raises(HotkeyError):
         hotkey.HotkeyListener("ctrl", lambda: None)
@@ -134,7 +180,7 @@ def test_pynput_failure_is_explained(monkeypatch):
 def test_pynput_spec_translation():
     assert hotkey._pynput_spec(*parse_hotkey("ctrl+shift+f9")) == "<ctrl>+<shift>+<f9>"
     assert hotkey._pynput_spec(*parse_hotkey("win+pagedown")) == "<cmd>+<page_down>"
-    assert hotkey._pynput_spec(*parse_hotkey("a")) == "a"
+    assert hotkey._pynput_spec(*parse_hotkey("ctrl+a")) == "<ctrl>+a"
 
 
 class FakeListener:
