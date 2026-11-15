@@ -93,7 +93,6 @@ class Capture(threading.Thread):
         self.on_segment: Callable[[Path, float, float], None] | None = None
         self._server_offsets: collections.deque[float] = collections.deque(maxlen=5)
         self._date_offsets: collections.deque[float] = collections.deque(maxlen=5)
-        self._seen: set[int] = set()
         self._last_seq: int | None = None
         self._prev: tuple[int, float] | None = None  # (seq, end) of the last segment handled
         self._announced = False
@@ -214,6 +213,8 @@ class Capture(threading.Thread):
                 continue
             if info:
                 self.info = info
+            if self._stop_evt.is_set():
+                raise _Stopped()
             try:
                 return url, self._fetch_playlist(url)
             except _NET_ERRORS as e:
@@ -235,14 +236,14 @@ class Capture(threading.Thread):
         segs = pl.segments
         if segs and self._last_seq is not None and segs[-1].seq < self._last_seq:
             log.info("La numeración bajó: el directo se reinició")
-            self._seen.clear()
             self._last_seq = None
             self._prev = None
+            self._first_poll = True  # trim this batch to the newest FIRST_FETCH_S again
         if self._first_poll and segs:
             segs = self._newest(segs, FIRST_FETCH_S)
         self._first_poll = False
 
-        fresh = [s for s in segs if s.seq not in self._seen]
+        fresh = [s for s in segs if self._last_seq is None or s.seq > self._last_seq]
         anchor: float | None = None
         if fresh and self._prev is None and fresh[0].start is None:
             # R5: no program-date-times; the newest segment ends `delay` s behind the server clock
@@ -250,11 +251,12 @@ class Capture(threading.Thread):
             anchor = self.server_now() - delay - sum(s.duration for s in fresh)
 
         for seg in fresh:
+            if self._stop_evt.is_set():
+                raise _Stopped()
             start = self._start_of(seg, anchor)
             anchor = None
             if not seg.ad:
                 self._store(seg, start)
-            self._seen.add(seg.seq)
             self._last_seq = seg.seq if self._last_seq is None else max(self._last_seq, seg.seq)
             self._prev = (seg.seq, start + seg.duration)
 

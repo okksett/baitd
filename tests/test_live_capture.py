@@ -125,6 +125,53 @@ def test_first_poll_takes_last_60_s(env):
     assert nums == list(range(1708, 1720))
 
 
+def test_overlapping_big_windows_add_only_new_segments(env):
+    env.http.playlists += [playlist(1000, 720, dur=5.0, pdt0=T0, target=5),
+                           playlist(1001, 720, dur=5.0, pdt0=T0 + 5, target=5)]
+    env.run()
+    nums = [int(u.rsplit("seg", 1)[1][:-3]) for u in env.http.segment_urls]
+    assert nums == list(range(1708, 1721))  # 12 on the first poll, exactly 1 on the second
+
+
+def test_reconnect_with_overlapping_playlist_adds_only_new(env):
+    env.http.playlists += [playlist(1000, 720, dur=5.0, pdt0=T0, target=5), Resp(status=500),
+                           playlist(1002, 720, dur=5.0, pdt0=T0 + 10, target=5)]
+    env.run()
+    nums = [int(u.rsplit("seg", 1)[1][:-3]) for u in env.http.segment_urls]
+    assert nums == list(range(1708, 1722))
+
+
+def test_no_pdt_old_segments_are_not_chained_after_head(env):
+    env.http.playlists += [playlist(1000, 720, dur=5.0, target=5), playlist(1001, 720, dur=5.0, target=5)]
+    env.run()
+    segs = sorted(env.buf._segs, key=lambda s: s.seq)
+    assert [s.seq for s in segs][0] == 1708
+    for a, b in zip(segs, segs[1:]):
+        assert b.start == pytest.approx(a.end)
+
+
+def test_sequence_drop_trims_again(env):
+    env.http.playlists += [playlist(5000, 3, pdt0=T0), playlist(1, 100, dur=2.0, pdt0=T0 + 10)]
+    env.run()
+    nums = [int(u.rsplit("seg", 1)[1][:-3]) for u in env.http.segment_urls]
+    assert nums[:3] == [5000, 5001, 5002]
+    assert nums[3:] == list(range(71, 101))  # newest 60 s only
+
+
+def test_stop_mid_batch_stops_downloading(env):
+    added = []
+    def hook(p, s, d):
+        added.append(p)
+        if len(added) == 3:
+            env.cap.stop(5)
+    env.cap.on_segment = hook
+    env.http.playlists += [playlist(1, 10, pdt0=T0)]
+    env.run()
+    assert len(added) == 3
+    assert len(env.http.segment_urls) == 3
+    assert env.buf.seconds() == pytest.approx(6.0)
+
+
 def test_ads_never_enter_the_buffer(env):
     env.http.playlists += [playlist(1, 5, pdt0=T0, titles={2: "Amazon|123", 3: "Amazon|123"})]
     env.run()
