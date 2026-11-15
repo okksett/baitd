@@ -11,6 +11,7 @@ import secrets
 import shutil
 import tempfile
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -475,10 +476,13 @@ def release_source_id(source_id, settings: dict, busy: Busy | None) -> None:
 
 def release_analysis(analysis_id, settings: dict, busy: Busy | None) -> None:
     """The finished analyze item that owns this analysis left the queue: the analysis goes unless an unfinished
-    item still needs it, then its source under the same rule as release_source_id."""
+    item still needs it, then its source under the same rule as release_source_id. A live moment never goes
+    this way: removing a queue item leaves it (and its video) in the live list."""
     if not _valid_id(analysis_id) or (busy is not None and analysis_id in busy()[1]):
         return
     file = analyses_dir() / f"{analysis_id}.json"
+    if _is_live(file):  # a live moment belongs to the live list, not to the queue item that used it
+        return
     source_id = _source_of(file) if file.is_file() else None
     delete_analysis(analysis_id)
     if source_id is not None:
@@ -627,22 +631,26 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
-        if analysis.get("origin") == "live" and not transcript.words:  # not transcribed while capturing
-            transcript = _transcribe(src, opts, settings, cancel, steps, providers)
-            _keep_transcript(payload.get("analysis_id"), transcript)
-        if analysis.get("origin") == "live":  # the user's marks, moved only to the nearest whole sentences
-            for m in moments:
-                snapped = snap_to_sentences(m.start, m.end, transcript.words, MIN_CLIP_S, MAX_CLIP_S)
-                if snapped is not None:
-                    m.start, m.end = snapped
-        folder = _open_output(settings, src.title, on_output)
-        _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
-        _write_texts(folder, moments)
+        live = analysis.get("origin") == "live"
+        with ffmpeg.low_priority() if live else nullcontext():  # a capture may be running on this PC
+            if live and not transcript.words:  # not transcribed while capturing
+                transcript = _transcribe(src, opts, settings, cancel, steps, providers)
+                _keep_transcript(payload.get("analysis_id"), transcript)
+            if live:  # the user's marks, moved only to the nearest whole sentences
+                for m in moments:
+                    snapped = snap_to_sentences(m.start, m.end, transcript.words, MIN_CLIP_S, MAX_CLIP_S)
+                    if snapped is not None:
+                        m.start, m.end = snapped
+            folder = _open_output(settings, src.title, on_output)
+            _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
+            _write_texts(folder, moments)
     except BaseException:
         _discard(folder, None)
         raise
     shutil.rmtree(folder / ".work", ignore_errors=True)
-    _release_source(src, settings, busy)  # with keep_sources the analysis stays too: the user may export again
+    if live:  # an exported live moment leaves the live list; its video follows keep_sources as any source
+        delete_analysis(payload.get("analysis_id"))
+    _release_source(src, settings, busy)  # with keep_sources an ordinary analysis stays: the user may export again
     return folder
 
 
@@ -686,7 +694,8 @@ def run_live_title(item: dict, settings: dict, cancel: threading.Event, progress
     steps.end(1)
 
     if not transcript.words:
-        transcript = _transcribe(src, opts, settings, cancel, steps, providers)
+        with ffmpeg.low_priority():  # a capture may be running on this PC (whisper itself is not slowed)
+            transcript = _transcribe(src, opts, settings, cancel, steps, providers)
         _keep_transcript(analysis_id, transcript)
 
     steps.begin(3)

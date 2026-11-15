@@ -91,3 +91,63 @@ def test_low_priority_flag(monkeypatch):
         assert not seen["creationflags"] & 0x4000
     else:
         assert seen.get("preexec_fn") is None
+
+
+def _scope_is_low():
+    import sys
+
+    from baitd import ffmpeg
+    kw = ffmpeg.popen_kwargs()
+    return bool(kw["creationflags"] & 0x4000) if sys.platform == "win32" else "preexec_fn" in kw
+
+
+def test_low_priority_scope_nests_and_restores():
+    from baitd import ffmpeg
+    assert _scope_is_low() is False
+    with ffmpeg.low_priority():
+        assert _scope_is_low() is True
+        with ffmpeg.low_priority(False):
+            assert _scope_is_low() is False
+        assert _scope_is_low() is True
+        with pytest.raises(ValueError):
+            with ffmpeg.low_priority(False):
+                raise ValueError("boom")
+        assert _scope_is_low() is True  # restored after the exception
+    assert _scope_is_low() is False
+    with pytest.raises(ValueError):
+        with ffmpeg.low_priority():
+            raise ValueError("boom")
+    assert _scope_is_low() is False
+
+    other = []
+    with ffmpeg.low_priority():
+        t = threading.Thread(target=lambda: other.append(_scope_is_low()))
+        t.start()
+        t.join()
+    assert other == [False]  # the scope is per thread
+
+
+def test_run_follows_the_scope_unless_told(monkeypatch):
+    import sys
+
+    from baitd import ffmpeg
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        seen.update(kw)
+        return real_popen(*a, **kw)
+
+    def low():
+        return bool(seen["creationflags"] & 0x4000) if sys.platform == "win32" else seen.get("preexec_fn") is not None
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    with ffmpeg.low_priority():
+        run(["-version"])
+        assert low() is True
+        seen.clear()
+        run(["-version"], low_priority=False)  # an explicit value wins
+        assert low() is False
+    seen.clear()
+    run(["-version"], low_priority=True)
+    assert low() is True

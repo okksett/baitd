@@ -130,7 +130,7 @@ def detect_faces(src: SourceInfo, start: float, end: float, fps: float, cancel) 
     out: list[tuple[float, list[Face]]] = []
     with tempfile.TemporaryFile() as errf:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errf,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                **ffmpeg.popen_kwargs())
         try:
             i = 0
             while True:

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
@@ -22,33 +23,56 @@ def ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+_scope = threading.local()
+
+
+@contextmanager
+def low_priority(on: bool = True):
+    """Every FFmpeg call this thread makes inside the block runs below normal priority (on=False: at normal
+    priority), unless the call says otherwise. Blocks nest; the previous value comes back on exit."""
+    before = getattr(_scope, "low", False)
+    _scope.low = on
+    try:
+        yield
+    finally:
+        _scope.low = before
+
+
+def popen_kwargs(low: bool | None = None) -> dict:
+    """creationflags (no console window) and, for a low-priority call, its priority. `low` None: the
+    thread's low_priority() scope decides."""
+    if low is None:
+        low = getattr(_scope, "low", False)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    extra: dict = {}
+    if low:
+        if sys.platform == "win32":
+            flags |= 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            extra["preexec_fn"] = lambda: os.nice(10)
+    return {"creationflags": flags, **extra}
+
+
 def run(
     args: list[str],
     cwd: Path | None = None,
     cancel: threading.Event | None = None,
     on_line: Callable[[str], None] | None = None,
-    low_priority: bool = False,
+    low_priority: bool | None = None,
 ) -> str:
     """Run ffmpeg with `args`; return stderr. Raise RuntimeError on failure, JobCancelled on cancel.
 
-    `low_priority` runs it below normal priority so it does not disturb a live stream on the same PC.
+    `low_priority` runs it below normal priority so it does not disturb a live stream on the same PC; None
+    follows the thread's low_priority() scope.
     """
     cmd = [ffmpeg_exe(), "-hide_banner", "-y", *args]
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    extra: dict = {}
-    if low_priority:
-        if sys.platform == "win32":
-            flags |= 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
-        else:
-            extra["preexec_fn"] = lambda: os.nice(10)
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        creationflags=flags,
-        **extra,
+        **popen_kwargs(low_priority),
     )
     lines: list[str] = []
     tail: deque[str] = deque(maxlen=20)
@@ -116,7 +140,7 @@ def probe(path: Path) -> dict:
         encoding="utf-8",
         errors="replace",
         stdin=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **popen_kwargs(),
     )
     err = proc.stderr
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)

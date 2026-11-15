@@ -779,17 +779,24 @@ def _export_item(aid):
 def test_export_transcribes_live_moment_once(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
     aid = _live_analysis(make_mp4)
     assert pipeline.load_analysis(aid)["transcript"]["words"] == []
-    _rendered(monkeypatch)
+    item = _export_item(aid)
+
+    def broken_render(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(pipeline, "render_clip", broken_render)
     settings = _settings(tmp_path, keep_sources=True)
     calls = []
-    pipeline.run_clip_export(_export_item(aid), settings, threading.Event(), lambda *a: calls.append(a), providers)
-    assert providers.seen["transcribe"] == 1
+    with pytest.raises(UserError):  # the render fails after the transcription
+        pipeline.run_clip_export(item, settings, threading.Event(), lambda *a: calls.append(a), providers)
+    assert providers.seen["transcribe"] == 1 and "transcribe" in {c[0] for c in calls}
     analysis = pipeline.load_analysis(aid)
     assert len(analysis["transcript"]["words"]) == 80 and analysis["transcript"]["language"] == "es"
     assert analysis["origin"] == "live"
-    assert "transcribe" in {c[0] for c in calls}
-    pipeline.run_clip_export(_export_item(aid), settings, threading.Event(), lambda *a: None, providers)
-    assert providers.seen["transcribe"] == 1  # the second export reads the saved words
+    _rendered(monkeypatch)
+    (sources.sources_dir() / analysis["source_id"] / "transcript.json").unlink()  # only the analysis has them now
+    pipeline.run_clip_export(item, settings, threading.Event(), lambda *a: None, providers)  # Reintentar
+    assert providers.seen["transcribe"] == 1  # the retry reads the saved words
 
 
 def test_export_snaps_live_bounds(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
@@ -859,3 +866,70 @@ def test_live_title_unreadable_reply_changes_nothing(tmp_data, tmp_path, provide
                                 lambda *a: None, providers)
     analysis = pipeline.load_analysis(aid)
     assert analysis["moments"][0]["title"] == "Mi marca" and analysis["live"]["classified"] is False
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_exported_live_moment_leaves_the_live_list(tmp_data, tmp_path, providers, make_mp4, monkeypatch, keep):
+    from baitd.live import store
+    aid = _live_analysis(make_mp4)
+    sid = pipeline.load_analysis(aid)["source_id"]
+    _rendered(monkeypatch)
+    pipeline.run_clip_export(_export_item(aid), _settings(tmp_path, keep_sources=keep), threading.Event(),
+                             lambda *a: None, providers)
+    assert aid not in [m["analysis_id"] for m in store.list_moments()]
+    assert not (pipeline.analyses_dir() / f"{aid}.json").exists()
+    assert (sources.sources_dir() / sid).is_dir() is keep  # the video follows keep_sources
+
+
+def test_removing_a_live_export_keeps_the_moment(tmp_data, make_mp4):
+    aid = _live_analysis(make_mp4)
+    sid = pipeline.load_analysis(aid)["source_id"]
+    payload = {"analysis_id": aid, "moments": []}
+    path = tmp_data / "queue.json"
+    _write_queue(path, [_clip_row("q1" + "0" * 10, "clip_export", "error", payload, aid),
+                        _clip_row("q2" + "0" * 10, "clip_export", "cancelled", payload, aid),
+                        _clip_row("q3" + "0" * 10, "clip_export", "done", payload, aid)])
+    q = JobQueue(path)
+    q.remove("q1" + "0" * 10)
+    assert (pipeline.analyses_dir() / f"{aid}.json").is_file() and (sources.sources_dir() / sid).is_dir()
+    q.clear_finished()
+    assert q.list() == []
+    assert (pipeline.analyses_dir() / f"{aid}.json").is_file() and (sources.sources_dir() / sid).is_dir()
+    pipeline.release_analysis(aid, {}, None)  # whatever releases it, a live moment stays in the live list
+    assert (pipeline.analyses_dir() / f"{aid}.json").is_file()
+
+
+def _ffmpeg_priorities(monkeypatch):
+    """(is low priority) for every FFmpeg process started, through any subprocess helper."""
+    import subprocess
+    import sys
+
+    from baitd import ffmpeg
+    seen, real = [], subprocess.Popen
+
+    def popen(cmd, *a, **kw):
+        if cmd and str(cmd[0]) == ffmpeg.ffmpeg_exe():
+            low = (kw.get("creationflags", 0) & 0x4000) if sys.platform == "win32" else kw.get("preexec_fn")
+            seen.append(bool(low))
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return seen
+
+
+def test_live_export_runs_ffmpeg_at_low_priority(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    aid = _live_analysis(make_mp4)
+    item = _export_item(aid)
+    seen = _ffmpeg_priorities(monkeypatch)
+    pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert len(seen) >= 3 and all(seen)  # audio, framing, render: every one below normal
+
+
+def test_ordinary_export_runs_ffmpeg_at_normal_priority(tmp_data, tmp_path, providers, monkeypatch):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    seen = _ffmpeg_priorities(monkeypatch)
+    pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem,
+                                                   "moments": pipeline.load_analysis(path.stem)["moments"]}),
+                             _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert seen and not any(seen)
