@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 import time
@@ -83,14 +84,11 @@ def test_low_priority_flag(monkeypatch):
     if sys.platform == "win32":
         assert seen["creationflags"] & 0x4000
         assert seen["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    else:
-        assert seen["preexec_fn"] is not None
     seen.clear()
     run(["-version"])
     if sys.platform == "win32":
         assert not seen["creationflags"] & 0x4000
-    else:
-        assert seen.get("preexec_fn") is None
+    assert "preexec_fn" not in seen
 
 
 def _scope_is_low():
@@ -98,7 +96,7 @@ def _scope_is_low():
 
     from baitd import ffmpeg
     kw = ffmpeg.popen_kwargs()
-    return bool(kw["creationflags"] & 0x4000) if sys.platform == "win32" else "preexec_fn" in kw
+    return bool(kw["creationflags"] & 0x4000) if sys.platform == "win32" else ffmpeg.is_low()
 
 
 def test_low_priority_scope_nests_and_restores():
@@ -139,15 +137,46 @@ def test_run_follows_the_scope_unless_told(monkeypatch):
         return real_popen(*a, **kw)
 
     def low():
-        return bool(seen["creationflags"] & 0x4000) if sys.platform == "win32" else seen.get("preexec_fn") is not None
+        return bool(seen["creationflags"] & 0x4000) if sys.platform == "win32" else bool(nice)
+
+    nice = []
+    monkeypatch.setattr(ffmpeg, "_set_nice", lambda pid: nice.append(pid))
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     with ffmpeg.low_priority():
         run(["-version"])
         assert low() is True
         seen.clear()
+        nice.clear()
         run(["-version"], low_priority=False)  # an explicit value wins
         assert low() is False
     seen.clear()
     run(["-version"], low_priority=True)
     assert low() is True
+
+
+def test_posix_low_priority_uses_setpriority_after_start_not_preexec_fn(monkeypatch):
+    from baitd import ffmpeg
+    calls = []
+    monkeypatch.setattr(ffmpeg, "_IS_WIN", False)
+    monkeypatch.setattr(os, "PRIO_PROCESS", 0, raising=False)
+    monkeypatch.setattr(os, "setpriority", lambda which, pid, prio: calls.append((which, prio)), raising=False)
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        seen.update(kw)
+        return real_popen(*a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run(["-version"], low_priority=True)
+    assert "preexec_fn" not in seen
+    assert calls == [(0, 10)]
+    calls.clear()
+    run(["-version"], low_priority=False)
+    assert calls == []
+    # an error from setpriority is ignored
+    def boom(*a):
+        raise PermissionError
+    monkeypatch.setattr(os, "setpriority", boom, raising=False)
+    run(["-version"], low_priority=True)

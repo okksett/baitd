@@ -909,7 +909,7 @@ def _ffmpeg_priorities(monkeypatch):
 
     def popen(cmd, *a, **kw):
         if cmd and str(cmd[0]) == ffmpeg.ffmpeg_exe():
-            low = (kw.get("creationflags", 0) & 0x4000) if sys.platform == "win32" else kw.get("preexec_fn")
+            low = (kw.get("creationflags", 0) & 0x4000) if sys.platform == "win32" else ffmpeg.is_low()
             seen.append(bool(low))
         return real(cmd, *a, **kw)
 

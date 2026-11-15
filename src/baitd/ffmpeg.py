@@ -38,19 +38,30 @@ def low_priority(on: bool = True):
         _scope.low = before
 
 
+_IS_WIN = sys.platform == "win32"
+
+
+def is_low(low: bool | None = None) -> bool:
+    """Whether a call runs below normal priority: `low`, or (None) the thread's low_priority() scope."""
+    return bool(getattr(_scope, "low", False) if low is None else low)
+
+
 def popen_kwargs(low: bool | None = None) -> dict:
-    """creationflags (no console window) and, for a low-priority call, its priority. `low` None: the
-    thread's low_priority() scope decides."""
-    if low is None:
-        low = getattr(_scope, "low", False)
+    """creationflags (no console window) and, on Windows, the priority class of a low-priority call.
+    `low` None: the thread's low_priority() scope decides. On POSIX run() lowers the priority after
+    the start (see _set_nice), because preexec_fn is unsafe in a threaded process."""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    extra: dict = {}
-    if low:
-        if sys.platform == "win32":
-            flags |= 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
-        else:
-            extra["preexec_fn"] = lambda: os.nice(10)
-    return {"creationflags": flags, **extra}
+    if is_low(low) and _IS_WIN:
+        flags |= 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
+    return {"creationflags": flags}
+
+
+def _set_nice(pid: int) -> None:
+    """Lower a started process to nice 10 (POSIX); errors are ignored."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, pid, 10)
+    except (OSError, AttributeError):
+        pass
 
 
 def run(
@@ -74,6 +85,8 @@ def run(
         stderr=subprocess.PIPE,
         **popen_kwargs(low_priority),
     )
+    if is_low(low_priority) and not _IS_WIN:
+        _set_nice(proc.pid)
     lines: list[str] = []
     tail: deque[str] = deque(maxlen=20)
 
