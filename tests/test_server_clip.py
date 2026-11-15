@@ -615,3 +615,20 @@ def test_index_has_the_clips_viewer(client):
     html = client.get("/").get_data(as_text=True)
     assert 'id="clips-view"' in html and 'data-job-act="clips"' in html
     assert 'id="clips-grid"' in html and 'id="clips-close"' in html and 'id="clips-open"' in html
+
+
+def test_export_ignores_browser_badge(client, profile_id, queue, tmp_data, make_mp4):
+    src = _source(make_mp4, seconds=30)
+    kick = {"start": 5.0, "end": 25.0, "kind": "interesante", "score": 80, "title": "T", "description": "",
+            "hashtags": [], "text": "", "framing": "cara", "credit": "@x", "badge": "kick"}
+    aid = _analysis(src, moments=[kick])
+    sent = {"start": 5, "end": 25, "framing": "cara", "title": "T", "credit": "@x", "badge": "youtube", "orig": 0}
+    r = client.post(f"/api/analyses/{aid}/export", json={"moments": [sent], "profile_id": profile_id})
+    assert r.status_code == 200, r.get_json()
+    m = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])["payload"]["moments"][0]
+    assert m["badge"] == "kick"
+    # an analysis moment with no badge never gets one from the browser
+    plain = _analysis(src, aid="abcdef012346")
+    r = client.post(f"/api/analyses/{plain}/export", json={"moments": [{**sent, "orig": 0}], "profile_id": profile_id})
+    m = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])["payload"]["moments"][0]
+    assert m.get("badge", "") == ""

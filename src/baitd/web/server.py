@@ -273,7 +273,7 @@ def _export_moments(raw, analysis: dict, duration: float) -> list[dict]:
         else:
             base = next((k for k in known if k.get("start") == start and k.get("end") == end), {})
         out.append({**base, "start": float(start), "end": float(end), "framing": framing,
-                    "title": title, "credit": credit})
+                    "title": title, "credit": credit, "badge": base.get("badge", "")})
     return out
 
 

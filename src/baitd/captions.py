@@ -322,6 +322,48 @@ _CREDIT_BASELINE = {"portrait": 0.78, "landscape": 0.93}  # bottom of the credit
 _FOREVER = 36000.0  # the credit lasts the whole clip; ffmpeg ends the stream
 
 
+def _rrect(x0: int, y0: int, x1: int, y1: int, r: int) -> str:
+    """A clockwise rounded rectangle as an ASS drawing (quarter circles as one bezier each)."""
+    k = round(r * 0.45)  # bezier handle length for a quarter circle
+    return (f"m {x0 + r} {y0} l {x1 - r} {y0} b {x1 - k} {y0} {x1} {y0 + k} {x1} {y0 + r} "
+            f"l {x1} {y1 - r} b {x1} {y1 - k} {x1 - k} {y1} {x1 - r} {y1} "
+            f"l {x0 + r} {y1} b {x0 + k} {y1} {x0} {y1 - k} {x0} {y1 - r} "
+            f"l {x0} {y0 + r} b {x0} {y0 + k} {x0 + k} {y0} {x0 + r} {y0}")
+
+
+# Platform logos as ASS drawings in a 100x100 box: (BGR colour, path) layers painted in order.
+_BADGE_SHAPES: dict[str, list[tuple[str, str]]] = {
+    "kick": [
+        ("18FC53", _rrect(0, 0, 100, 100, 18)),
+        ("000000", "m 26 22 l 42 22 l 42 78 l 26 78 "                  # the K: stem,
+                   "m 42 52 l 60 22 l 78 22 l 58 52 "                  # upper arm,
+                   "m 42 48 l 58 48 l 78 78 l 60 78"),                 # lower leg
+    ],
+    "twitch": [
+        ("FF4691", "m 0 0 l 100 0 l 100 62 l 72 90 l 54 90 l 36 100 l 36 90 l 0 90"),
+        ("FFFFFF", "m 34 18 l 46 18 l 46 52 l 34 52 m 62 18 l 74 18 l 74 52 l 62 52"),
+    ],
+    "youtube": [
+        ("0000FF", _rrect(0, 15, 100, 85, 20)),
+        ("FFFFFF", "m 40 32 l 68 50 l 40 68"),
+    ],
+}
+# Both corners of the 100-unit box, so every layer has the same bounding box and they line up.
+_ANCHOR = "m 0 0 m 100 100 "
+_BADGE_SIZE = 1.0  # logo height as a share of the credit size
+_BADGE_GAP = 0.3  # gap between logo and text, as a share of the credit size
+
+
+def _badge_events(badge: str, x: int, y: int, height: int, alpha: str) -> list[str]:
+    """The logo bottom-left at (x, y), `height` pixels tall, with a thin dark outline like the text: one Dialogue per colour layer,
+    all at the same place (libass would lay several drawings in one line side by side)."""
+    scale = max(1, round(height))  # 100 drawing units -> `height` px, so the percentage is the pixel height
+    return [_dialogue(0.0, _FOREVER, "Credit",
+                      f"{{\\an1\\pos({x},{y}){alpha}\\bord2\\3c&H000000&\\shad0\\fscx{scale}\\fscy{scale}"
+                      f"\\1c&H{colour}&\\p1}}{_ANCHOR}{path}")
+            for colour, path in _BADGE_SHAPES[badge]]
+
+
 def _fit_lines(text: str, face: _Face | None, em: float, avail: float, pad: float) -> tuple[str, float]:
     """One line if it fits, else two balanced lines; shrinks the size when still too wide."""
     if face is None:
@@ -340,11 +382,12 @@ def _fit_lines(text: str, face: _Face | None, em: float, avail: float, pad: floa
 
 def write_clip_ass(
     words: list[Word], style: SubtitleStyle, width: int, height: int, path: Path, fonts_dir: Path,
-    top_text: str = "", top_until: float = 3.0, credit: str = "",
+    top_text: str = "", top_until: float = 3.0, credit: str = "", credit_badge: str = "",
 ) -> None:
     """Captions as in write_ass (no hook scaling) plus an optional title in the top band
     (0..top_until, boxed, 1.1x the caption size) and an optional credit (bottom-left, 0.45x, 70 %
-    opaque, whole clip). Titles and credits may come from users or an LLM, so ASS-significant
+    opaque, whole clip) that may carry a platform logo (`credit_badge`, one of _BADGE_SHAPES) at its
+    left edge. Titles and credits may come from users or an LLM, so ASS-significant
     characters are stripped."""
     faces = _faces_in(Path(fonts_dir).resolve())
     for family in (style.font, FALLBACK_FONT):
@@ -383,6 +426,12 @@ def write_clip_ass(
         styles.append(_style_line("Credit", font, face, small, height, 0))
         y = round(height * _CREDIT_BASELINE[key])
         alpha = f"\\alpha&H{_CREDIT_ALPHA:02X}&"
-        events.append(_dialogue(0.0, _FOREVER, "Credit", f"{{\\an1\\pos({_SAFE_MARGIN},{y}){alpha}}}{credit}"))
+        x = _SAFE_MARGIN
+        if credit_badge in _BADGE_SHAPES:
+            logo = small.size * _BADGE_SIZE
+            baseline = round(y - face.descent / face.upm * small.size)  # the text baseline, where the logo sits
+            events.extend(_badge_events(credit_badge, x, baseline, logo, alpha))
+            x += round(logo + _BADGE_GAP * small.size)
+        events.append(_dialogue(0.0, _FOREVER, "Credit", f"{{\\an1\\pos({x},{y}){alpha}}}{credit}"))
 
     _write_ass(words, style, 0, width, height, path, fonts_dir, styles, events)
