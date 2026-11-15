@@ -583,6 +583,33 @@ def test_clipping_ui_lifecycle_seams():
     assert discard.index("setBusy(true)") < discard.index('api("DELETE"') < discard.index("setBusy(false)")
 
 
+def test_index_has_live_tab(client):
+    html = client.get("/").text
+    # the Clipping panel has two sub-tabs, Video (today's content) and En directo, with the tab pattern
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-video"[^>]*aria-selected="true"', html)
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-live"[^>]*aria-selected="false"', html)
+    assert 'id="panel-video" role="tabpanel"' in html and 'id="panel-live" role="tabpanel"' in html
+    assert 'id="tpl-channel"' in html and 'id="tpl-live-moment"' in html
+    assert 'id="live-capture"' in html and 'id="live-mark"' in html and 'id="live-stop"' in html
+    # the review card can frame a moment as Partido, and Ajustes has the live settings
+    tpl = html[html.index('id="tpl-moment"'):]
+    assert 'value="partido"' in tpl[:tpl.index("</template>")]
+    for key in ("live_hotkey", "live_before_s", "live_after_s", "live_max_height", "live_ai_per_hour"):
+        assert f'data-setting="{key}"' in html, key
+
+
+def test_live_ui_seams():
+    js = JS.read_text("utf-8")
+    assert "/api/live/status?since=" in js and "/api/live/moments" in js and "/api/live/mark" in js
+    assert "1080 / 768" in js  # the cam box keeps the band's aspect (the renderer scales it straight in)
+    sig = js[js.index("const reviewSignature"):js.index("const reviewEdited")]
+    assert "m.cam" in sig
+    export = js[js.index("async function onExport"):js.index("// ---------- queue")]
+    assert "cam:" in export
+    tabs = js[js.index("function setTab"):js.index("function onTabKey")]
+    assert ".tabs [role=" in tabs  # the sub-tabs are not main tabs
+
+
 def test_index_has_rights_notice_key(client):
     html = client.get("/").text
     es = json.loads(ES.read_text("utf-8"))

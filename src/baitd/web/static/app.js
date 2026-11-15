@@ -14,6 +14,18 @@
   const MIN_CLIP_S = 10; // clip length limits and clips per run, as the server checks them
   const MAX_CLIP_S = 180;
   const MAX_EXPORT = 20;
+  // En directo: the ring buffer's length, the capture states that count as running, the poll rates, and
+  // the cam box aspect of the Partido band (1080×768: the renderer scales the box straight into it)
+  const BUFFER_S = 300;
+  const LIVE_ACTIVE = ["starting", "capturing", "reconnecting"];
+  const LIVE_FAST_MS = 1000;
+  const LIVE_IDLE_MS = 10000;
+  const CHANNELS_MS = 60000;
+  const CHANNELS_RECHECK_MS = 5000; // the server checks the channels in the background: ask again soon
+  const NOTICE_MS = 20000;
+  const NOTICE_WARN_MS = 60000;
+  const NOTICE_WARN = ["ended", "error", "disk_full", "hotkey_busy", "save_error", "chat_off", "no_capture", "no_footage", "too_short"];
+  const CAM_ASPECT = 1080 / 768;
   // SubtitleStyle.font -> CSS family + weight (declared with @font-face in app.css)
   const FONT_CSS = {
     "Montserrat ExtraBold": ["Montserrat", 800],
@@ -45,6 +57,27 @@
       review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
       settingsBad: false, // a typed clip number is out of range (shown in #clip-error, not applied)
       saveFailed: false, // a profile save failed while this tab was shown (also in #clip-error)
+    },
+    live: {
+      ready: false, // strings loaded: before that nothing in the panel is drawn
+      sub: "video", // the Clipping sub-tab: "video" or "live"
+      shown: false, // the En directo panel is on screen (tab, sub-tab and window visible)
+      channels: [],
+      channelsTimer: null,
+      status: null, // the last GET /api/live/status
+      since: null, // the newest event id seen; null until the first poll (older events are not shown)
+      statusTimer: null,
+      notices: [], // [{id, kind, text, until}]
+      noPdt: new Set(), // channels whose capture had no program-date-times: they show the delay field
+      moments: [],
+      momentsSeq: 0,
+      picked: new Set(), // analysis ids ticked for "Exportar seleccionados"
+      cardErrors: new Map(), // analysis id -> message shown on that card
+      aiPosting: new Set(), // "Título con IA" requests on their way (a double click must not spend two)
+      exporting: false,
+      jobStatus: new Map(), // clip_export / live_title job id -> status at the last queue poll
+      hotkey: "F9",
+      rec: null, // the Ajustes hotkey recorder: {before} while it waits for a key
     },
   };
 
@@ -727,7 +760,7 @@
 
   function setTab(tab, focus = false) {
     state.tab = tab === "clip" ? "clip" : "short";
-    $$('[role="tab"]').forEach((b) => {
+    $$('.tabs [role="tab"]').forEach((b) => {
       const on = b.dataset.tab === state.tab;
       b.setAttribute("aria-selected", String(on));
       b.tabIndex = on ? 0 : -1;
@@ -737,10 +770,27 @@
     $("#panel-clip").hidden = state.tab !== "clip";
     $(".skip").setAttribute("href", state.tab === "clip" ? "#clip-head" : "#head");
     remember("tab", state.tab);
+    syncLiveShown();
   }
 
+  // The Clipping panel's own sub-tabs: Video (a link or a file) and En directo.
+  function setSubTab(sub, focus = false) {
+    state.live.sub = sub === "live" ? "live" : "video";
+    $$('.subtabs [role="tab"]').forEach((b) => {
+      const on = b.dataset.subtab === state.live.sub;
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+      if (on && focus) b.focus();
+    });
+    $("#panel-video").hidden = state.live.sub !== "video";
+    $("#panel-live").hidden = state.live.sub !== "live";
+    remember("subtab", state.live.sub);
+    syncLiveShown();
+  }
+
+  // Arrow keys, Home and End move between the tabs of the tablist that has focus (tabs or sub-tabs).
   function onTabKey(e) {
-    const tabs = $$('[role="tab"]');
+    const tabs = $$('[role="tab"]', e.currentTarget);
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     const next = {
@@ -751,7 +801,8 @@
     }[e.key];
     if (!next) return;
     e.preventDefault();
-    setTab(next.dataset.tab, true);
+    if (next.dataset.subtab) setSubTab(next.dataset.subtab, true);
+    else setTab(next.dataset.tab, true);
   }
 
   // ---------- clipping: settings (profile.clipping, plus the shared aspect, fps and subtitle) ----------
@@ -1090,11 +1141,13 @@
     });
   }
 
-  const reviewSignature = (r) => JSON.stringify(r.moments.map((m) => [m.orig, m.pick, m.title, m.start, m.end, m.framing, m.credit]));
+  const reviewSignature = (r) => JSON.stringify(r.moments.map((m) => [m.orig, m.pick, m.title, m.start, m.end, m.framing, m.credit, m.cam]));
   const reviewEdited = (r) => reviewSignature(r) !== r.baseline;
 
+  // `job` is a queue item with an analysis_id, or {analysis_id, live} for a moment of the En directo list
+  // (`live` is its list entry: the card then shows its reason instead of a score).
   async function openReview(job, userAsked) {
-    const errBox = userAsked ? $("#queue-error") : $("#clip-error");
+    const errBox = userAsked ? (job.live ? $("#live-moments-error") : $("#queue-error")) : $("#clip-error");
     const open = state.clip.review;
     if (!open || open.analysisId !== job.analysis_id) {
       if (open && userAsked && reviewEdited(open)) {
@@ -1108,9 +1161,9 @@
         // orig: the index in the analysis, so the server keeps its texts even after the bounds are edited
         const ranked = data.moments.map((m, orig) => ({ ...m, orig })).sort((a, b) => b.score - a.score);
         state.clip.review = {
-          analysisId: job.analysis_id, profileId, source: data.source,
+          analysisId: job.analysis_id, profileId, source: data.source, live: job.live || null,
           moments: ranked.map((m, i) => ({ ...m, title: m.title || "", framing: m.framing || "cara",
-            credit: m.credit || "", pick: i < count, raw: {} })),
+            credit: m.credit || "", cam: validCam(m.cam, data.source), pick: i < count, raw: {} })),
         };
         state.clip.review.baseline = reviewSignature(state.clip.review);
       } catch (e) {
@@ -1127,8 +1180,89 @@
     }
     if (userAsked) {
       setTab("clip");
+      setSubTab("video"); // the review card lives in the Video sub-tab
       $("#clip-review-title").focus();
     }
+  }
+
+  // A stored cam box [x, y, w, h] in source pixels, or null (Baitd then finds the camera itself).
+  function validCam(cam, src) {
+    if (!Array.isArray(cam) || cam.length !== 4 || !cam.every(Number.isInteger)) return null;
+    const [x, y, w, h] = cam;
+    return x >= 0 && y >= 0 && w >= 16 && h >= 16 && x + w <= src.width && y + h <= src.height ? cam.slice() : null;
+  }
+
+  // The box clamped inside a W×H source with the band's aspect locked; `anchored` keeps x, y (resizing).
+  function fitCam(W, H, x, y, w, anchored) {
+    const minW = Math.max(Math.ceil(16 * CAM_ASPECT) + 1, Math.round(W * 0.06));
+    let maxW = Math.min(W, H * CAM_ASPECT);
+    if (anchored) maxW = Math.min(maxW, W - x, (H - y) * CAM_ASPECT);
+    const width = Math.round(Math.max(Math.min(minW, maxW), Math.min(maxW, w)));
+    const height = Math.min(H, Math.round(width / CAM_ASPECT));
+    return [Math.round(Math.max(0, Math.min(W - width, x))), Math.round(Math.max(0, Math.min(H - height, y))), width, height];
+  }
+
+  // The Partido cam editor on a review card: a box over the preview, dragged to move and resized from its
+  // corner (or with the arrow keys; Shift resizes). Untouched, m.cam stays null and Baitd finds the camera.
+  function bindCamEditor(node, m, src) {
+    const W = src.width, H = src.height;
+    const video = $(".m-video", node);
+    const box = $(".m-cam", node);
+    const bar = $(".m-cam-bar", node);
+    const hint = $(".m-cam-hint", node);
+    const usable = src.has_video !== false && W >= 64 && H >= 64;
+    const start = () => fitCam(W, H, W * 0.02, H * 0.03, W * 0.28, false); // shown until the user moves it
+    let view = { scale: 1, ox: 0, oy: 0 };
+    let drag = null;
+    const layout = () => {
+      const on = usable && m.framing === "partido";
+      box.hidden = !on;
+      bar.hidden = !on;
+      if (!on) return;
+      const vw = video.clientWidth, vh = video.clientHeight;
+      const scale = Math.min(vw / W, vh / H) || 1; // the picture inside the player (object-fit: contain)
+      view = { scale, ox: (vw - W * scale) / 2, oy: (vh - H * scale) / 2 };
+      const [x, y, w, h] = m.cam || start();
+      Object.assign(box.style, { left: `${view.ox + x * scale}px`, top: `${view.oy + y * scale}px`,
+        width: `${w * scale}px`, height: `${h * scale}px` });
+      box.classList.toggle("auto", !m.cam);
+      hint.textContent = tr(m.cam ? "live.cam_hint_set" : "live.cam_hint_auto");
+    };
+    box.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, box: (m.cam || start()).slice(),
+        resize: e.target.classList.contains("m-cam-handle") };
+      box.setPointerCapture(e.pointerId);
+      box.focus();
+    });
+    box.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = (e.clientX - drag.x0) / view.scale;
+      const dy = (e.clientY - drag.y0) / view.scale;
+      const [x, y, w] = drag.box;
+      m.cam = drag.resize
+        ? fitCam(W, H, x, y, w + (Math.abs(dx) >= Math.abs(dy * CAM_ASPECT) ? dx : dy * CAM_ASPECT), true)
+        : fitCam(W, H, x + dx, y + dy, w, false);
+      layout();
+    });
+    const end = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
+    box.addEventListener("pointerup", end);
+    box.addEventListener("pointercancel", end);
+    box.addEventListener("keydown", (e) => {
+      const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+      if (!d) return;
+      e.preventDefault();
+      const step = Math.max(2, Math.round(W / 100));
+      const [x, y, w] = m.cam || start();
+      m.cam = e.shiftKey ? fitCam(W, H, x, y, w + (d[0] + d[1]) * step, true)
+        : fitCam(W, H, x + d[0] * step, y + d[1] * step, w, false);
+      layout();
+    });
+    $(".m-cam-auto", node).addEventListener("click", () => { m.cam = null; layout(); });
+    video.addEventListener("loadedmetadata", layout);
+    if (window.ResizeObserver) new ResizeObserver(layout).observe(video);
+    return layout;
   }
 
   function momentProblem(m, duration) {
@@ -1197,12 +1331,14 @@
     pick.addEventListener("change", () => { m.pick = pick.checked; renderExportState(); });
     remove.disabled = state.busy;
     remove.addEventListener("click", () => removeMoment(m));
-    $(".m-score", node).textContent = tr("moment.score", { n: m.score });
+    // a live moment was chosen by a mark or a signal, not scored: its card says why it is there (R9)
+    $(".m-score", node).textContent = r.live ? tr(`live.reason.${r.live.reason}`) : tr("moment.score", { n: m.score });
     $(".m-kind", node).textContent = tr(`clip.kind.${m.kind}`);
     title.value = m.title;
     title.addEventListener("input", () => { m.title = title.value; named(); });
     framing.value = m.framing;
-    framing.addEventListener("change", () => { m.framing = framing.value; });
+    const layoutCam = bindCamEditor(node, m, r.source);
+    framing.addEventListener("change", () => { m.framing = framing.value; layoutCam(); });
     credit.value = m.credit;
     credit.addEventListener("input", () => { m.credit = credit.value; });
 
@@ -1263,6 +1399,7 @@
     setSrc();
     showTimes();
     named();
+    requestAnimationFrame(layoutCam); // once the card is in the page and has a size
     return node;
   }
 
@@ -1311,8 +1448,10 @@
     renderExportState();
     if (exportProblem()) return;
     showError($("#clip-review-error"), null);
+    // the cam box only means something for Partido (the server refuses one it cannot place)
     const moments = r.moments.filter((m) => m.pick).map((m) => ({
-      orig: m.orig, start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim() }));
+      orig: m.orig, start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim(),
+      cam: m.framing === "partido" ? m.cam : null }));
     // the analysis was made with this profile; the selected one is only a fallback if it was deleted
     const profileId = profileById(r.profileId) ? r.profileId : state.current.id;
     setBusy(true);
@@ -1341,6 +1480,7 @@
       showError($("#queue-error"), null);
       renderJobs();
       checkAnalyses();
+      onLiveJobs();
     } catch (e) {
       showError($("#queue-error"), e);
     }
@@ -1530,6 +1670,616 @@
     }
   }
 
+  // ---------- en directo: panel lifetime ----------
+
+  // The panel is "shown" while the Clipping tab, its En directo sub-tab and the window are all visible:
+  // opening it re-checks the channels and reloads the moments; the channel list refreshes every minute.
+  function syncLiveShown() {
+    const L = state.live;
+    const shown = L.ready && state.tab === "clip" && L.sub === "live" && document.visibilityState === "visible";
+    if (shown === L.shown) return;
+    L.shown = shown;
+    clearTimeout(L.channelsTimer);
+    if (!shown) return;
+    loadChannels(true);
+    loadMoments();
+  }
+
+  function scheduleChannels(ms) {
+    const L = state.live;
+    clearTimeout(L.channelsTimer);
+    if (L.shown) L.channelsTimer = setTimeout(() => loadChannels(false), ms);
+  }
+
+  // ---------- en directo: channels ----------
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  // simple marks that only identify the platform: [background, glyph, glyph colour]
+  const LOGOS = {
+    kick: ["#53FC18", "M6 4h4v5h1V7h1V5h1V4h4v5h-1v1h-1v1h-1v2h1v1h1v1h1v5h-4v-1h-1v-2h-1v-2h-1v5H6z", "#000000"],
+    twitch: ["#9146FF", "M6 4 5 7v11h3v2h2l2-2h3l4-4V4zm12 9.3L15.8 15.5h-3.6L10 17.5v-2H7.2V5.6H18zM11 8h1.6v4H11zm4 0h1.6v4H15z",
+      "#ffffff"],
+    youtube: ["#FF0000", "M9.5 7.5v9l7.5-4.5z", "#ffffff"],
+  };
+
+  function platformLogo(platform) {
+    const [bg, glyph, fg] = LOGOS[platform] || ["#888888", "", "#ffffff"];
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "logo");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", tr(`live.platform.${platform}`));
+    const rect = document.createElementNS(SVG_NS, "rect");
+    Object.entries({ width: 24, height: 24, rx: 6, fill: bg }).forEach(([k, v]) => rect.setAttribute(k, String(v)));
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", glyph);
+    path.setAttribute("fill", fg);
+    path.setAttribute("fill-rule", "evenodd");
+    svg.append(rect, path);
+    return svg;
+  }
+
+  // "@handle"; a YouTube channel id (UC…) shows the channel's name instead when it is known.
+  function channelLabel(platform, handle, name) {
+    if (platform === "youtube" && /^UC[\w-]{22}$/.test(handle)) return name || handle;
+    return `@${String(handle).replace(/^@/, "")}`;
+  }
+
+  const liveActive = () => Boolean(state.live.status) && LIVE_ACTIVE.includes(state.live.status.state);
+  const capturingId = () => (liveActive() ? state.live.status.channel_id : null);
+
+  async function loadChannels(recheck) {
+    const L = state.live;
+    try {
+      const { channels } = recheck ? await api("POST", "/api/live/channels/refresh", {}) : await api("GET", "/api/live/channels");
+      L.channels = channels;
+      showError($("#live-channels-error"), null);
+    } catch (e) {
+      showError($("#live-channels-error"), e);
+    }
+    renderChannels();
+    scheduleChannels(recheck ? CHANNELS_RECHECK_MS : CHANNELS_MS);
+  }
+
+  function renderChannels() {
+    const L = state.live;
+    if (!L.ready) return;
+    const list = $("#live-channels");
+    const byId = new Map($$(".channel", list).map((li) => [li.dataset.id, li]));
+    const wanted = L.channels.map((ch) => {
+      let li = byId.get(ch.id);
+      if (!li) li = channelRow(ch.id);
+      updateChannel(li, ch);
+      return li;
+    });
+    byId.forEach((li, id) => { if (!L.channels.some((c) => c.id === id)) li.remove(); });
+    wanted.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
+    $("#live-channels-empty").hidden = L.channels.length > 0;
+  }
+
+  // One row, wired once: its handlers look the channel up by id, so a refreshed list keeps them working.
+  function channelRow(id) {
+    const li = $("#tpl-channel").content.firstElementChild.cloneNode(true);
+    li.dataset.id = id;
+    applyI18n(li);
+    const ch = () => state.live.channels.find((c) => c.id === id);
+    const mine = $(".ch-mine", li);
+    mine.addEventListener("change", () => patchChannel(li, { mine: mine.checked }));
+    const framing = $(".ch-framing", li);
+    framing.addEventListener("change", () => patchChannel(li, { framing: framing.value }));
+    const delay = $(".ch-delay", li);
+    delay.addEventListener("change", () => {
+      const v = delay.value.trim().replace(",", ".");
+      patchChannel(li, { delay_s: v === "" ? null : Number(v) });
+    });
+    $(".ch-capture", li).addEventListener("click", () => { if (ch()) startCapture(li, id); });
+    $(".ch-remove", li).addEventListener("click", () => { if (ch()) removeChannel(li, id); });
+    return li;
+  }
+
+  function updateChannel(li, ch) {
+    const label = channelLabel(ch.platform, ch.handle, ch.name);
+    const logo = $(".ch-logo", li);
+    if (logo.dataset.platform !== ch.platform || logo.dataset.lang !== BOOT.lang) {
+      logo.replaceChildren(platformLogo(ch.platform));
+      logo.dataset.platform = ch.platform;
+      logo.dataset.lang = BOOT.lang;
+    }
+    $(".ch-handle", li).textContent = label;
+    const known = ch.live === true || ch.live === false;
+    $(".ch-dot", li).dataset.live = known ? String(ch.live) : "unknown";
+    $(".ch-live", li).textContent = tr(!known ? "live.checking" : ch.live ? "live.on_air" : "live.off_air");
+    const viewers = ch.live && Number.isFinite(Number(ch.viewers)) && ch.viewers !== null;
+    $(".ch-viewers", li).textContent = viewers ? tr("live.viewers", { n: Number(ch.viewers).toLocaleString(BOOT.lang) }) : "";
+    const title = $(".ch-title", li);
+    title.textContent = ch.live && ch.title ? ch.title : "";
+    title.hidden = !title.textContent;
+    const mine = $(".ch-mine", li);
+    mine.checked = ch.mine;
+    mine.setAttribute("aria-label", `${tr("live.mine")}: ${label}`);
+    const framing = $(".ch-framing", li);
+    framing.value = ch.framing;
+    framing.setAttribute("aria-label", `${tr("live.framing")}: ${label}`);
+    // the delay is only used when the stream has no clock of its own (R5): shown once a capture found none
+    const delay = $(".ch-delay", li);
+    $(".ch-delay-wrap", li).hidden = !(state.live.noPdt.has(ch.id) || ch.delay_s !== null);
+    if (document.activeElement !== delay) delay.value = ch.delay_s === null ? "" : String(ch.delay_s);
+    const busyId = capturingId();
+    const capture = $(".ch-capture", li);
+    capture.textContent = tr(busyId === ch.id ? "live.capturing" : "live.capture");
+    capture.disabled = busyId !== null; // one capture at a time
+    capture.setAttribute("aria-label", `${capture.textContent}: ${label}`);
+    const remove = $(".ch-remove", li);
+    remove.disabled = busyId === ch.id;
+    remove.setAttribute("aria-label", `${tr("live.remove")}: ${label}`);
+  }
+
+  async function patchChannel(li, body) {
+    const id = li.dataset.id;
+    try {
+      const row = await api("PATCH", `/api/live/channels/${encodeURIComponent(id)}`, body);
+      const i = state.live.channels.findIndex((c) => c.id === id);
+      if (i >= 0) state.live.channels[i] = row;
+      showError($(".ch-err", li), null);
+    } catch (e) {
+      showError($(".ch-err", li), e); // the row goes back to what the server has
+    }
+    renderChannels();
+  }
+
+  async function addChannel() {
+    const input = $("#live-url");
+    const btn = $("#live-add");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const row = await api("POST", "/api/live/channels", { url: input.value, mine: $("#live-mine").checked });
+      if (!state.live.channels.some((c) => c.id === row.id)) state.live.channels.push(row);
+      input.value = "";
+      $("#live-mine").checked = false;
+      showError($("#live-channels-error"), null);
+      renderChannels();
+      scheduleChannels(CHANNELS_RECHECK_MS); // its live status is being checked now
+    } catch (e) {
+      showError($("#live-channels-error"), e);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function removeChannel(li, id) {
+    try {
+      await api("DELETE", `/api/live/channels/${encodeURIComponent(id)}`, {});
+      state.live.channels = state.live.channels.filter((c) => c.id !== id);
+      state.live.noPdt.delete(id);
+      renderChannels();
+      $("#live-url").focus();
+    } catch (e) {
+      if (e.status === 404) { loadChannels(false); return; }
+      showError($(".ch-err", li), e);
+    }
+  }
+
+  // ---------- en directo: capture ----------
+
+  async function startCapture(li, id) {
+    showError($(".ch-err", li), null);
+    showError($("#live-capture-error"), null);
+    try {
+      state.live.status = await api("POST", "/api/live/capture", { channel_id: id });
+    } catch (e) {
+      showError($(".ch-err", li), e);
+      return;
+    }
+    renderCapture();
+    renderChannels();
+    pollStatus();
+    $("#live-mark").focus();
+  }
+
+  async function stopCapture() {
+    const btn = $("#live-stop");
+    btn.disabled = true;
+    try {
+      await api("DELETE", "/api/live/capture", {}); // returns at once: the state changes in the next polls
+      showError($("#live-capture-error"), null);
+    } catch (e) {
+      showError($("#live-capture-error"), e);
+    } finally {
+      btn.disabled = false;
+    }
+    pollStatus();
+  }
+
+  async function markMoment() {
+    try {
+      await api("POST", "/api/live/mark", {}); // its event (marked, extended…) arrives with the status
+      showError($("#live-capture-error"), null);
+    } catch (e) {
+      showError($("#live-capture-error"), e);
+    }
+    pollStatus();
+  }
+
+  // GET /api/live/status every second while capturing, every 10 s otherwise. Events become notices; a
+  // saved moment reloads the list. Events from before the page opened are not shown.
+  let statusInFlight = false;
+
+  async function pollStatus() {
+    const L = state.live;
+    clearTimeout(L.statusTimer);
+    if (statusInFlight) { // the running request schedules the next one
+      L.statusTimer = setTimeout(pollStatus, LIVE_FAST_MS);
+      return;
+    }
+    statusInFlight = true;
+    const wasActive = liveActive();
+    const wasId = capturingId();
+    try {
+      const st = await api("GET", `/api/live/status?since=${L.since === null ? 0 : L.since}`);
+      const first = L.since === null;
+      let since = first ? 0 : L.since;
+      let reload = false;
+      for (const ev of st.events || []) {
+        if (ev.id <= since) continue;
+        since = ev.id;
+        if (first) continue;
+        addNotice(ev);
+        if (ev.kind === "saved" || ev.kind === "found") reload = true;
+      }
+      L.since = since;
+      L.status = st;
+      if (st.channel_id && st.state === "capturing") {
+        if (st.has_pdt === false) L.noPdt.add(st.channel_id);
+        else if (st.has_pdt === true) L.noPdt.delete(st.channel_id);
+      }
+      showError($("#live-capture-error"), null);
+      if (reload) loadMoments();
+    } catch (e) {
+      showError($("#live-capture-error"), e);
+    } finally {
+      statusInFlight = false;
+    }
+    renderCapture();
+    if (liveActive() !== wasActive || capturingId() !== wasId || liveActive()) renderChannels();
+    L.statusTimer = setTimeout(pollStatus, liveActive() ? LIVE_FAST_MS : LIVE_IDLE_MS);
+  }
+
+  function renderCapture() {
+    const L = state.live;
+    if (!L.ready) return;
+    const st = L.status;
+    const box = $("#live-capture");
+    box.hidden = !liveActive();
+    if (box.hidden) return;
+    const ch = L.channels.find((c) => c.id === st.channel_id);
+    const logo = $(".cap-logo", box);
+    const platform = ch ? ch.platform : "";
+    if (logo.dataset.platform !== platform || logo.dataset.lang !== BOOT.lang) {
+      logo.replaceChildren(...(ch ? [platformLogo(ch.platform)] : []));
+      logo.dataset.platform = platform;
+      logo.dataset.lang = BOOT.lang;
+    }
+    $("#live-cap-handle").textContent = ch ? channelLabel(ch.platform, ch.handle, ch.name) : "";
+    const chip = $("#live-cap-state");
+    chip.textContent = tr(`live.state.${st.state}`);
+    chip.dataset.status = { starting: "pending", capturing: "running", reconnecting: "error" }[st.state];
+    $("#live-cap-title").textContent = st.title || "";
+    $("#live-cap-title").hidden = !st.title;
+    $("#live-cap-latency").textContent = st.latency_s === null ? "" : tr("live.latency", { s: Math.round(st.latency_s) });
+    $("#live-cap-buffered").textContent = tr("live.buffered", {
+      a: fmtTime(Math.min(BUFFER_S, st.buffered_s || 0), false), b: fmtTime(BUFFER_S, false) });
+    $("#live-cap-ai").textContent = st.ai_left === null || st.ai_left === undefined ? "" : tr("live.ai_left", { n: st.ai_left });
+    $("#live-pending").textContent = st.pending ? tr("live.pending", { s: Math.ceil(st.pending.remaining_s) }) : "";
+    $("#live-hotkey-hint").textContent = tr("live.hotkey_tip", { key: L.hotkey });
+  }
+
+  function addNotice(ev) {
+    const L = state.live;
+    const warn = NOTICE_WARN.includes(ev.kind);
+    L.notices.push({ id: ev.id, kind: ev.kind, text: ev.text, warn, until: Date.now() + (warn ? NOTICE_WARN_MS : NOTICE_MS) });
+    L.notices = L.notices.slice(-4);
+    renderNotices();
+    setTimeout(renderNotices, (warn ? NOTICE_WARN_MS : NOTICE_MS) + 50);
+  }
+
+  // The server writes the event texts (already user copy, in Spanish); they are shown as they come.
+  function renderNotices() {
+    const L = state.live;
+    const now = Date.now();
+    L.notices = L.notices.filter((n) => n.until > now);
+    const list = $("#live-notices");
+    const byId = new Map($$("li", list).map((li) => [li.dataset.id, li]));
+    const items = L.notices.map((n) => {
+      let li = byId.get(String(n.id));
+      if (!li) {
+        li = document.createElement("li");
+        li.dataset.id = String(n.id);
+        li.className = n.warn ? "notice warn" : "notice";
+        li.textContent = n.text;
+      }
+      return li;
+    });
+    list.replaceChildren(...items);
+    list.hidden = !items.length;
+  }
+
+  // ---------- en directo: moments ----------
+
+  async function loadMoments() {
+    const L = state.live;
+    const seq = ++L.momentsSeq;
+    try {
+      const { moments } = await api("GET", "/api/live/moments");
+      if (seq !== L.momentsSeq) return;
+      L.moments = moments;
+      if (L.momentsLoadFailed) showError($("#live-moments-error"), null);
+      L.momentsLoadFailed = false;
+    } catch (e) {
+      if (seq !== L.momentsSeq) return;
+      L.momentsLoadFailed = true;
+      showError($("#live-moments-error"), e);
+      return;
+    }
+    const ids = new Set(L.moments.map((m) => m.analysis_id));
+    L.picked = new Set([...L.picked].filter((id) => ids.has(id)));
+    L.cardErrors.forEach((_, id) => { if (!ids.has(id)) L.cardErrors.delete(id); });
+    renderMoments();
+  }
+
+  // A clip_export or live_title job on that moment still in the queue.
+  const momentJob = (id, kind) => state.jobs.find((j) => j.kind === kind && j.analysis_id === id && ACTIVE.includes(j.status));
+
+  // A moment leaves the list once its export succeeds and gets its AI title when that job ends: both
+  // reload the list when such a job finishes.
+  function onLiveJobs() {
+    const L = state.live;
+    const now = new Map(state.jobs.map((j) => [j.id, j]));
+    let reload = false;
+    L.jobStatus.forEach((status, id) => {
+      const j = now.get(id);
+      if (ACTIVE.includes(status) && (!j || FINISHED.includes(j.status))) reload = true;
+    });
+    L.jobStatus = new Map(state.jobs.filter((j) => j.kind === "clip_export" || j.kind === "live_title")
+      .map((j) => [j.id, j.status]));
+    if (reload) loadMoments();
+    else renderMoments();
+  }
+
+  function fmtClock(iso) {
+    const d = new Date(iso); // local time without an offset: read as local
+    if (Number.isNaN(d.getTime())) return "";
+    const time = d.toLocaleTimeString(BOOT.lang, { hour: "2-digit", minute: "2-digit" });
+    return d.toDateString() === new Date().toDateString()
+      ? time : `${d.toLocaleDateString(BOOT.lang, { day: "numeric", month: "short" })} ${time}`;
+  }
+
+  function renderMoments() {
+    const L = state.live;
+    if (!L.ready) return;
+    const list = $("#live-moments");
+    const byId = new Map($$(".lm", list).map((n) => [n.dataset.id, n]));
+    const wanted = L.moments.map((m) => {
+      let node = byId.get(m.analysis_id);
+      if (!node) node = liveMomentCard(m.analysis_id);
+      updateLiveMoment(node, m);
+      return node;
+    });
+    byId.forEach((n, id) => { if (!L.moments.some((m) => m.analysis_id === id)) n.remove(); });
+    wanted.forEach((n, i) => { if (list.children[i] !== n) list.insertBefore(n, list.children[i] || null); });
+    $("#live-moments-empty").hidden = L.moments.length > 0;
+    $("#live-selected").textContent = L.moments.length ? tr("clip.selected", { n: L.picked.size }) : "";
+    $("#live-export").disabled = L.exporting || !L.picked.size;
+  }
+
+  function liveMomentCard(id) {
+    const node = $("#tpl-live-moment").content.firstElementChild.cloneNode(true);
+    node.dataset.id = id;
+    applyI18n(node);
+    const entry = () => state.live.moments.find((m) => m.analysis_id === id);
+    const pick = $(".lm-pick", node);
+    pick.addEventListener("change", () => {
+      if (pick.checked) state.live.picked.add(id); else state.live.picked.delete(id);
+      renderMoments();
+    });
+    $(".lm-review", node).addEventListener("click", () => {
+      const m = entry();
+      if (m) openReview({ analysis_id: id, live: m }, true);
+    });
+    $(".lm-ai", node).addEventListener("click", () => askTitle(id));
+    $(".lm-remove", node).addEventListener("click", () => { const m = entry(); if (m) removeLiveMoment(m); });
+    return node;
+  }
+
+  function updateLiveMoment(node, m) {
+    const L = state.live;
+    const id = m.analysis_id;
+    const img = $(".lm-thumb", node);
+    if (m.has_thumb && !img.getAttribute("src")) img.src = `/api/live/moments/${encodeURIComponent(id)}/thumb`;
+    img.hidden = !m.has_thumb;
+    $(".lm-pic", node).classList.toggle("empty", !m.has_thumb);
+    $(".lm-title", node).textContent = m.title;
+    const logo = $(".lm-logo", node);
+    if (logo.dataset.platform !== m.platform || logo.dataset.lang !== BOOT.lang) {
+      logo.replaceChildren(platformLogo(m.platform));
+      logo.dataset.platform = m.platform;
+      logo.dataset.lang = BOOT.lang;
+    }
+    $(".lm-handle", node).textContent = channelLabel(m.platform, m.handle, "");
+    $(".lm-reason", node).textContent = tr(`live.reason.${m.reason}`);
+    $(".lm-time", node).textContent = fmtClock(m.at);
+    $(".lm-dur", node).textContent = tr("moment.len", { s: fmtTime(m.duration, false) });
+    $(".lm-gap", node).hidden = !m.gap;
+    $(".lm-unclassified", node).hidden = m.reason === "manual" || m.classified;
+    const exporting = Boolean(momentJob(id, "clip_export"));
+    const asking = L.aiPosting.has(id) || Boolean(momentJob(id, "live_title"));
+    const busy = $(".lm-busy", node);
+    busy.textContent = exporting ? tr("live.exporting") : asking ? tr("live.ai_busy") : "";
+    busy.hidden = !busy.textContent;
+    const pick = $(".lm-pick", node);
+    pick.checked = L.picked.has(id);
+    pick.disabled = exporting || L.exporting;
+    pick.setAttribute("aria-label", `${tr("moment.pick")}: ${m.title}`);
+    const ai = $(".lm-ai", node);
+    ai.disabled = asking || exporting;
+    ai.setAttribute("aria-label", `${tr("live.ai_title")}: ${m.title}`);
+    $(".lm-review", node).setAttribute("aria-label", `${tr("live.review")}: ${m.title}`);
+    const remove = $(".lm-remove", node);
+    remove.disabled = exporting || L.exporting;
+    remove.setAttribute("aria-label", `${tr("live.remove")}: ${m.title}`);
+    const err = L.cardErrors.get(id);
+    showError($(".lm-err", node), err ? new Error(err) : null);
+  }
+
+  async function askTitle(id) {
+    const L = state.live;
+    if (L.aiPosting.has(id) || momentJob(id, "live_title")) return;
+    L.aiPosting.add(id);
+    L.cardErrors.delete(id);
+    renderMoments();
+    try {
+      await flushSave().catch(() => {}); // the job takes the AI tone from the saved profile
+      await api("POST", `/api/live/moments/${encodeURIComponent(id)}/ai`, { profile_id: state.current.id });
+      await refreshJobs(); // the queue shows it; its end reloads the list
+    } catch (e) {
+      L.cardErrors.set(id, e.status === 404 ? tr("err.analysis_gone") : e.message);
+    } finally {
+      L.aiPosting.delete(id);
+      renderMoments();
+    }
+  }
+
+  async function removeLiveMoment(m) {
+    const yes = await ask({ title: tr("live.remove_title"), text: tr("live.remove_confirm", { title: m.title }),
+      ok: tr("live.remove") });
+    if (!yes) return;
+    const id = m.analysis_id;
+    try {
+      await api("DELETE", `/api/analyses/${encodeURIComponent(id)}`, {});
+    } catch (e) {
+      if (e.status !== 404) { // already gone: the reload drops it
+        state.live.cardErrors.set(id, e.message);
+        renderMoments();
+        return;
+      }
+    }
+    if (state.clip.review && state.clip.review.analysisId === id) { // its open review card has nothing left
+      state.clip.review = null;
+      renderClipReview();
+    }
+    state.live.picked.delete(id);
+    await loadMoments();
+    $("#live-moments-title").focus();
+  }
+
+  // One export per ticked moment, each with the moment as stored (title, framing, credit, cam box).
+  async function exportLiveMoments() {
+    const L = state.live;
+    const ids = L.moments.map((m) => m.analysis_id).filter((id) => L.picked.has(id));
+    if (!ids.length || L.exporting || !state.current) return;
+    L.exporting = true;
+    $("#live-moments-status").textContent = "";
+    showError($("#live-moments-error"), null);
+    renderMoments();
+    let added = 0;
+    try {
+      await flushSave().catch(() => {}); // the export takes hook title, credit and music from the saved profile
+      for (const id of ids) {
+        try {
+          const data = await api("GET", `/api/analyses/${encodeURIComponent(id)}`);
+          const m = data.moments[0];
+          const cam = m.framing === "partido" ? validCam(m.cam, data.source) : null;
+          await api("POST", `/api/analyses/${encodeURIComponent(id)}/export`, { profile_id: state.current.id,
+            moments: [{ orig: 0, start: m.start, end: m.end, framing: m.framing || "cara", title: m.title || "",
+              credit: m.credit || "", cam }] });
+          added++;
+          L.picked.delete(id);
+          L.cardErrors.delete(id);
+        } catch (e) {
+          L.cardErrors.set(id, e.status === 404 ? tr("err.analysis_gone") : e.message);
+        }
+      }
+    } finally {
+      L.exporting = false;
+    }
+    if (added) $("#live-moments-status").textContent = tr("live.export_added", { n: added });
+    await refreshJobs();
+    renderMoments();
+  }
+
+  // ---------- en directo: the hotkey recorder in Ajustes ----------
+
+  const HOTKEY_NAMED = { Pause: "Pause", Insert: "Insert", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown" };
+
+  // The pressed combination in the server's canonical form ("Ctrl+Shift+F9"), or {error: i18n key}.
+  function hotkeyFromEvent(e) {
+    const code = e.code || "";
+    let key = null;
+    if (/^F([1-9]|1\d|2[0-4])$/.test(code)) key = code;
+    else if (/^Key[A-Z]$/.test(code)) key = code.slice(3);
+    else if (/^Digit\d$/.test(code)) key = code.slice(5);
+    else if (HOTKEY_NAMED[code]) key = HOTKEY_NAMED[code];
+    if (!key) return { error: "live.hotkey_bad" };
+    const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean);
+    if (!mods.length && key.length === 1) return { error: "live.hotkey_needs_mod" }; // it would steal typing
+    return { value: [...mods, key].join("+") };
+  }
+
+  function setHotkeyHint(key) {
+    const hint = $("#hotkey-hint");
+    hint.dataset.i18n = key;
+    hint.textContent = tr(key);
+  }
+
+  function startHotkeyRecord() {
+    const btn = $("#s-hotkey-record");
+    state.live.rec = { before: $("#s-live_hotkey").value };
+    btn.setAttribute("aria-pressed", "true");
+    btn.dataset.i18n = "live.hotkey_recording";
+    btn.textContent = tr("live.hotkey_recording");
+    setHotkeyHint("live.hotkey_recording_hint");
+    btn.focus();
+  }
+
+  // kept: the new combination stays in the field (saved with Guardar); otherwise the old one comes back.
+  function stopHotkeyRecord(kept) {
+    const rec = state.live.rec;
+    if (!rec) return;
+    state.live.rec = null;
+    if (!kept) $("#s-live_hotkey").value = rec.before;
+    const btn = $("#s-hotkey-record");
+    btn.setAttribute("aria-pressed", "false");
+    btn.dataset.i18n = "live.hotkey_change";
+    btn.textContent = tr("live.hotkey_change");
+    setHotkeyHint("live.hotkey_hint");
+  }
+
+  // While recording, the next key down is the new hotkey. Esc cancels (and must not close the dialog);
+  // Tab leaves as usual; modifiers alone wait for the key.
+  function onHotkeyKey(e) {
+    if (!state.live.rec) return;
+    if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return;
+    if (e.key === "Tab") { stopHotkeyRecord(false); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      setTimeout(() => stopHotkeyRecord(false), 0); // still recording when the dialog's cancel event comes
+      return;
+    }
+    const got = hotkeyFromEvent(e);
+    if (got.error) { setHotkeyHint(got.error); return; }
+    $("#s-live_hotkey").value = got.value;
+    stopHotkeyRecord(true);
+  }
+
+  async function loadHotkey() {
+    try {
+      const s = await api("GET", "/api/settings");
+      if (s.live_hotkey) state.live.hotkey = s.live_hotkey;
+    } catch (_) { /* the tip then shows the default key */ }
+    renderCapture();
+  }
+
   // ---------- settings dialog ----------
 
   async function openSettings() {
@@ -1537,7 +2287,11 @@
     showError($("#settings-error"), null);
     try {
       const s = await api("GET", "/api/settings");
-      $$("[data-setting]", dlg).forEach((el) => { el.value = s[el.dataset.setting] || ""; });
+      $$("[data-setting]", dlg).forEach((el) => { // numbers too: 0 IA requests per hour is a value
+        const v = s[el.dataset.setting];
+        el.value = v === undefined || v === null ? "" : String(v);
+      });
+      stopHotkeyRecord(false);
       loadModels(); // fills the model list for the saved provider; does not block the dialog
       $("#s-keep_sources").checked = s.keep_sources === true;
       $("#s-check_updates").checked = s.check_updates !== false;
@@ -1706,13 +2460,19 @@
     // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
     if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
+    stopHotkeyRecord(false);
+    let saved;
     try {
-      await api("POST", "/api/settings", body);
+      saved = await api("POST", "/api/settings", body);
     } catch (e) {
       showError($("#settings-error"), e);
       return;
     }
     state.clip.keepSources = body.keep_sources;
+    if (saved && saved.live_hotkey) { // in its canonical form ("ctrl+f9" comes back as "Ctrl+F9")
+      state.live.hotkey = saved.live_hotkey;
+      renderCapture();
+    }
     if (body.theme) {
       document.documentElement.dataset.theme = body.theme;
       renderTheme();
@@ -1753,6 +2513,12 @@
     renderClipDerived();
     renderClipReview();
     renderReview();
+    $$("#live-channels .channel, #live-moments .lm").forEach((n) => applyI18n(n));
+    renderChannels();
+    renderCapture();
+    renderNotices();
+    renderMoments();
+    setHotkeyHint(state.live.rec ? "live.hotkey_recording_hint" : "live.hotkey_hint");
     $$("#queue-list .job").forEach((li) => {
       applyI18n(li);
       const job = state.jobs.find((j) => j.id === li.dataset.id);
@@ -1807,6 +2573,18 @@
       if (b) setTab(b.dataset.tab);
     });
     $(".tabs").addEventListener("keydown", onTabKey);
+    $(".subtabs").addEventListener("click", (e) => {
+      const b = e.target.closest('[role="tab"]');
+      if (b) setSubTab(b.dataset.subtab);
+    });
+    $(".subtabs").addEventListener("keydown", onTabKey);
+    document.addEventListener("visibilitychange", syncLiveShown);
+
+    $("#live-add").addEventListener("click", addChannel);
+    $("#live-url").addEventListener("keydown", (e) => { if (e.key === "Enter") addChannel(); });
+    $("#live-mark").addEventListener("click", markMoment);
+    $("#live-stop").addEventListener("click", stopCapture);
+    $("#live-export").addEventListener("click", exportLiveMoments);
 
     const clipPanel = $(".form-clip");
     clipPanel.addEventListener("input", onClipInput);
@@ -1856,6 +2634,13 @@
     });
     $("#s-llm_model_pick").addEventListener("change", () => syncModelInput(true));
     $("#ytdlp-update").addEventListener("click", updateYtdlp);
+    $("#s-hotkey-record").addEventListener("click", () => {
+      if (state.live.rec) stopHotkeyRecord(false); else startHotkeyRecord();
+    });
+    $("#s-hotkey-record").addEventListener("blur", () => stopHotkeyRecord(false));
+    document.addEventListener("keydown", onHotkeyKey, true);
+    $("#settings").addEventListener("cancel", (e) => { if (state.live.rec) e.preventDefault(); });
+    $("#settings").addEventListener("close", () => stopHotkeyRecord(false));
     $$("#settings [data-close]").forEach((b) => b.addEventListener("click", () => $("#settings").close()));
     $$("#settings .show-btn").forEach((b) => b.addEventListener("click", () => {
       setShown(b, b.getAttribute("aria-pressed") !== "true");
@@ -1873,9 +2658,13 @@
     bind();
     renderTheme();
     setTab(remembered("tab") || "short");
+    setSubTab(remembered("subtab") || "video");
     try {
       await loadStrings(BOOT.lang);
       renderVersion();
+      state.live.ready = true;
+      syncLiveShown();
+      loadHotkey();
       await Promise.all([loadProfiles(), loadMusic()]);
       fillForm();
       fillClip();
@@ -1884,6 +2673,7 @@
       showError($("#top-error"), e);
     }
     refreshJobs();
+    pollStatus(); // also while another tab is shown: a hotkey press without a capture is explained there
     pollUpdate();
   }
 
