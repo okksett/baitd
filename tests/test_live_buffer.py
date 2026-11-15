@@ -209,3 +209,68 @@ def test_segment_loudness_reads_a_stored_fmp4_file(tmp_path, fmp4_segments):
     path = buf.add(1, 1000, 2.0, fmp4_segments[1], ext="mp4")
     level = segment_loudness(path)
     assert level is not None and level > -40
+
+
+def test_cut_in_a_folder_with_an_apostrophe(tmp_path, segments):
+    buf = RingBuffer(tmp_path / "O'Brien" / "ring")
+    _fill(buf, segments)
+    out = tmp_path / "O'Brien" / "out.mp4"
+    cut = buf.cut(1001, 1007, out)
+    assert abs(ffmpeg.probe(out)["duration"] - 8) < 0.3
+    assert not cut.gap
+
+
+def test_cut_fmp4_in_a_folder_with_an_apostrophe(tmp_path, fmp4_segments):
+    buf = RingBuffer(tmp_path / "O'Brien" / "ring")
+    for i, data in enumerate(fmp4_segments):
+        if i != 2:  # a gap: two runs are joined through the concat listing
+            buf.add(i, 1000 + 2 * i, 2.0, data, ext="mp4")
+    out = tmp_path / "O'Brien" / "out.mp4"
+    buf.cut(1001, 1007, out)
+    assert abs(ffmpeg.probe(out)["duration"] - 6) < 0.3
+
+
+def test_files_are_named_by_a_counter_not_by_seq(tmp_path):
+    buf = RingBuffer(tmp_path / "ring")
+    assert buf.add(500, 1000, 2.0, b"a") == buf.folder / "0000000000.ts"
+    assert buf.add(7, 1002, 2.0, b"b") == buf.folder / "0000000001.ts"
+    # a new buffer on a folder with files carries on after the highest number
+    assert RingBuffer(buf.folder).add(1, 1004, 2.0, b"c") == buf.folder / "0000000002.ts"
+
+
+def test_add_with_a_repeated_seq_keeps_one_entry(tmp_path):
+    buf = RingBuffer(tmp_path / "ring")
+    first = buf.add(3, 1000, 2.0, b"a")
+    second = buf.add(3, 1000, 2.0, b"b")
+    assert len(buf._segs) == 1
+    assert buf.seconds() == 2.0
+    assert first != second
+    assert not first.exists() and second.read_bytes() == b"b"
+
+
+def test_a_restart_with_overlapping_seqs_never_overwrites_live_files(tmp_path):
+    buf = RingBuffer(tmp_path / "ring")
+    old = [buf.add(s, 1000 + 2 * s, 2.0, f"old{s}".encode()) for s in range(3)]
+    new = buf.add(1, 1010, 2.0, b"new1")  # the stream restarted and reuses seq 1
+    assert new not in old
+    assert old[0].read_bytes() == b"old0" and old[2].read_bytes() == b"old2"
+    assert sorted(s.seq for s in buf._segs) == [0, 1, 2]
+    assert new.read_bytes() == b"new1"
+
+
+def test_a_file_that_cannot_be_deleted_is_retried_at_the_next_prune(tmp_path, monkeypatch):
+    buf = RingBuffer(tmp_path / "ring", keep_s=3)
+    real = type(tmp_path).unlink
+    fail = {"on": True}
+
+    def unlink(self, *a, **kw):
+        if fail["on"] and self.name == "0000000000.ts":
+            raise PermissionError("in use")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(type(tmp_path), "unlink", unlink)
+    paths = [buf.add(i, 1000 + 2 * i, 2.0, b"x") for i in range(3)]  # no exception ends the capture
+    assert paths[0].exists()
+    fail["on"] = False
+    buf.add(3, 1006, 2.0, b"x")
+    assert not paths[0].exists()

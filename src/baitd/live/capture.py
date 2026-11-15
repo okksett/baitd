@@ -240,6 +240,17 @@ class Capture(threading.Thread):
 
         segs = pl.segments
         if segs and self._last_seq is not None and segs[-1].seq < self._last_seq:
+            newest = segs[-1]
+            head = self.buffer.head()
+            # a restart: the numbering fell by more than the playlist is long, or the newest segment is
+            # past everything stored. Anything else is a stale playlist (a lagging CDN node): skip it.
+            restarted = (
+                self._last_seq - newest.seq > len(segs)
+                or (newest.start is not None and head is not None and newest.start >= head)
+            )
+            if not restarted:
+                log.info("Lista atrasada (la numeración bajó un poco); se ignora")
+                return
             log.info("La numeración bajó: el directo se reinició")
             self._last_seq = None
             self._prev = None

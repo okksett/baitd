@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import bisect
+import logging
 import shutil
 import struct
 import threading
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import ffmpeg
+
+log = logging.getLogger(__name__)
 
 BUFFER_S = 300.0
 REVIEW_PAD_S = 20.0
@@ -75,20 +78,46 @@ class RingBuffer:
         self._segs: list[_Seg] = []  # sorted by start
         self._pin: float | None = None
         self._in_use: dict[int, int] = {}  # seq -> running cuts reading it
+        self._garbage: list[Path] = []  # files that could not be deleted yet (Windows: still open)
         self._lock = threading.Lock()
         self.folder.mkdir(parents=True, exist_ok=True)
+        # files are named by a per-buffer counter, never by seq: a restarted stream reuses old seqs
+        used = [int(p.stem) for p in self.folder.glob("*.*") if p.stem.isdigit()]
+        self._counter = max(used, default=-1) + 1
+
+    def _drop(self, path: Path) -> None:
+        """Delete a buffer file; if the system refuses, try again at the next prune."""
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            log.warning("No se pudo borrar un segmento del búfer (%s); se reintentará", type(e).__name__)
+            self._garbage.append(path)
+
+    def _retry_garbage(self) -> None:
+        pending, self._garbage = self._garbage, []
+        for p in pending:
+            self._drop(p)
 
     def add(self, seq: int, start: float, duration: float, data: bytes, ext: str = "ts") -> Path:
-        path = self.folder / f"{seq:010d}.{ext}"
+        with self._lock:
+            n = self._counter
+            self._counter += 1
+        path = self.folder / f"{n:010d}.{ext}"
         path.write_bytes(data)
         seg = _Seg(seq, start, duration, path)
         with self._lock:
+            # one entry per seq: a repeated seq replaces the older entry
+            for old in [s for s in self._segs if s.seq == seq]:
+                self._segs.remove(old)
+                self._drop(old.path)
             keys = [s.start for s in self._segs]
             self._segs.insert(bisect.bisect_right(keys, start), seg)
             self._prune()
         return path
 
     def _prune(self) -> None:
+        if self._garbage:
+            self._retry_garbage()
         head = max(s.end for s in self._segs)
         while self._segs:
             oldest = self._segs[0]
@@ -99,7 +128,7 @@ class RingBuffer:
             if oldest.seq in self._in_use:
                 break  # a cut is reading it; it is pruned when the cut releases it
             self._segs.pop(0)
-            oldest.path.unlink(missing_ok=True)
+            self._drop(oldest.path)
 
     @staticmethod
     def _parts(chosen: list[_Seg], out: Path, temps: list[Path]) -> list[Path]:
@@ -171,7 +200,7 @@ class RingBuffer:
     def clear(self) -> None:
         with self._lock:
             for s in self._segs:
-                s.path.unlink(missing_ok=True)
+                self._drop(s.path)
             self._segs.clear()
             self._pin = None
 
@@ -200,8 +229,10 @@ class RingBuffer:
                 else:
                     # each fMP4 run is remuxed on its own, so it starts at 0 and its duration is exact
                     parts = [self._remux(p, cancel, temps) if p in temps else p for p in parts]
+                    # an apostrophe in a path is escaped for the concat demuxer (quote, backslash, quote, quote)
                     listing.write_text(
-                        "".join(f"file '{p.resolve().as_posix()}'" + chr(10) for p in parts),
+                        "".join("file '" + p.resolve().as_posix().replace("'", "'\\''") + "'" + chr(10)
+                                for p in parts),
                         encoding="utf-8",
                     )
                     ffmpeg.run(

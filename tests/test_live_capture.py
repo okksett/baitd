@@ -113,7 +113,7 @@ def test_on_segment_hook_gets_file_start_duration(env):
     env.cap.on_segment = lambda p, s, d: got.append((p, s, d))
     env.http.playlists += [playlist(5, 1, pdt0=T0)]
     env.run()
-    assert got == [(env.buf.folder / "0000000005.ts", T0, 2.0)]
+    assert got == [(env.buf.folder / "0000000000.ts", T0, 2.0)]
     assert got[0][0].read_bytes() == b"ts-seg5.ts"
 
 
@@ -471,3 +471,20 @@ def test_stop_ends_thread(tmp_path):
     cap.stop(5)
     assert not cap.is_alive()
     assert cap.state == "ended"
+
+
+def test_stale_playlist_one_seq_behind_is_skipped(env):
+    env.http.playlists += [playlist(10, 3, pdt0=T0), playlist(9, 3, pdt0=T0 - 2), playlist(11, 3, pdt0=T0 + 2)]
+    env.run()
+    assert [u.rsplit("/", 1)[1] for u in env.http.segment_urls] == [f"seg{n}.ts" for n in (10, 11, 12, 13)]
+    assert sorted(s.seq for s in env.buf._segs) == [10, 11, 12, 13]
+    assert len({s.path for s in env.buf._segs}) == 4
+
+
+def test_restart_with_overlapping_seqs_is_taken_without_duplicates(env):
+    # the numbering restarts inside the old range, but the stream is a minute further on
+    env.http.playlists += [playlist(98, 3, pdt0=T0), playlist(97, 3, pdt0=T0 + 60)]
+    env.run()
+    assert sorted(s.seq for s in env.buf._segs) == [97, 98, 99, 100]
+    assert len({s.path for s in env.buf._segs}) == 4
+    assert all(s.path.exists() for s in env.buf._segs)
