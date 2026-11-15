@@ -2,6 +2,7 @@ import json
 import shutil
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -46,9 +47,10 @@ def providers(make_mp4):
         info.channel = "Canal"
         return info
 
-    def transcribe(audio, provider, language, settings, model, cancel, on_progress, on_model_load=None):
+    def transcribe(audio, provider, language, settings, model, cancel, on_progress, on_model_load=None, **kw):
         assert audio.is_file()
         seen["transcribe"] += 1
+        seen.setdefault("calls", []).append({"provider": provider, "language": language, "model": model, **kw})
         if seen.get("model_load"):  # a local model that has to be downloaded first
             on_model_load(True)
             on_model_load(False)
@@ -963,3 +965,80 @@ def test_render_all_detects_faces_and_passes_cam_for_partido(monkeypatch):
     assert seen["faces"] == 1 and calls[-1] == ("partido", None)
     run(cam=[10, 20, 200, 100])  # the user marked it: nothing to detect
     assert seen["faces"] == 1 and calls[-1] == ("partido", [10, 20, 200, 100])
+
+
+# ---- live moments: the export-time profile, and a light touch on the streaming PC ----
+
+def _live_profile_item(item, **clipping):
+    prof = config.default_profile()
+    prof.clipping = replace(prof.clipping, **clipping)
+    return {**item, "profile": prof.to_dict()}
+
+
+@pytest.fixture
+def priority_log(monkeypatch):
+    """Records when this thread goes below normal priority and back, instead of touching the real thread."""
+    from baitd.live import signals
+    state = {"low": False, "log": []}
+    monkeypatch.setattr(signals, "below_normal_thread", lambda: (state.update(low=True), state["log"].append("low")))
+    monkeypatch.setattr(signals, "_normal_thread", lambda before: (state.update(low=False), state["log"].append("normal")))
+    return state
+
+
+def test_live_export_transcribes_with_the_export_time_profile(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    aid = _live_analysis(make_mp4)
+    _rendered(monkeypatch)
+    item = _live_profile_item(_export_item(aid), transcriber="openai", whisper_model="medium", language="en")
+    pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    (call,) = providers.seen["calls"]
+    assert (call["provider"], call["model"], call["language"]) == ("openai", "medium", "en")
+
+
+def test_live_title_transcribes_with_the_export_time_profile(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4, start=1.5, end=12.3)
+    providers.complete = _title_reply
+    item = _live_profile_item(_item("live_title", {"analysis_id": aid}), whisper_model="large-v3", language="es")
+    pipeline.run_live_title(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    (call,) = providers.seen["calls"]
+    assert (call["provider"], call["model"], call["language"]) == ("local", "large-v3", "es")
+
+
+def test_live_export_transcribes_with_two_threads_on_a_low_priority_thread(
+        tmp_data, tmp_path, providers, make_mp4, monkeypatch, priority_log):
+    aid = _live_analysis(make_mp4)
+    _rendered(monkeypatch)
+    during = []
+    real = providers.transcribe
+
+    def watch(*a, **kw):
+        during.append(priority_log["low"])
+        return real(*a, **kw)
+
+    providers.transcribe = watch
+    faces = providers.detect_faces
+    providers.detect_faces = lambda *a: (during.append(("faces", priority_log["low"])), faces(*a))[1]
+    pipeline.run_clip_export(_export_item(aid), _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert providers.seen["calls"][0]["cpu_threads"] == 2
+    assert during and all(d is True or d[1] is True for d in during)  # transcription and face detection
+    assert priority_log["log"] == ["low", "normal"] and priority_log["low"] is False  # restored afterwards
+
+
+def test_live_title_transcribes_with_two_threads_on_a_low_priority_thread(
+        tmp_data, tmp_path, providers, make_mp4, priority_log):
+    aid = _live_analysis(make_mp4, start=1.5, end=12.3)
+    providers.complete = _title_reply
+    pipeline.run_live_title(_item("live_title", {"analysis_id": aid}), _settings(tmp_path), threading.Event(),
+                            lambda *a: None, providers)
+    assert providers.seen["calls"][0]["cpu_threads"] == 2
+    assert priority_log["log"] == ["low", "normal"]
+
+
+def test_ordinary_export_keeps_normal_priority_and_default_threads(
+        tmp_data, tmp_path, providers, monkeypatch, priority_log):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    _rendered(monkeypatch)
+    pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem,
+                                                   "moments": pipeline.load_analysis(path.stem)["moments"]}),
+                             _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert priority_log["log"] == [] and "cpu_threads" not in providers.seen["calls"][0]

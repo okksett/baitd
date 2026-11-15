@@ -16,6 +16,7 @@ import statistics
 import sys
 import threading
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from .. import ffmpeg
 
 __all__ = ["BIN_S", "BASELINE_S", "MIN_HISTORY_S", "CHAT_RATE_X", "CHAT_MIN_MSGS", "LAUGH_SHARE", "LAUGH_MIN",
            "LAUGH_RATE_X", "LOUD_LU", "COOLDOWN_S", "LAUGH", "Spike", "ChatSignal", "AudioSignal", "segment_loudness",
-           "LoudnessMeter", "below_normal_thread"]
+           "LoudnessMeter", "below_normal_thread", "below_normal_scope"]
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +190,35 @@ def below_normal_thread() -> None:
             os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)  # per thread on Linux
     except Exception:
         log.debug("No se pudo bajar la prioridad del hilo", exc_info=True)
+
+
+def _normal_thread(before: int | None) -> None:
+    """Undo below_normal_thread() (best effort); `before` is the Linux nice value it replaced."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.SetThreadPriority(k32.GetCurrentThread(), 0)  # THREAD_PRIORITY_NORMAL
+        elif sys.platform.startswith("linux") and before is not None:
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), before)
+    except Exception:
+        log.debug("No se pudo restaurar la prioridad del hilo", exc_info=True)
+
+
+@contextmanager
+def below_normal_scope():
+    """The calling thread runs below normal priority inside the block, and at its old priority afterwards."""
+    before = None
+    if sys.platform.startswith("linux"):
+        try:
+            before = os.getpriority(os.PRIO_PROCESS, threading.get_native_id())
+        except Exception:
+            pass
+    below_normal_thread()
+    try:
+        yield
+    finally:
+        _normal_thread(before)
 
 
 class LoudnessMeter(threading.Thread):

@@ -11,7 +11,7 @@ import secrets
 import shutil
 import tempfile
 import threading
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -286,8 +286,28 @@ def _save_transcript(src: SourceInfo, key: list, transcript: Transcript) -> None
         log.warning("No se pudo guardar la transcripción de %s", src.id)
 
 
+LIVE_CPU_THREADS = 2  # the local transcriber's threads for a live moment: a stream may be running on this PC
+
+
+def _live_scope() -> ExitStack:
+    """What a live moment's export or AI title runs inside (spec §4): FFmpeg and this job thread (face
+    detection runs on it too) below normal priority. The thread's priority comes back afterwards."""
+    from ..live import signals  # the live package imports this module
+    stack = ExitStack()
+    stack.enter_context(ffmpeg.low_priority())
+    stack.enter_context(signals.below_normal_scope())
+    return stack
+
+
+def _live_opts(stored: ClipProfile, profile: Profile) -> ClipProfile:
+    """A live moment's analysis keeps a default ClipProfile (nothing was transcribed when it was saved): the
+    transcriber, Whisper model and language are the ones the profile has now, at export or title time."""
+    c = profile.clipping
+    return replace(stored, transcriber=c.transcriber, whisper_model=c.whisper_model, language=c.language)
+
+
 def _transcribe(src: SourceInfo, opts: ClipProfile, settings: dict, cancel: threading.Event, steps: _Steps,
-                providers: ClipProviders, *, audio: Path | None = None) -> Transcript:
+                providers: ClipProviders, *, audio: Path | None = None, cpu_threads: int | None = None) -> Transcript:
     """Step 2: the source's transcript, read back from the source folder when it was made with the same
     settings. `audio` is where to extract the sound for a caller that needs it afterwards (it is then always
     extracted); without it the sound goes to a temp file, and only when there is no saved transcript."""
@@ -300,10 +320,11 @@ def _transcribe(src: SourceInfo, opts: ClipProfile, settings: dict, cancel: thre
     if transcript is None:
         with tempfile.TemporaryDirectory(prefix="baitd-clip-") as tmp:
             wav = audio if audio is not None else sources.extract_audio(src, Path(tmp) / "audio.wav", cancel)
+            extra = {"cpu_threads": cpu_threads} if cpu_threads else {}
             transcript = (providers.transcribe or transcribe.transcribe)(
                 wav, opts.transcriber, language, settings, opts.whisper_model, cancel,
                 lambda f: steps.frac(2, f),
-                on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0))
+                on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0), **extra)
         _save_transcript(src, key, transcript)
     steps.end(2)
     return transcript
@@ -614,8 +635,11 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
             delete_analysis(payload.get("analysis_id"))  # useless without its source
             raise _original_gone() from None
         # the extras follow what the user sees at export time; the rest is what the analysis was made with
+        live = analysis.get("origin") == "live"
         opts = replace(ClipProfile.from_dict(analysis["profile"]), hook_title=profile.clipping.hook_title,
                        credit=profile.clipping.credit, music=profile.clipping.music)
+        if live:  # a live moment was never transcribed: it is, with the settings the user has now
+            opts = _live_opts(opts, profile)
         transcript = _transcript_from_dict(analysis["transcript"])
         raw = payload.get("moments")
         if not isinstance(raw, list) or not 1 <= len(raw) <= _MAX_EXPORT:
@@ -631,10 +655,10 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
-        live = analysis.get("origin") == "live"
-        with ffmpeg.low_priority() if live else nullcontext():  # a capture may be running on this PC
+        with _live_scope() if live else nullcontext():  # a capture may be running on this PC
             if live and not transcript.words:  # not transcribed while capturing
-                transcript = _transcribe(src, opts, settings, cancel, steps, providers)
+                transcript = _transcribe(src, opts, settings, cancel, steps, providers,
+                                         cpu_threads=LIVE_CPU_THREADS)
                 _keep_transcript(payload.get("analysis_id"), transcript)
             if live:  # the user's marks, moved only to the nearest whole sentences
                 for m in moments:
@@ -689,13 +713,13 @@ def run_live_title(item: dict, settings: dict, cancel: threading.Event, progress
     src = sources.load_source(analysis["source_id"])
     if on_title is not None:
         on_title(src.title)
-    opts = ClipProfile.from_dict(analysis["profile"])
+    opts = _live_opts(ClipProfile.from_dict(analysis["profile"]), profile)
     transcript = _transcript_from_dict(analysis["transcript"])
     steps.end(1)
 
     if not transcript.words:
-        with ffmpeg.low_priority():  # a capture may be running on this PC (whisper itself is not slowed)
-            transcript = _transcribe(src, opts, settings, cancel, steps, providers)
+        with _live_scope():  # a capture may be running on this PC
+            transcript = _transcribe(src, opts, settings, cancel, steps, providers, cpu_threads=LIVE_CPU_THREADS)
         _keep_transcript(analysis_id, transcript)
 
     steps.begin(3)
