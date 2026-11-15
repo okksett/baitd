@@ -217,7 +217,9 @@ class Detector:
     def _handle(self, c: _Candidate, quick: bool) -> None:
         words: list[Word] = []
         language = ""
-        if not quick:
+        if not quick and self._limit.left() == 0:
+            log.info("Sin peticiones de IA: el candidato se guarda sin transcribir")
+        elif not quick:
             try:
                 words, language = self._listen(c)
             except NoFootage:
@@ -230,6 +232,8 @@ class Detector:
                 log.info("Candidato sin transcripción: %s", e.cause)
             except RuntimeError:
                 log.warning("No se pudo leer el audio de un candidato")
+            except Exception:
+                log.exception("Falló la transcripción de un candidato: se guarda sin clasificar")
         lines = ai.window_lines(words, c.start, c.end) if words else ""
         if lines and not self._busy.is_set() and self._limit.take():
             verdict = self._ask(lines, language, c)

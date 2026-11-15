@@ -229,3 +229,30 @@ def test_a_stuck_candidate_does_not_hold_the_buffer(harness, segs):
     h.buffer.pin(h.det.earliest() - REVIEW_PAD_S)
     h.buffer.add(800, head, 1.0, segs[0])  # pruning runs on add
     assert h.buffer.tail() >= floor - REVIEW_PAD_S - 1
+
+
+def test_no_request_left_skips_the_transcription(harness):
+    h = harness(lambda p: _reply(), per_hour=0)
+    h.run(Spike(T0 + 100, "chat", 4.0))
+    assert talk.calls == [] and h.prompts == []
+    assert [(s["classified"], s["reason"]) for s in h.saved] == [(False, "chat")]
+
+
+def test_exhausted_quota_skips_the_transcription_of_later_candidates(harness):
+    def out_of_quota(prompt):
+        raise QuotaExhausted("Se acabó la cuota gratis de la IA por hoy", "Vuelve mañana")
+
+    h = harness(out_of_quota)
+    h.run(Spike(T0 + 80, "chat", 4.0), Spike(T0 + 200, "laughs", 0.6))
+    assert len(talk.calls) == 1  # only the first candidate was transcribed
+    assert len(h.saved) == 2
+
+
+def test_an_unexpected_error_in_the_transcription_saves_the_candidate(harness):
+    def boom(*a, **kw):
+        raise ValueError("something odd")
+
+    h = harness(lambda p: _reply(), transcribe=boom)
+    h.run(Spike(T0 + 100, "loud", 9.0))
+    assert h.prompts == []
+    assert [(s["classified"], s["reason"]) for s in h.saved] == [(False, "loud")]
