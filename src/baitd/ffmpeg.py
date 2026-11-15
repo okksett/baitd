@@ -1,8 +1,10 @@
 """Thin wrapper around the FFmpeg binary shipped by imageio-ffmpeg (no ffprobe)."""
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 import threading
 from collections import deque
 from functools import lru_cache
@@ -25,16 +27,28 @@ def run(
     cwd: Path | None = None,
     cancel: threading.Event | None = None,
     on_line: Callable[[str], None] | None = None,
+    low_priority: bool = False,
 ) -> str:
-    """Run ffmpeg with `args`; return stderr. Raise RuntimeError on failure, JobCancelled on cancel."""
+    """Run ffmpeg with `args`; return stderr. Raise RuntimeError on failure, JobCancelled on cancel.
+
+    `low_priority` runs it below normal priority so it does not disturb a live stream on the same PC.
+    """
     cmd = [ffmpeg_exe(), "-hide_banner", "-y", *args]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    extra: dict = {}
+    if low_priority:
+        if sys.platform == "win32":
+            flags |= 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            extra["preexec_fn"] = lambda: os.nice(10)
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        creationflags=flags,
+        **extra,
     )
     lines: list[str] = []
     tail: deque[str] = deque(maxlen=20)

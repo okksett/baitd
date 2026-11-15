@@ -65,3 +65,29 @@ def test_probe_ignores_cover_art(tmp_path):
     info = probe(mp3)
     assert (info["width"], info["height"], info["fps"]) == (None, None, None)
     assert abs(info["duration"] - 2.0) < 0.2
+
+
+def test_low_priority_flag(monkeypatch):
+    import os
+    import sys
+
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        seen.update(kw)
+        return real_popen(*a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run(["-version"], low_priority=True)
+    if sys.platform == "win32":
+        assert seen["creationflags"] & 0x4000
+        assert seen["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        assert seen["preexec_fn"] is not None
+    seen.clear()
+    run(["-version"])
+    if sys.platform == "win32":
+        assert not seen["creationflags"] & 0x4000
+    else:
+        assert seen.get("preexec_fn") is None
