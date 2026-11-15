@@ -20,7 +20,7 @@ from .. import config, ffmpeg
 from ..models import JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
 from . import framing, sources, transcribe, voices
-from .models import FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
+from .models import BADGES, FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
 from .moments import _sentences, find_moments
 from .render import clip_fps, render_clip
 
@@ -92,10 +92,18 @@ def _moment_from_dict(d) -> Moment:
     framing_ = d.get("framing", "cara")
     if framing_ not in FRAMINGS:
         raise ValueError("bad framing")
+    badge = d.get("badge", "")
+    if not isinstance(badge, str) or badge not in ("", *BADGES):
+        raise ValueError("bad badge")
+    cam = d.get("cam")
+    if cam is not None and not (isinstance(cam, list) and len(cam) == 4
+                                and all(type(v) is int and v >= 0 for v in cam)):
+        raise ValueError("cam must be null or four non-negative integers")
     return Moment(start=start, end=end, kind=_text(d, "kind", "interesante"),
                   score=round(_num(d.get("score", 0))), title=_text(d, "title"),
                   description=_text(d, "description"), hashtags=list(tags), text=_text(d, "text"),
-                  framing=framing_, credit=_text(d, "credit"))
+                  framing=framing_, credit=_text(d, "credit"), badge=badge,
+                  cam=None if cam is None else list(cam))
 
 
 def _transcript_from_dict(d) -> Transcript:
@@ -463,13 +471,21 @@ def release_analysis(analysis_id, settings: dict, busy: Busy | None) -> None:
         release_source_id(source_id, settings, busy)
 
 
+def _is_live(analysis_file: Path) -> bool:
+    """A moment cut from a live capture: no queue item lists it, yet the user still has to review it."""
+    try:
+        return json.loads(analysis_file.read_text(encoding="utf-8")).get("origin") == "live"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def sweep(analysis_ids: set[str], source_ids: set[str], keep_sources: bool) -> None:
     """Startup clean-up of what a crash or a removed queue item left behind: every analysis not in
     `analysis_ids` goes, then (unless sources are kept) every source folder that neither `source_ids` nor a
     remaining analysis needs. Partial uploads and downloads (no meta.json: never finished before this start)
     go even when sources are kept, since they are not sources yet."""
     for f in analyses_dir().glob("*.json"):
-        if _valid_id(f.stem) and f.stem not in analysis_ids:
+        if _valid_id(f.stem) and f.stem not in analysis_ids and not _is_live(f):
             delete_analysis(f.stem)
     needed = set(source_ids) | {_source_of(f) for f in analyses_dir().glob("*.json")}
     for d in sources.sources_dir().iterdir():

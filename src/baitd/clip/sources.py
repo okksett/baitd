@@ -430,6 +430,23 @@ def finish_upload(source_id: str, path: Path, filename: str) -> SourceInfo:
         raise
 
 
+def add_local_source(path: Path, title: str, channel: str, url: str) -> SourceInfo:
+    """Register an existing media file as a source: it moves into a new source folder as video.mp4.
+    On any failure the folder is removed."""
+    source_id = _new_id()
+    folder = _folder(source_id)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "video.mp4"
+        shutil.move(str(path), str(target))
+        src = _build_info(source_id, target, title=title, channel=channel, url=url)
+        _write_meta(folder, src)
+        return src
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+
 def _build_info(source_id: str, path: Path, title: str, channel: str, url: str) -> SourceInfo:
     try:
         p = ffmpeg.probe(path)

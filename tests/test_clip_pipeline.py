@@ -726,3 +726,23 @@ def test_failed_export_keeps_its_analysis_until_it_is_removed(tmp_data):
     assert f.exists() and [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
     q.remove("q2" + "0" * 10)  # nothing leaks once the export goes too
     assert not f.exists() and not list(sources.sources_dir().iterdir())
+
+
+def _moment_dict(**kw):
+    return {"start": 1.0, "end": 5.0, "kind": "interesante", "score": 0, "title": "t", "description": "",
+            "hashtags": [], "text": "", **kw}
+
+
+def test_moment_badge_and_cam_validation():
+    for bad in ({"badge": "tiktok"}, {"cam": [1, 2, 3]}, {"cam": [0, 0, -1, 5]}, {"cam": [0, 0, 1.5, 5]},
+                {"cam": "x"}, {"cam": [True, 0, 1, 1]}):
+        with pytest.raises(ValueError):
+            pipeline._moment_from_dict(_moment_dict(**bad))
+    m = pipeline._moment_from_dict(_moment_dict(badge="kick", cam=[0, 0, 320, 180]))
+    assert m.badge == "kick" and m.cam == [0, 0, 320, 180]
+    m = pipeline._moment_from_dict(_moment_dict())
+    assert m.badge == "" and m.cam is None
+
+
+def test_moment_accepts_partido_framing():
+    assert pipeline._moment_from_dict(_moment_dict(framing="partido")).framing == "partido"
