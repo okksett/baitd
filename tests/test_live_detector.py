@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 
 import pytest
@@ -9,7 +10,8 @@ from baitd.clip.models import Transcript
 from baitd.live.ai import HourlyLimit
 from baitd.live.buffer import RingBuffer
 from baitd.live.channels import Channel
-from baitd.live.detector import CANDIDATE_AFTER_S, CANDIDATE_BEFORE_S, Detector
+from baitd.live.buffer import BUFFER_S, REVIEW_PAD_S
+from baitd.live.detector import CANDIDATE_AFTER_S, CANDIDATE_BEFORE_S, MAX_CANDIDATE_S, MAX_WAITING, Detector
 from baitd.live.signals import Spike
 from baitd.llm._http import QuotaExhausted
 from baitd.models import Word
@@ -56,10 +58,12 @@ def talk(wav, provider, language, settings, model, cancel, on_progress, **kw):
 
 
 class Harness:
-    def __init__(self, tmp_path, segs, complete, transcribe=talk, per_hour=6, seconds=300):
-        self.buffer = RingBuffer(tmp_path / "ts", keep_s=10_000)
+    def __init__(self, tmp_path, segs, complete, transcribe=talk, per_hour=6, seconds=300, skip=(),
+                 keep_s=10_000):
+        self.buffer = RingBuffer(tmp_path / "ts", keep_s=keep_s)
         for i in range(seconds):
-            self.buffer.add(i, T0 + i, 1.0, segs[i % len(segs)])
+            if i not in skip:
+                self.buffer.add(i, T0 + i, 1.0, segs[i % len(segs)])
         self.saved = []
         self.prompts = []
         talk.calls = []
@@ -116,8 +120,10 @@ def test_detector_merges_and_classifies(harness):
     assert (s["kind"], s["classified"], s["reason"]) == ("gracioso", True, "chat")
     assert s["title"] == "Se cae de la silla" and s["hashtags"] == ["#risa", "#directo"]
     assert s["description"] == "Una caída en pleno directo."
-    # the AI's span 0:10-0:45 of the window is [1070, 1105]; the saved file starts 20 s of padding earlier
-    assert (s["start"], s["end"]) == pytest.approx((20.0, 55.0))
+    # the AI's span 0:10-0:45 of the window is [1070, 1105] plus the rest of the line marked 0:45 (it ends at
+    # 1105.6); the saved file starts 20 s of padding earlier
+    assert (s["start"], s["end"]) == pytest.approx((20.0, 55.6))
+    assert s["text"].startswith("frase10.") and s["text"].endswith("frase45.")
     assert s["at"] == T0 + 100
 
 
@@ -188,3 +194,38 @@ def test_stop_saves_what_is_left_without_ai(harness):
     assert (h.saved[0]["start"], h.saved[0]["end"]) == pytest.approx((20.0, 75.0))  # clamped to the head
     h.det.spike(Spike(T0 + 100, "chat", 4.0))  # ignored once stopped
     assert h.det.idle()
+
+
+def test_words_follow_the_footage_across_a_gap(harness):
+    # an ad dropped 1070-1089: the window [1060, 1120] is 40 s of file, and file 15.1 is 1095.1 on the stream
+    h = harness(lambda p: _reply(inicio="0:35", fin="0:45"), skip=range(70, 90))
+    h.run(Spike(T0 + 100, "chat", 4.0))
+    assert "[00:35] frase15." in h.prompts[0] and "[00:15]" not in h.prompts[0]
+    s = h.saved[0]
+    assert s["text"].startswith("frase15.") and s["text"].endswith("frase25.")
+
+
+def test_a_stuck_candidate_does_not_hold_the_buffer(harness, segs):
+    running = threading.Event()
+
+    def stuck(wav, provider, language, settings, model, cancel, on_progress, **kw):
+        running.set()
+        cancel.wait()  # a model download or an endless request; only stop() ends it
+        raise ffmpeg.JobCancelled()
+
+    h = harness(lambda p: _reply(), transcribe=stuck, keep_s=BUFFER_S)
+    h.det.spike(Spike(T0 + 100, "chat", 4.0))
+    h.det.tick(T0 + 300)
+    assert running.wait(10)
+    for k in range(5):  # five more windows while it is stuck: only the newest MAX_WAITING wait
+        h.det.spike(Spike(T0 + 400 + 80 * k, "chat", 4.0))
+    for i in range(300, 800):
+        h.buffer.add(i, T0 + i, 1.0, segs[i % len(segs)])
+    head = T0 + 800
+    h.det.tick(head)
+    assert [c.start for c in h.det._waiting] == [T0 + 520, T0 + 600, T0 + 680][-MAX_WAITING:]
+    floor = head - BUFFER_S - MAX_CANDIDATE_S
+    assert h.det.earliest() == floor  # not 1060, the stuck window's start
+    h.buffer.pin(h.det.earliest() - REVIEW_PAD_S)
+    h.buffer.add(800, head, 1.0, segs[0])  # pruning runs on add
+    assert h.buffer.tail() >= floor - REVIEW_PAD_S - 1

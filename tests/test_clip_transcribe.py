@@ -298,8 +298,10 @@ def test_models_are_cached_by_name_and_threads(monkeypatch, tmp_data):
     monkeypatch.setitem(sys.modules, "faster_whisper", NS(WhisperModel=WhisperModel))
     monkeypatch.setattr(transcribe, "_MODELS", {})
     a = transcribe._load_model("small", 2)
-    assert transcribe._load_model("small", 2) is a
+    assert transcribe._load_model("small", 2) is a  # the live model stays loaded
     b = transcribe._load_model("small")
-    assert b is not a and transcribe._load_model("small") is b
+    c = transcribe._load_model("small")  # an export loads its own and lets it go
+    assert b is not a and c is not b
     transcribe._load_model("medium", 2)
-    assert made == [("small", 2), ("small", None), ("medium", 2)]
+    assert made == [("small", 2), ("small", None), ("small", None), ("medium", 2)]
+    assert set(transcribe._MODELS) == {("small", 2), ("medium", 2)}

@@ -27,6 +27,16 @@ class Cut:
     end: float  # mark end, in seconds of the file
     duration: float
     gap: bool  # a segment is missing inside the mark (an ad or a lost segment)
+    spans: tuple[tuple[float, float], ...] = ()  # (start, duration) of each joined segment, in file order
+
+    def buffer_time(self, t: float) -> float:
+        """The buffer-clock time of second `t` of the file, across any gap between the joined segments."""
+        acc = 0.0
+        for start, duration in self.spans:
+            if t < acc + duration:
+                return start + max(t - acc, 0.0)
+            acc += duration
+        return self.spans[-1][0] + self.spans[-1][1] if self.spans else t
 
 
 @dataclass
@@ -151,4 +161,4 @@ class RingBuffer:
             b.start - (a.start + a.duration) > GAP_TOLERANCE_S
             for a, b in zip(inside, inside[1:])
         )
-        return Cut(out, file_time(t0), file_time(t1), total, gap)
+        return Cut(out, file_time(t0), file_time(t1), total, gap, tuple((s.start, s.duration) for s in chosen))

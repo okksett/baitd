@@ -21,12 +21,13 @@ from typing import Callable
 
 from .. import ffmpeg, llm
 from ..clip import transcribe as clip_transcribe
+from ..clip.moments import _sentences
 from ..clip.pipeline import MIN_CLIP_S
 from ..llm._http import QuotaExhausted
 from ..models import Profile, UserError, Word
 from . import ai
 from .ai import HourlyLimit
-from .buffer import NoFootage, RingBuffer
+from .buffer import BUFFER_S, NoFootage, RingBuffer
 from .channels import Channel
 from .signals import Spike, below_normal_thread
 
@@ -37,7 +38,7 @@ log = logging.getLogger(__name__)
 CANDIDATE_BEFORE_S = 40.0
 CANDIDATE_AFTER_S = 20.0
 MAX_CANDIDATE_S = 120.0  # merging stops here; a later spike starts a new window where this one ends
-MAX_WAITING = 3  # with this many windows waiting, the worker saves them without transcribing to catch up
+MAX_WAITING = 3  # at most this many windows wait; a newer one pushes out the oldest
 CPU_THREADS = 2  # the local transcriber's threads while a stream may be running on this PC
 _PRIORITY = {"laughs": 0, "chat": 1, "loud": 2}  # a merged window keeps the most telling reason
 
@@ -114,16 +115,19 @@ class Detector:
             for c in [c for c in self._open if c.end <= head]:
                 self._open.remove(c)
                 self._send(c)
+            self._trim()
 
     def flush(self) -> None:
         """The stream ended: the open windows end at the last footage and go to the worker now."""
         with self._lock:
             if not self._stopping:
                 self._send_open()
+                self._trim()
 
     def stop(self) -> None:
-        """No more transcriptions or AI requests: what is open or waiting (and the window being looked at) is
-        saved unclassified, then the worker ends. Returns at once; `join` waits."""
+        """No more transcriptions or AI requests: what is open or waiting is saved unclassified, then the worker
+        ends. A transcription under way is cancelled (and its window saved unclassified); an AI request under
+        way is not interrupted, only its retry waits are. Returns at once; `join` waits."""
         with self._lock:
             if self._stopping:
                 return
@@ -147,12 +151,19 @@ class Detector:
             return not self._waiting and self._running is None
 
     def earliest(self) -> float | None:
-        """The earliest footage a window still needs (the manager pins the buffer there, minus the padding)."""
+        """The earliest footage a window still needs (the manager pins the buffer there, minus the padding).
+        Never more than BUFFER_S + MAX_CANDIDATE_S behind the head: a window stuck in a slow transcription or
+        request must not keep the disk filling. Its footage may be pruned meanwhile; it is then dropped, or
+        saved with what is left."""
         with self._lock:
             starts = [c.start for c in (*self._open, *self._waiting)]
             if self._running is not None:
                 starts.append(self._running.start)
-            return min(starts) if starts else None
+            if not starts:
+                return None
+            if self._head is None:
+                return min(starts)
+            return max(min(starts), self._head - BUFFER_S - MAX_CANDIDATE_S)
 
     # ---- worker -------------------------------------------------------------------
 
@@ -163,6 +174,12 @@ class Detector:
                 c.end = min(c.end, self._head)
             self._send(c)
         self._open.clear()
+
+    def _trim(self) -> None:
+        """Lock held: keep the newest MAX_WAITING windows waiting."""
+        while len(self._waiting) > MAX_WAITING:
+            old = self._waiting.popleft()
+            log.warning("Demasiados candidatos esperando: se descarta uno (%s)", old.reason)
 
     def _send(self, c: _Candidate) -> None:
         """Lock held."""
@@ -184,7 +201,7 @@ class Detector:
                         self._waiting.clear()
                         return
                     c = self._running = self._waiting.popleft()
-                    quick = self._stopping or len(self._waiting) >= MAX_WAITING
+                    quick = self._stopping
                 began = self._clock()
                 try:
                     self._handle(c, quick)
@@ -220,7 +237,8 @@ class Detector:
                 log.info("La IA descartó un candidato (%s)", c.reason)
                 return
             if verdict is not None:
-                self._store(c, verdict.start, verdict.end, words, kind=verdict.kind, classified=True,
+                end = _line_end(words, verdict.start, verdict.end, c.end)
+                self._store(c, verdict.start, end, words, kind=verdict.kind, classified=True,
                             title=verdict.title, description=verdict.description, hashtags=verdict.hashtags)
                 return
         self._store(c, c.start, c.end, words, kind="interesante", classified=False, title="",
@@ -238,8 +256,8 @@ class Detector:
                         "-c:a", "pcm_s16le", str(wav)], cancel=self._busy)
             t = self._transcribe(wav, opts.transcriber, language, self._settings(), opts.whisper_model,
                                  self._busy, lambda f: None, cpu_threads=CPU_THREADS)
-        shift = c.start - cut.start
-        words = [Word(w.text, w.start + shift, w.end + shift) for w in t.words]
+        # through the joined segments: a dropped ad or a lost segment inside the window shifts what follows it
+        words = [Word(w.text, cut.buffer_time(w.start), cut.buffer_time(w.end)) for w in t.words]
         return words, t.language or language or "the transcript's own"
 
     def _ask(self, lines: str, language: str, c: _Candidate) -> ai.AiVerdict | None:
@@ -276,3 +294,13 @@ class Detector:
             self._save(cut, reason=c.reason, at=c.at, text=text, **fields)
         finally:
             out.unlink(missing_ok=True)  # save moved it; anything left is a failed cut
+
+
+def _line_end(words: list[Word], start: float, end: float, limit: float) -> float:
+    """`fin` is the mark of the last line to keep (its start, in whole seconds): the span runs to the end of
+    that line, at most to `limit`."""
+    last = end
+    for s0, s1, _i0, _i1 in _sentences(words):
+        if start <= s0 < end + 1.0:
+            last = max(last, s1)
+    return min(last, limit)

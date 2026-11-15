@@ -132,18 +132,25 @@ def _read_pcm16(path: Path):
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
-_MODELS: dict[tuple[str, int | None], object] = {}  # loaded once per (model, cpu_threads) while Baitd runs
+_MODELS: dict[tuple[str, int], object] = {}  # the live models, kept while Baitd runs
 _MODELS_LOCK = threading.Lock()
 
 
+def _new_model(model: str, cpu_threads: int | None):
+    from faster_whisper import WhisperModel  # lazy: heavy import, optional at test time
+    extra = {"cpu_threads": cpu_threads} if cpu_threads else {}
+    return WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir()), **extra)
+
+
 def _load_model(model: str, cpu_threads: int | None = None):
+    """With `cpu_threads` (the live detector, which transcribes again and again) the model is loaded once and
+    kept, keyed by (model, cpu_threads). Without it (an export) it is loaded and released, as always."""
+    if not cpu_threads:
+        return _new_model(model, None)
     with _MODELS_LOCK:
         wm = _MODELS.get((model, cpu_threads))
         if wm is None:
-            from faster_whisper import WhisperModel  # lazy: heavy import, optional at test time
-            extra = {"cpu_threads": cpu_threads} if cpu_threads else {}
-            wm = WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir()), **extra)
-            _MODELS[(model, cpu_threads)] = wm
+            wm = _MODELS[(model, cpu_threads)] = _new_model(model, cpu_threads)
         return wm
 
 

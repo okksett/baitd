@@ -118,3 +118,22 @@ def test_add_does_not_wait_for_a_running_cut(tmp_path, segments, monkeypatch):
     assert not (folder / f"{0:010d}.ts").exists()
     assert not (folder / f"{1:010d}.ts").exists()
     assert buf.tail() == 1004
+
+
+def test_cut_maps_file_time_back_to_the_buffer_clock(tmp_path, segments):
+    buf = RingBuffer(tmp_path / "ring")
+    _fill(buf, segments, skip={1})  # footage 1000-1002 and 1004-1008
+    cut = buf.cut(1001, 1007, tmp_path / "out.mp4", pad=0)
+    assert cut.spans == ((1000.0, 2.0), (1004.0, 2.0), (1006.0, 2.0))
+    assert cut.buffer_time(cut.start) == pytest.approx(1001.0)
+    assert cut.buffer_time(1.5) == pytest.approx(1001.5)
+    assert cut.buffer_time(2.5) == pytest.approx(1004.5)  # after the gap, not 1002.5
+    assert cut.buffer_time(5.0) == pytest.approx(1007.0)
+    assert cut.buffer_time(99.0) == pytest.approx(1008.0)  # past the end: the last footage
+
+
+def test_cut_starting_after_the_window(tmp_path, segments):
+    buf = RingBuffer(tmp_path / "ring")
+    _fill(buf, segments, skip={0})  # footage starts at 1002
+    cut = buf.cut(1000, 1006, tmp_path / "out.mp4", pad=0)
+    assert cut.start == 0.0 and cut.buffer_time(0.0) == pytest.approx(1002.0)
