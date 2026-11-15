@@ -29,6 +29,9 @@ from ..clip import sources as clip_sources
 from ..clip import ytdlp_loader
 from ..clip.models import FRAMINGS, ClipProfile
 from ..jobqueue import JobQueue
+from ..live import channels as live_channels
+from ..live import store as live_store
+from ..live.session import LiveManager
 from ..models import Profile, Script, UserError, first_sentence
 from ..pipeline import STEPS, check_output_dir
 
@@ -53,6 +56,14 @@ UPLOAD_CHUNK_MAX = 256 * 1024**2  # one PUT (the browser sends 64 MiB); waitress
 _CHUNK = 1024 * 1024
 _ID = re.compile(r"[0-9a-f]{12}")
 _UNEXPECTED = "Error inesperado: {} → Revisa el registro y vuelve a intentarlo"
+_LIVE_INTS = {  # setting: (lowest, highest, cause, fix)
+    "live_before_s": (10, 120, "Segundos antes no válidos", "Usa un número entero entre 10 y 120"),
+    "live_after_s": (5, 60, "Segundos después no válidos", "Usa un número entero entre 5 y 60"),
+    "live_ai_per_hour": (0, 30, "Peticiones de IA por hora no válidas", "Usa un número entero entre 0 y 30"),
+}
+_LIVE_HEIGHTS = (720, 1080)
+_MAX_HOTKEY = 40
+_MAX_DELAY_S = 60
 
 
 def _open_folder(path: Path) -> None:
@@ -95,6 +106,31 @@ def _cache_gb(value) -> float:
     if not 0 < gb < float("inf"):
         raise UserError("Tamaño de caché no válido", "Indica un número de GB mayor que 0")
     return gb
+
+
+def _whole(value):
+    """An int, or a string of digits (form fields send text); anything else is None."""
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value if type(value) is int else None
+
+
+def _live_setting(key: str, value):
+    if key in _LIVE_INTS:
+        lo, hi, cause, fix = _LIVE_INTS[key]
+        number = _whole(value)
+        if number is None or not lo <= number <= hi:
+            raise UserError(cause, fix)
+        return number
+    if key == "live_max_height":
+        number = _whole(value)
+        if number not in _LIVE_HEIGHTS:
+            raise UserError("Calidad del directo no válida", "Elige 720p o 1080p")
+        return number
+    # live_hotkey: Task 8 checks it with hotkey.parse_hotkey
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > _MAX_HOTKEY:
+        raise UserError("Tecla rápida no válida", "Elige otra tecla o combinación de teclas")
+    return value.strip()
 
 
 def _body() -> dict:
@@ -274,7 +310,9 @@ def _listed_clips(folder: Path) -> list[dict]:
 
 
 def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
-               focus: Callable[[], bool] | None = None) -> Flask:
+               focus: Callable[[], bool] | None = None, live: LiveManager | None = None) -> Flask:
+    if live is None:  # no thread starts until a capture or the channel list is used
+        live = LiveManager(config.data_dir(), config.load_settings)
     app = Flask(__name__, template_folder=str(WEB_DIR / "templates"),
                 static_folder=str(WEB_DIR / "static"), static_url_path="/static")
     app.json.ensure_ascii = False
@@ -391,6 +429,9 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
                 if type(value) is not int or value not in clip_sources.QUALITIES:
                     raise UserError("Calidad de descarga no válida", "Elige una de la lista")
                 update[key] = value
+                continue
+            if key.startswith("live_"):
+                update[key] = _live_setting(key, value)
                 continue
             if key == "yt_cookies_file":
                 if not isinstance(value, str):
@@ -768,6 +809,121 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         except UserError:
             abort(404)
         return send_file(src.path, conditional=True)
+
+    # --- en directo ---
+
+    def channel_row(ch) -> dict:
+        st = live.statuses.get(ch.id)
+        known = st is not None
+        return {**ch.to_dict(), "live": st.live if known else None, "title": st.title if known else None,
+                "viewers": st.viewers if known else None, "name": st.name if known else None,
+                "checked_at": st.checked_at if known else None}
+
+    def channel_rows() -> list[dict]:
+        return [channel_row(c) for c in live_channels.load_channels()]
+
+    @app.get("/api/live/channels")
+    def get_live_channels():
+        live.statuses.touch()
+        return jsonify(channels=channel_rows())
+
+    @app.post("/api/live/channels/refresh")
+    def refresh_live_channels():
+        _body()
+        live.statuses.refresh()  # in the background: the next GET shows the new statuses
+        return jsonify(channels=channel_rows())
+
+    @app.post("/api/live/channels")
+    def post_live_channel():
+        data = _body()
+        url, mine = data.get("url"), data.get("mine", False)
+        if not isinstance(url, str) or not url.strip():
+            raise UserError("Falta el enlace del canal", "Pega el enlace del canal, por ejemplo kick.com/tu_canal")
+        if not isinstance(mine, bool):
+            raise UserError("Valor no válido para «Es mío»", "Recarga la página e inténtalo de nuevo")
+        ch = live_channels.add_channel(url, mine)
+        live.channels_changed()
+        live.statuses.refresh()
+        return jsonify(channel_row(ch))
+
+    @app.patch("/api/live/channels/<channel_id>")
+    def patch_live_channel(channel_id: str):
+        data = _body()
+        if "mine" in data and not isinstance(data["mine"], bool):
+            raise UserError("Valor no válido para «Es mío»", "Recarga la página e inténtalo de nuevo")
+        if "framing" in data and data["framing"] not in live_channels.FRAMINGS:
+            raise UserError("Formato no válido", "Elige Cara o Partido")
+        if "delay_s" in data:
+            delay = data["delay_s"]
+            if delay is not None and (isinstance(delay, bool) or not isinstance(delay, (int, float))
+                                      or not math.isfinite(delay) or not 0 <= delay <= _MAX_DELAY_S):
+                raise UserError("Retraso no válido", f"Usa un número de segundos entre 0 y {_MAX_DELAY_S}")
+        with live_channels._LOCK:  # read-modify-write of the list, as add_channel does
+            chs = live_channels.load_channels()
+            ch = next((c for c in chs if c.id == channel_id), None)
+            if ch is None:
+                abort(404)
+            if "mine" in data:
+                ch.mine = data["mine"]
+            if "framing" in data:
+                ch.framing = data["framing"]
+            if "delay_s" in data:
+                ch.delay_s = None if data["delay_s"] is None else float(data["delay_s"])
+            live_channels.save_channels(chs)
+        live.channels_changed()
+        return jsonify(channel_row(ch))
+
+    @app.delete("/api/live/channels/<channel_id>")
+    def delete_live_channel(channel_id: str):
+        _body()
+        with live_channels._LOCK:
+            chs = live_channels.load_channels()
+            if not any(c.id == channel_id for c in chs):
+                abort(404)
+            if live.capturing_channel_id() == channel_id:
+                return jsonify(error=str(UserError("Ese canal se está capturando ahora",
+                                                   "Detén la captura antes de quitarlo"))), 409
+            live_channels.save_channels([c for c in chs if c.id != channel_id])
+        live.statuses.forget(channel_id)
+        live.channels_changed()
+        return jsonify(ok=True)
+
+    @app.post("/api/live/capture")
+    def post_live_capture():
+        channel_id = _body().get("channel_id")
+        if not isinstance(channel_id, str):
+            raise UserError("Ese canal ya no está en la lista", "Recarga la página y elige otro canal")
+        live.start(channel_id)  # only starts the capture thread: it connects in the background
+        return jsonify(live.status())
+
+    @app.delete("/api/live/capture")
+    def delete_live_capture():
+        _body()
+        live.stop(wait=False)  # the last cuts and the clean-up run on the worker thread
+        return jsonify(live.status())
+
+    @app.post("/api/live/mark")
+    def post_live_mark():
+        _body()
+        return jsonify(live.mark("button"))
+
+    @app.get("/api/live/status")
+    def get_live_status():
+        since = request.args.get("since", "0")
+        return jsonify(live.status(int(since) if re.fullmatch(r"[0-9]{1,15}", since) else 0))
+
+    @app.get("/api/live/moments")
+    def get_live_moments():
+        return jsonify(moments=live_store.list_moments())
+
+    @app.get("/api/live/moments/<analysis_id>/thumb")
+    def live_moment_thumb(analysis_id: str):
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites
+            abort(403)
+        path = live_store.thumb_path(analysis_id)
+        if path is None:
+            abort(404)
+        return send_file(path, mimetype="image/jpeg", conditional=True)
 
     @app.post("/api/ytdlp/update")
     def ytdlp_update():

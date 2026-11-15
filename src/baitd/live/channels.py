@@ -171,7 +171,10 @@ def _is_offline_error(e: Exception) -> bool:
     return any(m in msg for m in _OFFLINE_MARKS)
 
 
-def live_status(ch: Channel, *, http=requests, extract: Callable[[str], dict] | None = None) -> LiveStatus:
+def live_status(ch: Channel, *, http=requests, extract: Callable[[str], dict] | None = None,
+                raise_errors: bool = False) -> LiveStatus:
+    """Whether the channel is live. A failed check is logged and reads as offline, unless `raise_errors`,
+    when the exception goes to the caller (which then decides how often to log it)."""
     now = time.time()
     try:
         if ch.platform == "kick":
@@ -195,6 +198,8 @@ def live_status(ch: Channel, *, http=requests, extract: Callable[[str], dict] | 
         return LiveStatus(True, title=str(info.get("title") or ""), viewers=info.get("concurrent_view_count"),
                           name=str(info.get("uploader") or ""), checked_at=now)
     except Exception as e:
+        if raise_errors:
+            raise
         # The exception text can carry a URL with a token: log only its type and the channel.
         log.warning("No se pudo comprobar %s/%s (%s)", ch.platform, ch.handle, type(e).__name__)
         return LiveStatus(False, checked_at=now)

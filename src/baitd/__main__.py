@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import shutil
 import signal
 import socket
 import sys
@@ -15,6 +16,7 @@ from waitress import create_server
 
 from . import __version__, config, desktop, instance, updater
 from .jobqueue import JobQueue
+from .live.session import LiveManager
 from .web.server import UPLOAD_CHUNK_MAX, create_app
 
 HOST = "127.0.0.1"
@@ -22,6 +24,7 @@ HOST = "127.0.0.1"
 MAX_BODY = UPLOAD_CHUNK_MAX + 1024**2
 log = logging.getLogger("baitd")
 _server = None
+_live: LiveManager | None = None  # the running app's live manager, closed on exit
 _server_lock = threading.Lock()
 _OTHER_WAIT = 5.0  # seconds a second start waits for the first instance to answer
 _STOP_SIGNALS = ("SIGTERM", "SIGBREAK", "SIGHUP")
@@ -48,9 +51,9 @@ def port_is_free(port: int) -> bool:
     return True
 
 
-def build_server(port: int, queue: JobQueue):
+def build_server(port: int, queue: JobQueue, live: LiveManager | None = None):
     """A threaded WSGI server bound to 127.0.0.1 only; already listening when it returns."""
-    return create_server(create_app(queue, shutdown=request_shutdown, focus=desktop.focus_window),
+    return create_server(create_app(queue, shutdown=request_shutdown, focus=desktop.focus_window, live=live),
                          host=HOST, port=port, ident="Baitd",
                          max_request_body_size=MAX_BODY)  # uploads come in chunks; the route checks too
 
@@ -60,7 +63,10 @@ def _close_everything(server) -> None:
 
     Closing only the listening socket is not enough: the browser's idle keep-alive connection
     stays in waitress's map and run() keeps looping, so the process (and its instance lock)
-    would outlive "Salir"."""
+    would outlive "Salir".
+
+    The live capture is closed first (its last marks are sealed), before _serve stops the queue."""
+    _close_live()
     try:
         conn_map = getattr(server, "_map", None) or {}  # waitress keeps its dispatchers in _map
         trigger = getattr(server, "trigger", None)
@@ -72,6 +78,17 @@ def _close_everything(server) -> None:
                     log.debug("closing a connection failed", exc_info=True)
     finally:
         server.close()
+
+
+def _close_live() -> None:
+    with _server_lock:
+        live = _live
+    if live is None:
+        return
+    try:
+        live.close()
+    except Exception:  # quitting must go on
+        log.exception("No se pudo cerrar la captura en directo")
 
 
 def request_shutdown() -> None:
@@ -244,7 +261,12 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         queue.sweep_clip_data(keep_sources=bool(config.load_settings().get("keep_sources")))
     except OSError:
         log.exception("No se pudo limpiar fuentes/ y analisis/")
-    global _server
+    try:  # a capture never outlives Baitd: leftover segments from the last run are not footage anyone needs
+        shutil.rmtree(config.data_dir() / "directo" / "buffer", ignore_errors=True)
+    except OSError:
+        log.exception("No se pudo limpiar directo/buffer")
+    live = LiveManager(config.data_dir(), config.load_settings)
+    global _server, _live
     try:
         # Windows only: waitress would share the port silently there. Elsewhere the probe fails on ports in
         # TIME_WAIT, while waitress binds fine and its OSError below already reports a busy port.
@@ -255,7 +277,7 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
                 "Baitd o inicia con --port <otro número>")
         port = args.port or find_free_port()
         try:
-            server = build_server(port, queue)
+            server = build_server(port, queue, live)
         except OSError as e:
             log.error("No se pudo abrir el puerto %s: %s", port, e)
             raise SystemExit(
@@ -263,6 +285,7 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
                 "Baitd o inicia con --port <otro número>") from e
         with _server_lock:
             _server = server
+            _live = live
         url = f"http://{HOST}:{server.effective_port}/"
         lock.write_url(url)
         if threading.current_thread() is threading.main_thread():
@@ -283,6 +306,8 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     finally:
         with _server_lock:
             _server = None
+            _live = None
+        live.close()  # Ctrl+C skips _close_everything; close() runs once either way
         queue.stop()  # a running job goes back to pending
         for h in handlers:
             logging.getLogger().removeHandler(h)

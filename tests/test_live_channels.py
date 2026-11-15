@@ -111,6 +111,13 @@ def test_kick_failure_is_offline_and_logs_no_query(caplog):
     assert "SECRET" not in caplog.text and caplog.records
 
 
+def test_status_failure_raises_when_asked(caplog):
+    http = _Http(requests.ConnectionError("boom"))
+    with caplog.at_level("WARNING"), pytest.raises(requests.ConnectionError):
+        channels.live_status(KICK, http=http, raise_errors=True)
+    assert not caplog.records  # the caller logs it, once
+
+
 def test_ytdlp_status_offline_and_live():
     tw = Channel("2", "twitch", "lofigirl", "https://www.twitch.tv/lofigirl")
     answers = [Exception("lofigirl: The channel is not currently live"), {"is_live": True, "title": "t"},

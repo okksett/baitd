@@ -89,7 +89,7 @@ def test_busy_port_probe_is_skipped_off_windows(tmp_data, monkeypatch):
     class Reached(Exception):
         pass
 
-    def build(port, queue):
+    def build(port, queue, live=None):
         raise Reached
 
     monkeypatch.setattr(app_main, "build_server", build)
@@ -265,6 +265,32 @@ def test_start_sweeps_orphan_clip_data(tmp_data):
     finally:
         app_main.request_shutdown()
         t.join(10)
+
+
+def test_start_clears_live_buffer_and_exit_closes_live(tmp_data, monkeypatch):
+    stale = tmp_data / "directo" / "buffer" / "abc" / "ts" / "0000000001.ts"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old segment")
+    order = []
+    real_close, real_stop = app_main.LiveManager.close, JobQueue.stop
+    monkeypatch.setattr(app_main.LiveManager, "close", lambda self: order.append("live") or real_close(self))
+    monkeypatch.setattr(JobQueue, "stop", lambda self, *a, **k: order.append("queue") or real_stop(self, *a, **k))
+    port = app_main.find_free_port()
+    t = threading.Thread(target=app_main.main, args=(["--no-browser", "--port", str(port)],), daemon=True)
+    t.start()
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+                break
+            except OSError:
+                time.sleep(0.1)
+        assert not stale.exists()
+    finally:
+        app_main.request_shutdown()
+        t.join(10)
+    assert not t.is_alive()
+    assert "live" in order and order.index("live") < order.index("queue")
 
 
 def test_request_body_cap_fits_one_upload_chunk(tmp_data):
