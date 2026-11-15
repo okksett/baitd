@@ -184,3 +184,13 @@ def clip_pipeline_analysis(aid):
     other = "c" * 12
     (clip_pipeline.analyses_dir() / f"{other}.json").write_text(json.dumps(data), encoding="utf-8")
     return other
+
+
+def test_status_carries_the_hotkey_state(client, live):
+    from test_live_session import _BusyListener
+    _add(client)  # a saved channel: the hotkey is wanted
+    assert client.get("/api/live/status").get_json()["hotkey"] == {"ok": True, "spec": "F9", "text": ""}
+    live._hotkey_factory = _BusyListener
+    live.reload_hotkey()
+    hk = client.get("/api/live/status").get_json()["hotkey"]
+    assert hk["ok"] is False and hk["spec"] == "F9" and "otro programa" in hk["text"]

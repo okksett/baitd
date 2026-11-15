@@ -311,11 +311,17 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         with _server_lock:
             _server = None
             _live = None
-        live.close()  # Ctrl+C skips _close_everything; close() runs once either way
-        queue.stop()  # a running job goes back to pending
-        for h in handlers:
-            logging.getLogger().removeHandler(h)
-            h.close()
+        try:
+            live.close()  # Ctrl+C skips _close_everything; close() runs once either way
+        except Exception:
+            log.exception("No se pudo cerrar la captura en directo")
+        finally:
+            try:
+                queue.stop()  # a running job goes back to pending
+            finally:
+                for h in handlers:
+                    logging.getLogger().removeHandler(h)
+                    h.close()
 
 
 def _run_server(server) -> None:

@@ -301,3 +301,30 @@ def test_request_body_cap_fits_one_upload_chunk(tmp_data):
         assert server.adj.max_request_body_size == app_main.MAX_BODY
     finally:
         server.close()
+
+
+def test_a_failing_live_close_does_not_skip_the_queue_stop(tmp_data, monkeypatch):
+    order = []
+    real_stop = JobQueue.stop
+
+    def boom(self):
+        order.append("live")
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(app_main.LiveManager, "close", boom)
+    monkeypatch.setattr(JobQueue, "stop", lambda self, *a, **k: order.append("queue") or real_stop(self, *a, **k))
+    port = app_main.find_free_port()
+    t = threading.Thread(target=app_main.main, args=(["--no-browser", "--port", str(port)],), daemon=True)
+    t.start()
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+                break
+            except OSError:
+                time.sleep(0.1)
+    finally:
+        app_main.request_shutdown()
+        t.join(10)
+    assert not t.is_alive()
+    assert order[-1] == "queue" and "live" in order  # the queue stops even though live.close() raised

@@ -497,3 +497,65 @@ def test_own_channel_has_no_detection(auto, chans):
     time.sleep(0.2)
     assert FakeDetector.made == [] and FakeReader.made == []
     assert mgr.status()["ai_left"] is None
+
+
+def test_stream_end_stops_the_chat_reader_and_the_meter(auto, chans):
+    mgr, _ = auto
+    mgr.start(chans[1].id)
+    cap = _cap()
+    cap.now = 2200.0
+    cap.buffer.add(0, 2000.0, 1.0, b"x")
+    assert wait_for(lambda: FakeReader.made and FakeReader.made[-1].started)
+    reader, det = FakeReader.made[-1], FakeDetector.made[-1]
+    meter = mgr._session.meter
+    cap.state = "ended"
+    assert wait_for(lambda: reader.stopped and det.stopped)
+    assert wait_for(lambda: not meter.is_alive())
+
+
+def test_marking_the_channel_as_mine_stops_the_watch(auto, chans):
+    mgr, _ = auto
+    mgr.start(chans[1].id)
+    cap = _cap()
+    cap.buffer.add(0, 2000.0, 1.0, b"x")
+    assert wait_for(lambda: FakeReader.made and FakeReader.made[-1].started)
+    reader, det = FakeReader.made[-1], FakeDetector.made[-1]
+    other = Channel(**{**chans[1].__dict__, "mine": True})
+    channels.save_channels([chans[0], other])
+    mgr.channels_changed()
+    assert reader.stopped and det.stopped
+
+
+class _BusyListener:
+    def __init__(self, spec, on_press):
+        from baitd.live.hotkey import HotkeyError
+        raise HotkeyError("Esa tecla ya la usa otro programa", "Elige otra en Ajustes")
+
+
+class _GoodListener:
+    def __init__(self, spec, on_press):
+        self.spec = spec
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+def test_status_reports_a_refused_hotkey(tmp_data, chans):
+    m = LiveManager(tmp_data, lambda: dict(SETTINGS), capture_factory=FakeCapture, tick_s=0.05,
+                    status_fn=lambda ch: LiveStatus(False), hotkey_factory=_BusyListener)
+    try:
+        assert m.status()["hotkey"] == {"ok": True, "spec": "F9", "text": ""}
+        m.reload_hotkey()
+        hk = m.status()["hotkey"]
+        assert hk["ok"] is False and hk["spec"] == "F9"
+        assert hk["text"] == "Esa tecla ya la usa otro programa → Elige otra en Ajustes"
+        m.start(chans[1].id)
+        assert m.status()["hotkey"]["ok"] is False  # also while capturing
+        m._hotkey_factory = _GoodListener  # the user picked another key: it works again
+        m.reload_hotkey()
+        assert m.status()["hotkey"] == {"ok": True, "spec": "F9", "text": ""}
+    finally:
+        m.close()

@@ -362,6 +362,7 @@
   "live.mark": "Mark moment",
   "live.pending": "Saving what comes next… {s} s · press again to extend",
   "live.hotkey_tip": "Hotkey: {key}, also while the game is in front",
+  "live.hotkey_off": "The hotkey {key} is not active → Use the Mark moment button in the window",
   "live.stop": "Stop",
   "live.moments": "Moments",
   "live.moments_empty": "No moments yet. Mark one during a capture; on other people's channels Baitd also suggests them on its own.",

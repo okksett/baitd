@@ -619,6 +619,8 @@ def test_live_ui_seams():
     assert "e.ctrlKey || e.altKey || e.metaKey" in rec
     # no_capture and hotkey_busy are explained on every tab, not only inside the En directo panel
     assert '"no_capture", "hotkey_busy"' in js and 'id="live-alert"' in INDEX.read_text("utf-8")
+    # a refusal at start-up is shown from the status field, standing, in the alert and in the capture hint
+    assert "syncHotkeyAlert(st.hotkey)" in js and "live.hotkey_off" in js
 
 
 def test_index_has_rights_notice_key(client):

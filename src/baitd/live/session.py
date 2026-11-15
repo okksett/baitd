@@ -213,6 +213,8 @@ class LiveManager:
         self._detector_factory = detector_factory
         self._hotkey = None
         self._hotkey_spec: str | None = None
+        # what the status shows: the key and whether it is registered (a refusal stays visible, not only an event)
+        self._hotkey_state = {"ok": True, "spec": config.SETTINGS_DEFAULTS["live_hotkey"], "text": ""}
         self._hotkey_lock = threading.Lock()  # serialises reload and close
         self._clock = clock
         self._tick_s = tick_s
@@ -407,6 +409,7 @@ class LiveManager:
                         self._enqueue_seal(s, m)
                     if s.detector is not None:
                         s.detector.flush()
+                    self._unwatch(s)  # the stream is over: the chat reader and the meter have nothing to read
                     self._update_pin(s)
                 return
             head = s.buffer.head()
@@ -548,7 +551,8 @@ class LiveManager:
             s = self._session
             if s is None:
                 return {"state": "idle", "channel_id": None, "title": None, "latency_s": None, "buffered_s": 0,
-                        "pending": None, "events": events, "has_pdt": None, "ai_left": None}
+                        "pending": None, "events": events, "has_pdt": None, "ai_left": None,
+                        "hotkey": dict(self._hotkey_state)}
             ai_left = s.limit.left() if s.limit is not None else None
             cap = s.capture
             latency = cap.latency() if cap.state in ACTIVE else None
@@ -561,7 +565,7 @@ class LiveManager:
             return {"state": cap.state, "channel_id": s.channel.id, "title": cap.title,
                     "latency_s": round(latency, 1) if latency is not None else None,
                     "buffered_s": round(s.buffer.seconds(), 1), "pending": pending, "events": events,
-                    "has_pdt": bool(cap.has_pdt), "ai_left": ai_left}
+                    "has_pdt": bool(cap.has_pdt), "ai_left": ai_left, "hotkey": dict(self._hotkey_state)}
 
     # ---- channels and lifetime ----------------------------------------------------
 
@@ -574,7 +578,10 @@ class LiveManager:
             fresh = next((c for c in channels.load_channels() if c.id == s.channel.id), None)
             if fresh is not None:
                 with self._lock:  # in place: the capture thread holds the same object
+                    was_mine = s.channel.mine
                     s.channel.mine, s.channel.framing, s.channel.delay_s = fresh.mine, fresh.framing, fresh.delay_s
+                    if fresh.mine and not was_mine:  # the user's own channel is never watched (spec §6.4)
+                        self._unwatch(s)
         self.reload_hotkey()
 
     # ---- hotkey (R4) ----------------------------------------------------------------
@@ -595,20 +602,25 @@ class LiveManager:
             old, self._hotkey, self._hotkey_spec = self._hotkey, None, None
             if old is not None:
                 self._stop_hotkey(old)
+            self._hotkey_state = {"ok": True, "spec": spec, "text": ""}
             if want is None:
                 return
             try:
                 listener = self._hotkey_factory(want, self._on_hotkey)
                 listener.start()
             except HotkeyError as e:
-                self._event("hotkey_busy", str(e))
+                self._refuse_hotkey(spec, str(e))
                 return
             except Exception:
                 log.exception("No se pudo activar la tecla rápida")
-                self._event("hotkey_busy", str(HotkeyError("No se pudo activar la tecla rápida",
-                                                           "Usa el botón Marcar de la ventana")))
+                self._refuse_hotkey(spec, str(HotkeyError("No se pudo activar la tecla rápida",
+                                                          "Usa el botón Marcar de la ventana")))
                 return
             self._hotkey, self._hotkey_spec = listener, want
+
+    def _refuse_hotkey(self, spec: str, text: str) -> None:
+        self._hotkey_state = {"ok": False, "spec": spec, "text": text}
+        self._event("hotkey_busy", text)
 
     @staticmethod
     def _stop_hotkey(listener) -> None:

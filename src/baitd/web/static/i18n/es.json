@@ -362,6 +362,7 @@
   "live.mark": "Marcar momento",
   "live.pending": "Guardando lo que sigue… {s} s · pulsa otra vez para alargar",
   "live.hotkey_tip": "Tecla rápida: {key}, también con el juego en primer plano",
+  "live.hotkey_off": "La tecla rápida {key} no está activa → Usa el botón Marcar momento de la ventana",
   "live.stop": "Detener",
   "live.moments": "Momentos",
   "live.moments_empty": "Aún no hay momentos. Marca uno durante una captura; en canales de otros, Baitd también los propone solo.",

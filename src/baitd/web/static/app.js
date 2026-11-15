@@ -1932,6 +1932,7 @@
       }
       L.since = since;
       L.status = st;
+      syncHotkeyAlert(st.hotkey);
       if (st.channel_id && st.state === "capturing") {
         if (st.has_pdt === false) L.noPdt.add(st.channel_id);
         else if (st.has_pdt === true) L.noPdt.delete(st.channel_id);
@@ -1974,19 +1975,38 @@
       a: fmtTime(Math.min(BUFFER_S, st.buffered_s || 0), false), b: fmtTime(BUFFER_S, false) });
     $("#live-cap-ai").textContent = st.ai_left === null || st.ai_left === undefined ? "" : tr("live.ai_left", { n: st.ai_left });
     $("#live-pending").textContent = st.pending ? tr("live.pending", { s: Math.ceil(st.pending.remaining_s) }) : "";
-    $("#live-hotkey-hint").textContent = tr("live.hotkey_tip", { key: L.hotkey });
+    const hk = st.hotkey;
+    $("#live-hotkey-hint").textContent = hk && !hk.ok
+      ? tr("live.hotkey_off", { key: hk.spec })
+      : tr("live.hotkey_tip", { key: L.hotkey });
   }
 
   // A hotkey press with no capture, or a hotkey the system refused, is explained on every tab (spec §6.1):
   // in the app-wide line under the header instead of the panel's notices.
   let appAlertTimer = null;
+  let appAlertNow = ""; // the passing notice (a press without a capture, a refusal as it happens)
+  let hotkeyAlert = ""; // the standing one: the system refused the hotkey, so it stays until it works
+
+  function paintAppAlert() {
+    const el = $("#live-alert");
+    el.textContent = appAlertNow || hotkeyAlert;
+    el.hidden = !el.textContent;
+  }
 
   function showAppAlert(text) {
-    const el = $("#live-alert");
     clearTimeout(appAlertTimer);
-    el.textContent = text;
-    el.hidden = !text;
+    appAlertNow = text;
+    paintAppAlert();
     if (text) appAlertTimer = setTimeout(() => showAppAlert(""), NOTICE_WARN_MS);
+  }
+
+  // GET /api/live/status says whether the hotkey is registered, also for a refusal at start-up, before the
+  // first poll (events from before the page opened are not shown).
+  function syncHotkeyAlert(hk) {
+    const text = hk && !hk.ok ? hk.text : "";
+    if (text === hotkeyAlert) return;
+    hotkeyAlert = text;
+    paintAppAlert();
   }
 
   function addNotice(ev) {
