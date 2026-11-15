@@ -141,3 +141,15 @@ def test_app_builds_its_own_manager_without_threads(queue):
     a.test_client_class = LocalClient
     assert a.test_client().post("/api/live/mark", json={}).get_json()["kind"] == "no_capture"
     assert {t.name for t in threading.enumerate()} - before == set()
+
+
+def test_hotkey_setting_is_stored_canonical_and_reloads(client, live, monkeypatch):
+    calls = []
+    monkeypatch.setattr(live, "reload_hotkey", lambda: calls.append(1))
+    r = client.post("/api/settings", json={"live_hotkey": " ctrl + shift+f9 "})
+    assert r.status_code == 200 and r.get_json()["live_hotkey"] == "Ctrl+Shift+F9"
+    assert config.load_settings()["live_hotkey"] == "Ctrl+Shift+F9" and calls == [1]
+    for bad in ("f25", "ctrl", "ctrl+ñ"):
+        r = client.post("/api/settings", json={"live_hotkey": bad})
+        assert r.status_code == 400 and "Esa tecla no se puede usar" in r.get_json()["error"]
+    assert config.load_settings()["live_hotkey"] == "Ctrl+Shift+F9" and calls == [1]

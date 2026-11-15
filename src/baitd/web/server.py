@@ -30,6 +30,7 @@ from ..clip import ytdlp_loader
 from ..clip.models import FRAMINGS, ClipProfile
 from ..jobqueue import JobQueue
 from ..live import channels as live_channels
+from ..live import hotkey as live_hotkey
 from ..live import store as live_store
 from ..live.session import LiveManager
 from ..models import Profile, Script, UserError, first_sentence
@@ -62,7 +63,6 @@ _LIVE_INTS = {  # setting: (lowest, highest, cause, fix)
     "live_ai_per_hour": (0, 30, "Peticiones de IA por hora no válidas", "Usa un número entero entre 0 y 30"),
 }
 _LIVE_HEIGHTS = (720, 1080)
-_MAX_HOTKEY = 40
 _MAX_DELAY_S = 60
 
 
@@ -127,10 +127,7 @@ def _live_setting(key: str, value):
         if number not in _LIVE_HEIGHTS:
             raise UserError("Calidad del directo no válida", "Elige 720p o 1080p")
         return number
-    # live_hotkey: Task 8 checks it with hotkey.parse_hotkey
-    if not isinstance(value, str) or not value.strip() or len(value.strip()) > _MAX_HOTKEY:
-        raise UserError("Tecla rápida no válida", "Elige otra tecla o combinación de teclas")
-    return value.strip()
+    return live_hotkey.format_hotkey(*live_hotkey.parse_hotkey(value))  # live_hotkey: stored in its canonical form
 
 
 def _body() -> dict:
@@ -455,6 +452,8 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         if update.get("output_dir"):  # "" = the default folder in the data dir
             check_output_dir(Path(update["output_dir"]))
         config.save_settings(update)
+        if "live_hotkey" in update:
+            live.reload_hotkey()
         with voice_lock:
             voice_cache.clear()  # a new key can change which voices are available
         return jsonify(_masked_settings())

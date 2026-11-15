@@ -27,6 +27,7 @@ from . import channels, store
 from .buffer import REVIEW_PAD_S, NoFootage, RingBuffer
 from .capture import Capture
 from .channels import Channel, LiveStatus
+from .hotkey import HotkeyError
 from .marks import EXTEND_S, MAX_MARK_S, Mark, MarkTracker
 
 __all__ = ["LiveManager", "StatusBoard", "ACTIVE", "TEXTS"]
@@ -191,8 +192,10 @@ class LiveManager:
         self.root = self.data_dir / "directo" / "buffer"
         self._settings = settings
         self._capture_factory = capture_factory
-        self._hotkey_factory = hotkey_factory  # Task 8 registers the hotkey under R4
+        self._hotkey_factory = hotkey_factory  # None (tests): no hotkey is ever registered
         self._hotkey = None
+        self._hotkey_spec: str | None = None
+        self._hotkey_lock = threading.Lock()  # serialises reload and close
         self._clock = clock
         self._tick_s = tick_s
         self.statuses = StatusBoard(status_fn, clock=clock)
@@ -462,15 +465,62 @@ class LiveManager:
 
     def channels_changed(self) -> None:
         """The saved channels changed. The session sees its channel's new settings (framing, mine, delay);
-        the hotkey is registered or unregistered here under R4 (Task 8)."""
+        the hotkey is registered or unregistered here under R4."""
         with self._lock:
             s = self._session
-        if s is None:
+        if s is not None:
+            fresh = next((c for c in channels.load_channels() if c.id == s.channel.id), None)
+            if fresh is not None:
+                with self._lock:  # in place: the capture thread holds the same object
+                    s.channel.mine, s.channel.framing, s.channel.delay_s = fresh.mine, fresh.framing, fresh.delay_s
+        self.reload_hotkey()
+
+    # ---- hotkey (R4) ----------------------------------------------------------------
+
+    def reload_hotkey(self) -> None:
+        """Make the registered hotkey match the saved channels and the `live_hotkey` setting: registered while
+        Baitd runs and at least one channel is saved, released when the last channel is removed. A refused
+        key becomes the `hotkey_busy` event (and is tried again on the next reload)."""
+        if self._hotkey_factory is None:
             return
-        fresh = next((c for c in channels.load_channels() if c.id == s.channel.id), None)
-        if fresh is not None:
-            with self._lock:  # in place: the capture thread holds the same object
-                s.channel.mine, s.channel.framing, s.channel.delay_s = fresh.mine, fresh.framing, fresh.delay_s
+        with self._hotkey_lock:
+            if self._closed.is_set():
+                return
+            spec = str(self._settings().get("live_hotkey") or config.SETTINGS_DEFAULTS["live_hotkey"])
+            want = spec if channels.load_channels() else None
+            if self._hotkey is not None and want == self._hotkey_spec:
+                return
+            old, self._hotkey, self._hotkey_spec = self._hotkey, None, None
+            if old is not None:
+                self._stop_hotkey(old)
+            if want is None:
+                return
+            try:
+                listener = self._hotkey_factory(want, self._on_hotkey)
+                listener.start()
+            except HotkeyError as e:
+                self._event("hotkey_busy", str(e))
+                return
+            except Exception:
+                log.exception("No se pudo activar la tecla rápida")
+                self._event("hotkey_busy", str(HotkeyError("No se pudo activar la tecla rápida",
+                                                           "Usa el botón Marcar de la ventana")))
+                return
+            self._hotkey, self._hotkey_spec = listener, want
+
+    @staticmethod
+    def _stop_hotkey(listener) -> None:
+        try:
+            listener.stop()
+        except Exception:
+            log.exception("No se pudo soltar la tecla rápida")
+
+    def _on_hotkey(self) -> None:
+        """The key was pressed (on the listener's thread): `mark` is quick, so the message loop stays free."""
+        try:
+            self.mark("hotkey")
+        except Exception:
+            log.exception("No se pudo marcar el momento con la tecla rápida")
 
     def close(self, timeout: float = CLOSE_TIMEOUT_S) -> None:
         """App exit: seal and stop the capture, then unregister the hotkey and end the threads.
@@ -485,12 +535,10 @@ class LiveManager:
             log.warning("La captura no terminó de guardar en %.0f s: se cancela lo pendiente", timeout)
             self._cancel.set()
             drained = self._wait_jobs(CANCEL_GRACE_S)
-        hotkey, self._hotkey = self._hotkey, None
+        with self._hotkey_lock:
+            hotkey, self._hotkey, self._hotkey_spec = self._hotkey, None, None
         if hotkey is not None:
-            try:
-                hotkey.stop()
-            except Exception:
-                log.exception("No se pudo soltar la tecla rápida")
+            self._stop_hotkey(hotkey)
         self.statuses.close()
         if self._worker is not None:
             self._jobs.put(None)

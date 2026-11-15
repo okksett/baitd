@@ -16,6 +16,7 @@ from waitress import create_server
 
 from . import __version__, config, desktop, instance, updater
 from .jobqueue import JobQueue
+from .live.hotkey import HotkeyListener
 from .live.session import LiveManager
 from .web.server import UPLOAD_CHUNK_MAX, create_app
 
@@ -265,7 +266,7 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         shutil.rmtree(config.data_dir() / "directo" / "buffer", ignore_errors=True)
     except OSError:
         log.exception("No se pudo limpiar directo/buffer")
-    live = LiveManager(config.data_dir(), config.load_settings)
+    live = LiveManager(config.data_dir(), config.load_settings, hotkey_factory=HotkeyListener)
     global _server, _live
     try:
         # Windows only: waitress would share the port silently there. Elsewhere the probe fails on ports in
@@ -291,6 +292,7 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         if threading.current_thread() is threading.main_thread():
             _install_stop_signals()  # same clean path as Ctrl+C (KeyboardInterrupt in run())
         queue.start()
+        live.channels_changed()  # R4: the hotkey is on while Baitd runs and a channel is saved
         log.info("Servidor en %s", url)
         _say(url)
         _say("Pulsa Ctrl+C para cerrar")
