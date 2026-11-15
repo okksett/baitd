@@ -213,6 +213,6 @@ def test_youtube_empty_replies_give_up():
     assert events == ["chat_off"]
 
 
-def test_backoff_schedule_spans_about_a_minute():
-    assert [chat.backoff(n) for n in range(1, 6)] == [2, 4, 8, 16, 30]
-    assert chat.backoff(9) == 30 and chat.backoff(0) == 2
+def test_backoff_schedule_spans_a_minute():
+    assert [chat.backoff(n) for n in range(1, 6)] == [4, 8, 16, 32, 32]
+    assert chat.backoff(9) == 32 and chat.backoff(0) == 4

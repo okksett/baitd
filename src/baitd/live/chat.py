@@ -26,7 +26,7 @@ MAX_FAILS = 5
 KICK_TOKEN_REFRESH_S = 40 * 60       # the guest token lasts ~45 min
 TWITCH_READ_S = 360                  # Twitch PINGs about every 5 min: longer silence = dead socket
 KICK_READ_S = 90                     # Centrifugo pings `{}` about every 25 s
-BACKOFF_S = (2, 4, 8, 16, 30)        # waits after consecutive failures: five attempts span about a minute
+BACKOFF_S = (4, 8, 16, 32)          # waits between the five attempts: 60 s in all before chat_off
 
 
 def backoff(fails: int) -> float:
