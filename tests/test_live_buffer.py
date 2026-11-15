@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 
 from baitd import ffmpeg
@@ -14,7 +17,8 @@ def segments(tmp_path):
         "-f", "lavfi", "-i", "sine=frequency=440:duration=8",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
         "-c:a", "aac", "-shortest",
-        "-f", "segment", "-segment_time", "1.9",  # a hair under 2 s so each 60-frame GOP closes a segment "-segment_format", "mpegts",
+        # 1.9 s: a hair under 2 s so each 60-frame GOP closes a segment
+        "-f", "segment", "-segment_time", "1.9", "-segment_format", "mpegts",
         str(src / "s%d.ts"),
     ])
     files = sorted(src.glob("s*.ts"), key=lambda p: int(p.stem[1:]))
@@ -79,3 +83,38 @@ def test_clear_empties_the_buffer(tmp_path, segments):
     buf.clear()
     assert buf.head() is None and buf.tail() is None and buf.seconds() == 0
     assert not list(folder.glob("*.ts"))
+
+
+def test_add_does_not_wait_for_a_running_cut(tmp_path, segments, monkeypatch):
+    folder = tmp_path / "ring"
+    buf = RingBuffer(folder, keep_s=4)
+    _fill(buf, segments[:3])
+    started, release = threading.Event(), threading.Event()
+
+    def blocked_run(args, *a, **kw):
+        started.set()
+        assert release.wait(10)
+        return ""
+
+    monkeypatch.setattr(ffmpeg, "run", blocked_run)
+    result = {}
+
+    def do_cut():
+        result["cut"] = buf.cut(1000, 1006, tmp_path / "out.mp4")
+
+    t = threading.Thread(target=do_cut)
+    t.start()
+    assert started.wait(5)
+    t0 = time.monotonic()
+    buf.add(3, 1006, 2.0, segments[3])
+    buf.add(4, 1008, 2.0, segments[0])
+    buf.head(), buf.tail(), buf.seconds()
+    assert time.monotonic() - t0 < 1.0
+    # segments being cut are still on disk although they fell out of the window
+    assert (folder / f"{0:010d}.ts").exists()
+    release.set()
+    t.join(10)
+    assert not t.is_alive() and "cut" in result
+    assert not (folder / f"{0:010d}.ts").exists()
+    assert not (folder / f"{1:010d}.ts").exists()
+    assert buf.tail() == 1004

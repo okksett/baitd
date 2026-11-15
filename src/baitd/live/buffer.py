@@ -47,6 +47,7 @@ class RingBuffer:
         self.keep_s = keep_s
         self._segs: list[_Seg] = []  # sorted by start
         self._pin: float | None = None
+        self._in_use: dict[int, int] = {}  # seq -> running cuts reading it
         self._lock = threading.Lock()
         self.folder.mkdir(parents=True, exist_ok=True)
 
@@ -67,6 +68,8 @@ class RingBuffer:
                 break
             if self._pin is not None and oldest.end > self._pin:
                 break
+            if oldest.seq in self._in_use:
+                break  # a cut is reading it; it is pruned when the cut releases it
             self._segs.pop(0)
             oldest.path.unlink(missing_ok=True)
 
@@ -98,7 +101,10 @@ class RingBuffer:
             chosen = [s for s in self._segs if s.end > t0 - pad and s.start < t1 + pad]
             if not chosen:
                 raise NoFootage("no footage for that moment")
-            # Hold the lock while FFmpeg reads the files so pruning cannot delete them.
+            for s in chosen:
+                self._in_use[s.seq] = self._in_use.get(s.seq, 0) + 1
+        try:
+            # FFmpeg runs outside the lock so the capture thread is never stalled.
             out = Path(out)
             out.parent.mkdir(parents=True, exist_ok=True)
             listing = out.with_name(out.stem + ".concat.txt")
@@ -114,6 +120,16 @@ class RingBuffer:
                 )
             finally:
                 listing.unlink(missing_ok=True)
+        finally:
+            with self._lock:
+                for s in chosen:
+                    n = self._in_use.get(s.seq, 0) - 1
+                    if n > 0:
+                        self._in_use[s.seq] = n
+                    else:
+                        self._in_use.pop(s.seq, None)
+                if self._segs:
+                    self._prune()
 
         total = sum(s.duration for s in chosen)
 
