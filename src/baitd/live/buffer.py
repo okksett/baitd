@@ -96,7 +96,9 @@ class RingBuffer:
             self._segs.clear()
             self._pin = None
 
-    def cut(self, t0: float, t1: float, out: Path, pad: float = REVIEW_PAD_S) -> Cut:
+    def cut(self, t0: float, t1: float, out: Path, pad: float = REVIEW_PAD_S,
+            cancel: threading.Event | None = None) -> Cut:
+        """Join the segments around [t0, t1] into `out`. Setting `cancel` stops FFmpeg (JobCancelled)."""
         with self._lock:
             chosen = [s for s in self._segs if s.end > t0 - pad and s.start < t1 + pad]
             if not chosen:
@@ -116,7 +118,7 @@ class RingBuffer:
                 ffmpeg.run(
                     ["-f", "concat", "-safe", "0", "-i", str(listing),
                      "-c", "copy", "-movflags", "+faststart", str(out)],
-                    low_priority=True,
+                    cancel=cancel, low_priority=True,
                 )
             finally:
                 listing.unlink(missing_ok=True)

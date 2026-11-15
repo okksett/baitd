@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .. import config
+from .. import config, ffmpeg
 from ..clip.pipeline import MIN_CLIP_S
 from ..models import UserError
 from . import channels, store
@@ -34,6 +34,8 @@ __all__ = ["LiveManager", "StatusBoard", "ACTIVE", "TEXTS"]
 log = logging.getLogger(__name__)
 
 TICK_S = 0.5
+CLOSE_TIMEOUT_S = 20.0  # quitting waits this long for the last cuts, then cancels them
+CANCEL_GRACE_S = 2.0  # and this long for the cancelled work to let go
 EVENTS_KEPT = 30
 REFRESH_S = 180.0  # channel statuses are refreshed this often...
 IDLE_S = 600.0  # ...while a client asked for them in the last 10 minutes
@@ -203,6 +205,7 @@ class LiveManager:
         self._worker: threading.Thread | None = None
         self._ticker: threading.Thread | None = None
         self._closed = threading.Event()
+        self._cancel = threading.Event()  # set when close() runs out of time: stops a running cut
 
     # ---- capture ----------------------------------------------------------------
 
@@ -246,8 +249,17 @@ class LiveManager:
             s = self._session
             if s is not None:
                 self._end(s)
-        if wait:
-            self._jobs.join()
+        if wait and not self._wait_jobs(CLOSE_TIMEOUT_S):
+            log.warning("Los últimos momentos de la captura siguen guardándose")
+
+    def _wait_jobs(self, timeout: float) -> bool:
+        """Wait until the worker has nothing left, at most `timeout` s. False when time ran out."""
+        deadline = time.monotonic() + timeout
+        while self._jobs.unfinished_tasks:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
 
     def _end(self, s: _Session) -> None:
         """Lock held: detach the session, then queue its marks' cuts and its tear-down, in that order."""
@@ -375,10 +387,13 @@ class LiveManager:
         return name or s.channel.handle.lstrip("@")
 
     def _seal(self, s: _Session, m: Mark) -> None:
+        if self._cancel.is_set():  # Baitd is quitting and out of time: no new cuts
+            log.warning("Un momento del directo no se guardó: Baitd se cerró antes")
+            return
         out = s.folder / "cortes" / f"{secrets.token_hex(6)}.mp4"
         try:
             try:
-                cut = s.buffer.cut(m.start, m.end, out, pad=REVIEW_PAD_S)
+                cut = s.buffer.cut(m.start, m.end, out, pad=REVIEW_PAD_S, cancel=self._cancel)
             except NoFootage:
                 self._event("no_footage")
                 return
@@ -391,6 +406,8 @@ class LiveManager:
                               reason="manual", at=at, session_id=s.id, framing=s.channel.framing,
                               display_name=name)
             self._event("saved")
+        except ffmpeg.JobCancelled:
+            log.warning("Un momento del directo no se guardó: Baitd se cerró antes")
         except Exception:
             log.exception("No se pudo guardar un momento del directo")
             self._event("save_error")
@@ -404,7 +421,8 @@ class LiveManager:
 
     def _teardown(self, s: _Session) -> None:
         try:
-            s.capture.stop()  # waits for the capture thread, so nothing writes into the folder afterwards
+            # waits for the capture thread, so nothing writes into the folder afterwards (not when quitting late)
+            s.capture.stop(timeout=0 if self._cancel.is_set() else 10)
             s.buffer.clear()
             shutil.rmtree(s.folder, ignore_errors=True)
         finally:
@@ -454,12 +472,19 @@ class LiveManager:
             with self._lock:  # in place: the capture thread holds the same object
                 s.channel.mine, s.channel.framing, s.channel.delay_s = fresh.mine, fresh.framing, fresh.delay_s
 
-    def close(self) -> None:
-        """App exit: seal and stop the capture, then unregister the hotkey and end the threads."""
+    def close(self, timeout: float = CLOSE_TIMEOUT_S) -> None:
+        """App exit: seal and stop the capture, then unregister the hotkey and end the threads.
+
+        The last cuts get `timeout` s; then a running cut is cancelled, so quitting never hangs on FFmpeg."""
         if self._closed.is_set():
             return
-        self.stop(wait=True)
-        self._closed.set()
+        self._closed.set()  # no new capture from here on; the ticker stops
+        self.stop(wait=False)
+        drained = self._wait_jobs(timeout)
+        if not drained:
+            log.warning("La captura no terminó de guardar en %.0f s: se cancela lo pendiente", timeout)
+            self._cancel.set()
+            drained = self._wait_jobs(CANCEL_GRACE_S)
         hotkey, self._hotkey = self._hotkey, None
         if hotkey is not None:
             try:
@@ -469,6 +494,6 @@ class LiveManager:
         self.statuses.close()
         if self._worker is not None:
             self._jobs.put(None)
-            self._worker.join(5)
+            self._worker.join(5 if drained else 0.5)  # a daemon: a stuck job does not keep Baitd open
         if self._ticker is not None:
             self._ticker.join(2)

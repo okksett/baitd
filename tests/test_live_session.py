@@ -207,6 +207,30 @@ def test_close_seals_and_clears_buffer(mgr, chans, segs, tmp_data):
     assert mgr.status()["state"] == "idle"
 
 
+def test_close_has_a_deadline_and_cancels_a_stuck_cut(mgr, chans, monkeypatch):
+    seen = {}
+
+    def stuck_ffmpeg(args, cwd=None, cancel=None, on_line=None, low_priority=False):
+        seen["cancel"] = cancel
+        if cancel is None or not cancel.wait(30):  # FFmpeg that never finishes on its own
+            raise AssertionError("the cut was never cancelled")
+        seen["cancelled"] = True
+        raise ffmpeg.JobCancelled()
+
+    monkeypatch.setattr(ffmpeg, "run", stuck_ffmpeg)
+    mgr.start(chans[1].id)
+    cap = _cap()
+    for i in range(14):
+        cap.buffer.add(i, 1000.0 + i, 1.0, b"x")
+    mgr.mark()
+    began = time.monotonic()
+    mgr.close(timeout=0.3)
+    assert time.monotonic() - began < 0.3 + 2.5  # the deadline, plus the short grace after cancelling
+    assert seen.get("cancelled") is True
+    assert store.list_moments() == []
+    assert "save_error" not in [e["kind"] for e in mgr.status()["events"]]
+
+
 def test_stop_is_idle_and_seals(mgr, chans, segs):
     mgr.start(chans[1].id)
     cap = _cap()
