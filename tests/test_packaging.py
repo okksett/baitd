@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +39,7 @@ def test_spec_collects_live_dependencies():
     assert 'collect_submodules("aiohttp")' in spec
     assert 'collect_submodules("pynput")' in spec
     # pynput is only needed (and only installed) away from Windows
-    assert 'sys.platform != "win32"' in spec.split('collect_submodules("pynput")')[0].rsplit("\n", 3)[-3] + spec
+    assert re.search(r'if sys\.platform != "win32":\s*\n\s*hiddenimports \+= collect_submodules\("pynput"\)', spec)
 
 
 def test_pyproject_lists_live_dependencies():
