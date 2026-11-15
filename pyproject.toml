@@ -42,7 +42,7 @@ baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider -m \"not network\""
 pythonpath = ["src"]
 markers = ["network: tests that need internet access"]
 
