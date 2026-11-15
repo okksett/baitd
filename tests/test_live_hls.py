@@ -122,3 +122,17 @@ def test_map_url_per_segment():
     ]
     plain = hls.parse_media_playlist("#EXTM3U\n#EXTINF:2.0,\na.ts\n", "https://h/a/index.m3u8")
     assert [s.map_url for s in plain.segments] == [None]
+
+
+def test_other_titles_are_not_ads_on_a_playlist_that_never_says_live():
+    text = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:1\n" + "".join(
+        f"#EXTINF:4.0,Segmento {i}\nhttps://x/s{i}.ts\n" for i in range(3))
+    pl = hls.parse_media_playlist(text, "https://x/index.m3u8")
+    assert [s.ad for s in pl.segments] == [False, False, False]
+
+
+def test_twitch_style_titles_still_mark_ads_when_some_segment_is_live():
+    text = ("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:1\n"
+            "#EXTINF:4.0,live\nhttps://x/s1.ts\n#EXTINF:4.0,Amazon|123\nhttps://x/s2.ts\n")
+    pl = hls.parse_media_playlist(text, "https://x/index.m3u8")
+    assert [s.ad for s in pl.segments] == [False, True]

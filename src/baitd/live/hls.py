@@ -109,6 +109,8 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
         pending_title = ""
         pending_dur = 0.0
 
+    # a title other than "live" marks an ad only on Twitch/IVS playlists, which title every live segment "live"
+    titled_live = any(r[3].lower().startswith("live") for r in raw)
     segments: list[Segment] = []
     prev_start: float | None = None
     prev_dur = 0.0
@@ -119,7 +121,7 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
             start = prev_start + prev_dur
         else:
             start = None
-        ad = bool(title) and not title.lower().startswith("live")
+        ad = titled_live and bool(title) and not title.lower().startswith("live")
         if not ad and start is not None:
             ad = any(a <= start < b for a, b in ad_ranges)
         segments.append(Segment(s_seq, url, dur, start, ad, map_url))
