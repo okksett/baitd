@@ -7,7 +7,7 @@ by the caller. The hotkey thread calls `press` while the manager's tick calls
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 EXTEND_S = 15.0
 MAX_MARK_S = 180.0
@@ -25,38 +25,58 @@ class MarkTracker:
         self.before_s = before_s
         self.after_s = after_s
         self._pending: Mark | None = None
+        self._closed: list[Mark] = []
         self._lock = threading.Lock()
 
     def press(self, t: float) -> Mark:
+        """Open, extend or (when the open mark already ended) queue it and open a new one."""
         with self._lock:
             p = self._pending
+            if p is not None and t > p.end:
+                self._closed.append(p)
+                p = None
             if p is None:
                 p = self._pending = Mark(t - self.before_s, t + self.after_s)
-            elif t <= p.end:
+            else:
                 p.end = min(p.end + EXTEND_S, p.start + MAX_MARK_S)
                 p.presses += 1
-            return p
+            return replace(p)
 
     def pending(self) -> Mark | None:
+        """A copy of the open mark."""
         with self._lock:
-            return self._pending
+            return replace(self._pending) if self._pending is not None else None
 
     def ready(self, head: float | None) -> Mark | None:
+        """Remove and return the oldest mark whose end <= head; call until None."""
+        if head is None:
+            return None
         with self._lock:
-            p = self._pending
-            if p is not None and head is not None and head >= p.end:
-                self._pending = None
+            if self._closed and self._closed[0].end <= head:
+                return self._closed.pop(0)
+            if not self._closed and self._pending is not None and self._pending.end <= head:
+                p, self._pending = self._pending, None
                 return p
             return None
 
-    def flush(self) -> Mark | None:
+    def flush(self) -> list[Mark]:
+        """Remove and return every mark, oldest first."""
         with self._lock:
-            p, self._pending = self._pending, None
-            return p
+            out = self._closed + ([self._pending] if self._pending is not None else [])
+            self._closed = []
+            self._pending = None
+            return out
 
     def clamp_start(self, tail: float | None) -> None:
-        """Move the start up to the buffer tail when the buffer is shorter."""
+        """Move starts up to the buffer tail when the buffer is shorter."""
+        if tail is None:
+            return
         with self._lock:
-            p = self._pending
-            if p is not None and tail is not None and tail > p.start:
-                p.start = tail
+            for m in self._closed + ([self._pending] if self._pending is not None else []):
+                if tail > m.start:
+                    m.start = tail
+
+    def earliest_start(self) -> float | None:
+        with self._lock:
+            marks = self._closed + ([self._pending] if self._pending is not None else [])
+            return min((m.start for m in marks), default=None)
