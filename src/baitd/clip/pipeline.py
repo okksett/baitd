@@ -391,12 +391,12 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
         else:
             mode = m.framing if m.framing in FRAMINGS else opts.framing
             faces = None
-            if providers.detect_faces is not None and mode == "cara":
+            if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and m.cam is None)):
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
-            talk, voice_labels = _talk_and_voices(src, m, words, mode, cancel)
+            talk, voice_labels = (None, None) if mode == "partido" else _talk_and_voices(src, m, words, mode, cancel)
             try:
                 plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces,
-                                               talk=talk, voices=voice_labels))
+                                               talk=talk, voices=voice_labels, cam=m.cam))
             except (JobCancelled, UserError):
                 raise
             except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip

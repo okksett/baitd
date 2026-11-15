@@ -246,3 +246,16 @@ def test_render_passes_badge(make_mp4_with_speech, tmp_path, monkeypatch):
     render_clip(_src(path), _moment(badge="twitch"), words, plan, _profile(credit=False), OPTS,
                 tmp_path / "w2", tmp_path / "o2.mp4", threading.Event(), lambda f: None)
     assert seen["badge"] == "" and "\\p1" not in seen["ass"]
+
+
+def test_render_partido_dimensions(make_mp4_with_speech, make_mp4, tmp_path):
+    from baitd.clip.framing import plan_crop
+    path = make_mp4(seconds=4, w=1280, h=720, fps=15)
+    m = _moment(end=4.0, framing="partido", cam=[1000, 500, 200, 142])
+    src = _src(path, w=1280, h=720)
+    plan = plan_crop(src, 0.0, 4.0, 1080, 1920, "partido", threading.Event(), cam=m.cam)
+    assert plan.mode == "partido"
+    out = render_clip(src, m, [_w("hola", 0.2, 0.6)], plan, _profile(), OPTS,
+                      tmp_path / "w", tmp_path / "o.mp4", threading.Event(), lambda f: None)
+    info = ffmpeg.probe(out)
+    assert (info["width"], info["height"]) == (1080, 1920)

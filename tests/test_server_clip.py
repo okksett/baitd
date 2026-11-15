@@ -632,3 +632,30 @@ def test_export_ignores_browser_badge(client, profile_id, queue, tmp_data, make_
     r = client.post(f"/api/analyses/{plain}/export", json={"moments": [{**sent, "orig": 0}], "profile_id": profile_id})
     m = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])["payload"]["moments"][0]
     assert m.get("badge", "") == ""
+
+
+def test_export_validates_the_cam_box(client, profile_id, queue, tmp_data, make_mp4):
+    src = _source(make_mp4, seconds=60)  # 320x180
+    aid = _analysis(src)
+    ok = {"start": 5, "end": 25, "framing": "partido", "title": "T", "credit": ""}
+
+    def post(**kw):
+        return client.post(f"/api/analyses/{aid}/export", json={"moments": [{**ok, **kw}], "profile_id": profile_id})
+
+    good = post(cam=[200, 100, 100, 70])
+    assert good.status_code == 200
+    job = next(i for i in queue._items if i["id"] == good.get_json()["job_id"])
+    assert job["payload"]["moments"][0]["cam"] == [200, 100, 100, 70]
+    assert post().status_code == 200 and post(cam=None).status_code == 200
+    expected = "El recuadro de la cámara no es válido → Vuelve a marcar la cámara en la tarjeta"
+    for bad in ([200, 100, 130, 70],      # sticks out to the right
+                [200, 120, 100, 70],      # sticks out at the bottom
+                [10, 10, 15, 70],         # narrower than 16
+                [10, 10, 70, 15],
+                [-1, 10, 100, 70],
+                [1, 2, 3],
+                [1.5, 2, 100, 70],
+                [True, 2, 100, 70],
+                "1,2,3,4", {"x": 1}):
+        r = post(cam=bad)
+        assert r.status_code == 400 and r.get_json()["error"] == expected, bad

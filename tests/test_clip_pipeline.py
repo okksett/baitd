@@ -933,3 +933,33 @@ def test_ordinary_export_runs_ffmpeg_at_normal_priority(tmp_data, tmp_path, prov
                                                    "moments": pipeline.load_analysis(path.stem)["moments"]}),
                              _settings(tmp_path), threading.Event(), lambda *a: None, providers)
     assert seen and not any(seen)
+
+
+def test_render_all_detects_faces_and_passes_cam_for_partido(monkeypatch):
+    from types import SimpleNamespace
+    seen = {"faces": 0}
+    calls = []
+
+    def detect(src, start, end, fps, cancel):
+        seen["faces"] += 1
+        return []
+
+    def fake_plan(src, start, end, w, h, mode, cancel, faces=None, cuts=None, talk=None, voices=None, cam=None):
+        calls.append((mode, cam))
+        raise pipeline.UserError("stop", "here")
+
+    monkeypatch.setattr(framing, "plan_crop", fake_plan)
+    monkeypatch.setattr(pipeline, "_talk_and_voices", lambda *a: (_ for _ in ()).throw(AssertionError("no talk")))
+    src = SimpleNamespace(has_video=True)
+    steps = SimpleNamespace(begin=lambda *a: None, frac=lambda *a: None, end=lambda *a: None)
+
+    def run(**kw):
+        m = pipeline._moment_from_dict(_moment_dict(framing="partido", **kw))
+        with pytest.raises(pipeline.UserError):
+            pipeline._render_all(src, [m], [], config.default_profile(), pipeline.ClipProfile(), Path("."),
+                                 threading.Event(), steps, pipeline.ClipProviders(detect_faces=detect))
+
+    run()  # no cam given: the faces are sampled to find it
+    assert seen["faces"] == 1 and calls[-1] == ("partido", None)
+    run(cam=[10, 20, 200, 100])  # the user marked it: nothing to detect
+    assert seen["faces"] == 1 and calls[-1] == ("partido", [10, 20, 200, 100])

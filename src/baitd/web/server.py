@@ -247,8 +247,25 @@ def _public_source(src) -> dict:
             "has_video": src.has_video}
 
 
-def _export_moments(raw, analysis: dict, duration: float) -> list[dict]:
+def _bad_cam() -> UserError:
+    return UserError("El recuadro de la cámara no es válido", "Vuelve a marcar la cámara en la tarjeta")
+
+
+def _cam_box(cam, src) -> list[int] | None:
+    """The cam box a card sent ([x, y, w, h] in source pixels) or None; anything else is refused."""
+    if cam is None:
+        return None
+    if not (isinstance(cam, list) and len(cam) == 4 and all(type(v) is int for v in cam)):
+        raise _bad_cam()
+    x, y, w, h = cam
+    if x < 0 or y < 0 or w < 16 or h < 16 or x + w > src.width or y + h > src.height:
+        raise _bad_cam()
+    return list(cam)
+
+
+def _export_moments(raw, analysis: dict, src) -> list[dict]:
     """The moments the user chose to export, checked against the source and the global clip limits."""
+    duration = src.duration
     if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
         raise UserError("Elige entre 1 y 20 clips para exportar", "Marca al menos un momento")
     out = []
@@ -273,7 +290,8 @@ def _export_moments(raw, analysis: dict, duration: float) -> list[dict]:
         else:
             base = next((k for k in known if k.get("start") == start and k.get("end") == end), {})
         out.append({**base, "start": float(start), "end": float(end), "framing": framing,
-                    "title": title, "credit": credit, "badge": base.get("badge", "")})
+                    "title": title, "credit": credit, "badge": base.get("badge", ""),
+                    "cam": _cam_box(m.get("cam"), src)})
     return out
 
 
@@ -762,7 +780,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         data = _body()
         analysis = analysis_or_404(analysis_id)
         src = clip_sources.load_source(analysis["source_id"])
-        moments = _export_moments(data.get("moments"), analysis, src.duration)
+        moments = _export_moments(data.get("moments"), analysis, src)
         profile = _find_profile(data["profile_id"]) if "profile_id" in data else _profiles()[0]
         job_id = queue.add_clip_job("clip_export", {"analysis_id": analysis_id, "moments": moments}, profile)
         return jsonify(job_id=job_id)
