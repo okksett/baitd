@@ -1,5 +1,6 @@
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -356,3 +357,143 @@ def test_board_runs_at_most_4_checks_at_once(tmp_data):
         assert running["max"] == 4
     finally:
         board.close()
+
+
+# ---- automatic detection (Task 13) ----
+
+class FakeReader:
+    made: list["FakeReader"] = []
+
+    def __init__(self, channel, on_message, on_event, video_id=""):
+        self.channel, self.on_message, self.on_event, self.video_id = channel, on_message, on_event, video_id
+        self.started = self.stopped = False
+        FakeReader.made.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def join(self, timeout=None):
+        pass
+
+
+class FakeDetector:
+    made: list["FakeDetector"] = []
+
+    def __init__(self, buffer, channel, settings, profile, *, save, limit, clock, cancel=None, **kw):
+        self.buffer, self.channel, self.profile, self.save, self.limit = buffer, channel, profile, save, limit
+        self.spikes, self.heads = [], []
+        self.stopped = self.joined = self.flushed = False
+        self.first = None
+        FakeDetector.made.append(self)
+
+    def spike(self, s):
+        self.spikes.append(s)
+
+    def tick(self, head):
+        self.heads.append(head)
+
+    def flush(self):
+        self.flushed = True
+
+    def earliest(self):
+        return self.first
+
+    def stop(self):
+        self.stopped = True
+
+    def join(self, timeout=None):
+        self.joined = True
+
+
+@pytest.fixture
+def auto(tmp_data, chans):
+    FakeCapture.made, FakeReader.made, FakeDetector.made = [], [], []
+    now = {"t": 0.0}
+    m = LiveManager(tmp_data, lambda: dict(SETTINGS, live_ai_per_hour=4), capture_factory=FakeCapture,
+                    tick_s=0.05, status_fn=lambda ch: LiveStatus(False), clock=lambda: now["t"],
+                    chat_factory=FakeReader, detector_factory=FakeDetector)
+    yield m, now
+    m.close()
+
+
+def test_other_channel_runs_detection(auto, chans, monkeypatch):
+    from baitd.live import signals
+    mgr, now = auto
+    monkeypatch.setattr(signals, "segment_loudness", lambda path: -30.0 if "quiet" in path.name else -15.0)
+    mgr.start(chans[1].id)
+    cap = _cap()
+    cap.info = {"uploader": "Westcol", "id": "vid123"}
+    det = FakeDetector.made[-1]
+    assert det.channel.handle == "westcol" and det.limit.left() == 4
+    assert det.profile.id  # the first stored profile (or the default one)
+    assert mgr.status()["ai_left"] == 4
+    for i in range(200):
+        cap.buffer.add(i, 2000.0 + i, 1.0, b"x")  # head 2200
+    assert wait_for(lambda: FakeReader.made and FakeReader.made[-1].started)
+    reader = FakeReader.made[-1]
+    assert reader.channel.handle == "westcol" and reader.video_id == "vid123"
+
+    for b in range(12):  # one message per 10 s bin, then the chat explodes
+        reader.on_message(b * 10.0 + 1, "hola")
+    for i in range(12):
+        reader.on_message(121.0 + i * 0.5, "QUE DIJO")
+    now["t"] = 130.5
+    assert wait_for(lambda: det.spikes)
+    sp = det.spikes[0]
+    assert sp.reason == "chat" and sp.t == pytest.approx(120.0 + 2200.0 - 130.5)
+    assert det.heads and det.heads[-1] == 2200.0
+
+    for i in range(40):  # the capture's hook only queues; the meter feeds the audio signal
+        cap.on_segment(Path(f"quiet{i}.ts"), 2000.0 + i * 2, 2.0)
+        if i == 20:  # the meter's queue is bounded: let it catch up as a real stream would
+            assert wait_for(lambda: len(mgr._session.audio_signal.samples()) == 21)
+    cap.on_segment(Path("loud.ts"), 2080.0, 2.0)
+    assert wait_for(lambda: any(s.reason == "loud" for s in det.spikes))
+    assert [s.t for s in det.spikes if s.reason == "loud"] == [2080.0]
+
+    reader.on_event("chat_off", {"text": "No se pudo leer el chat de Kick → Baitd sigue solo con el audio"})
+    assert "chat_off" in [e["kind"] for e in mgr.status()["events"]]
+
+    det.first = 2100.0  # the detector's windows keep their footage
+    assert wait_for(lambda: cap.buffer._pin == 2100.0 - REVIEW_PAD_S)
+
+    mgr.stop()
+    assert reader.stopped and det.stopped and det.joined
+
+
+def test_detector_moments_are_named_like_marks(auto, chans, segs):
+    mgr, _ = auto
+    mgr.start(chans[1].id)
+    cap = _cap()
+    cap.feed(segs, 0, 30)
+    det = FakeDetector.made[-1]
+    cut = cap.buffer.cut(1005.0, 1025.0, tmp_cut := cap.buffer.folder.parent / "c.mp4")
+    det.save(cut, reason="laughs", at=1015.0, title="", kind="interesante", classified=False,
+             description="", hashtags=[], text="jaja")
+    det.save(cap.buffer.cut(1005.0, 1025.0, tmp_cut), reason="chat", at=1015.0, title="Se cae", kind="gracioso",
+             classified=True, description="Una caída.", hashtags=["#risa"], text="")
+    ms = sorted(store.list_moments(), key=lambda m: m["reason"])
+    assert [(m["reason"], m["kind"], m["classified"]) for m in ms] == [
+        ("chat", "gracioso", True), ("laughs", "interesante", False)]
+    assert ms[1]["title"].startswith("Westcol · ") and ms[0]["title"] == "Se cae"
+    assert [e["text"] for e in mgr.status()["events"] if e["kind"] == "saved"] == ["Baitd encontró un momento"] * 2
+
+
+def test_stream_end_flushes_the_detector(auto, chans):
+    mgr, _ = auto
+    mgr.start(chans[1].id)
+    cap = _cap()
+    det = FakeDetector.made[-1]
+    cap.state = "ended"
+    assert wait_for(lambda: det.flushed)
+
+
+def test_own_channel_has_no_detection(auto, chans):
+    mgr, _ = auto
+    mgr.start(chans[0].id)
+    time.sleep(0.2)
+    assert FakeDetector.made == [] and FakeReader.made == []
+    assert mgr.status()["ai_left"] is None

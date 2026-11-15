@@ -5,6 +5,9 @@ Nothing here blocks a Flask request on the network or FFmpeg: `start` only start
 a ticker thread closes finished marks, and one worker thread cuts and saves them (and tears a session
 down, after its last cut). Each session keeps its segments in its own folder under
 `directo/buffer`, so a new capture can start while the previous one is still being sealed.
+
+On a channel that is not the user's, the session also watches the chat and the loudness of each segment
+(signals.py) and hands every spike to a Detector, which proposes moments on its own worker (spec §6.4).
 """
 from __future__ import annotations
 
@@ -24,11 +27,14 @@ from .. import config, ffmpeg
 from ..clip.pipeline import MIN_CLIP_S
 from ..models import UserError
 from . import channels, store
+from .ai import HourlyLimit
 from .buffer import REVIEW_PAD_S, NoFootage, RingBuffer
 from .capture import Capture
 from .channels import Channel, LiveStatus
+from .detector import Detector
 from .hotkey import HotkeyError
 from .marks import EXTEND_S, MAX_MARK_S, Mark, MarkTracker
+from .signals import AudioSignal, ChatSignal, LoudnessMeter
 
 __all__ = ["LiveManager", "StatusBoard", "ACTIVE", "TEXTS"]
 
@@ -37,6 +43,7 @@ log = logging.getLogger(__name__)
 TICK_S = 0.5
 CLOSE_TIMEOUT_S = 20.0  # quitting waits this long for the last cuts, then cancels them
 CANCEL_GRACE_S = 2.0  # and this long for the cancelled work to let go
+DETECTOR_JOIN_S = 15.0  # a session's tear-down waits this long for the detector's last saves
 EVENTS_KEPT = 30
 REFRESH_S = 180.0  # channel statuses are refreshed this often...
 IDLE_S = 600.0  # ...while a client asked for them in the last 10 minutes
@@ -53,6 +60,7 @@ TEXTS = {
     "no_footage": "No había video guardado para ese momento",
     "saved": "Momento guardado",
     "save_error": "No se pudo guardar el momento → Revisa el espacio en el disco y vuelve a marcarlo",
+    "found": "Baitd encontró un momento",
 }
 
 
@@ -177,6 +185,13 @@ class _Session:
     capture: Capture | None = None
     inflight: list[Mark] = field(default_factory=list)  # marks handed to the worker, not yet cut
     flushed: bool = False
+    # automatic detection, only on a channel that is not the user's
+    detector: Detector | None = None
+    limit: HourlyLimit | None = None
+    chat_signal: ChatSignal | None = None
+    audio_signal: AudioSignal | None = None
+    meter: LoudnessMeter | None = None
+    chat: object | None = None  # the ChatReader once the capture knows the stream; False when it failed to start
 
 
 def _setting(settings: dict, key: str, ok: Callable[[int], bool]) -> int:
@@ -187,12 +202,15 @@ def _setting(settings: dict, key: str, ok: Callable[[int], bool]) -> int:
 class LiveManager:
     def __init__(self, data_dir: Path, settings: Callable[[], dict], *, capture_factory=Capture,
                  hotkey_factory=None, clock: Callable[[], float] = time.time,
-                 status_fn: Callable[[Channel], LiveStatus] | None = None, tick_s: float = TICK_S):
+                 status_fn: Callable[[Channel], LiveStatus] | None = None, tick_s: float = TICK_S,
+                 chat_factory=None, detector_factory=Detector):
         self.data_dir = Path(data_dir)
         self.root = self.data_dir / "directo" / "buffer"
         self._settings = settings
         self._capture_factory = capture_factory
         self._hotkey_factory = hotkey_factory  # None (tests): no hotkey is ever registered
+        self._chat_factory = chat_factory  # None (tests): no chat is read; Baitd passes chat.make_reader
+        self._detector_factory = detector_factory
         self._hotkey = None
         self._hotkey_spec: str | None = None
         self._hotkey_lock = threading.Lock()  # serialises reload and close
@@ -236,14 +254,71 @@ class LiveManager:
             session = _Session(sid, ch, folder, RingBuffer(folder / "ts"), MarkTracker(before, after))
             session.capture = self._capture_factory(
                 ch, session.buffer, max_height, lambda kind, payload: self._on_capture_event(session, kind, payload))
+            if not ch.mine:
+                self._watch(session, s)
             self._ensure_threads()
             try:
                 session.capture.start()
             except BaseException:
+                self._unwatch(session)
                 shutil.rmtree(folder, ignore_errors=True)
                 raise
             self._session = session
         log.info("Captura iniciada en %s/%s", ch.platform, ch.handle)
+
+    def _watch(self, session: _Session, settings: dict) -> None:
+        """Lock held: the signals and the detector of a channel that is not the user's (spec §6.4). The
+        capture's segment hook only queues a loudness measurement; the chat starts in `tick`."""
+        per_hour = _setting(settings, "live_ai_per_hour", lambda v: 0 <= v <= 30)
+        session.limit = HourlyLimit(per_hour, self._clock)
+        session.chat_signal, session.audio_signal = ChatSignal(), AudioSignal()
+        session.meter = LoudnessMeter(session.audio_signal)
+        # the server cannot know which profile the window has selected: the first one decides (ruling)
+        profile = (config.list_profiles() or [config.default_profile()])[0]
+        session.detector = self._detector_factory(
+            session.buffer, session.channel, self._settings, profile,
+            save=lambda cut, **kw: self._save_auto(session, cut, **kw), limit=session.limit,
+            clock=self._clock, cancel=self._cancel)
+        session.capture.on_segment = session.meter.put
+        session.meter.start()
+
+    @staticmethod
+    def _unwatch(s: _Session) -> None:
+        """Stop the chat, the meter and the detector. Each only gets the signal; the tear-down waits."""
+        for part in (s.chat, s.meter, s.detector):
+            if part:
+                try:
+                    part.stop()
+                except Exception:
+                    log.exception("No se pudo detener la detección automática")
+
+    def _start_chat(self, s: _Session) -> None:
+        """Lock held. YouTube's chat needs the video id, which the capture knows once it is capturing."""
+        video_id = str((s.capture.info or {}).get("id") or "")
+        try:
+            s.chat = self._chat_factory(s.channel, s.chat_signal.add,
+                                        lambda kind, payload: self._on_capture_event(s, kind, payload),
+                                        video_id=video_id)
+            s.chat.start()
+        except Exception:
+            log.exception("No se pudo abrir el chat de %s/%s", s.channel.platform, s.channel.handle)
+            s.chat = False  # not again: the audio alone goes on
+
+    def _detect(self, s: _Session, head: float | None) -> None:
+        """Lock held: pass the signals' spikes to the detector and let it take the windows that ended."""
+        if s.detector is None or head is None or s.channel.mine:
+            return
+        if s.chat is None and self._chat_factory is not None and s.capture.state == "capturing":
+            self._start_chat(s)
+        now = self._clock()
+        sp = s.chat_signal.check(now)
+        if sp is not None:  # chat bins use this PC's clock; the newest footage is "now" on the stream
+            sp.t += head - now
+            s.detector.spike(sp)
+        sp = s.audio_signal.check()
+        if sp is not None:
+            s.detector.spike(sp)
+        s.detector.tick(head)
 
     def stop(self, wait: bool = True) -> None:
         """Seal what is marked, stop the capture and clear its buffer. With wait=False the cuts and the
@@ -268,6 +343,7 @@ class LiveManager:
         """Lock held: detach the session, then queue its marks' cuts and its tear-down, in that order."""
         self._session = None
         s.capture.stop(timeout=0)  # only signals; the tear-down job waits for the thread
+        self._unwatch(s)
         for m in s.tracker.flush():
             self._enqueue_seal(s, m)
         self._draining.add(s.folder)
@@ -329,11 +405,14 @@ class LiveManager:
                     s.flushed = True
                     for m in s.tracker.flush():
                         self._enqueue_seal(s, m)
+                    if s.detector is not None:
+                        s.detector.flush()
                     self._update_pin(s)
                 return
             head = s.buffer.head()
             while (m := s.tracker.ready(head)) is not None:
                 self._enqueue_seal(s, m)
+            self._detect(s, head)
             self._update_pin(s)
 
     def _enqueue_seal(self, s: _Session, m: Mark) -> None:
@@ -342,11 +421,12 @@ class LiveManager:
 
     @staticmethod
     def _update_pin(s: _Session) -> None:
-        """Keep the footage of open and queued marks (plus the review padding) out of pruning."""
+        """Keep the footage of open and queued marks and of the detector's windows (plus the review padding)
+        out of pruning."""
         starts = [m.start for m in s.inflight]
-        earliest = s.tracker.earliest_start()
-        if earliest is not None:
-            starts.append(earliest)
+        for earliest in (s.tracker.earliest_start(), s.detector.earliest() if s.detector is not None else None):
+            if earliest is not None:
+                starts.append(earliest)
         s.buffer.pin(min(starts) - REVIEW_PAD_S if starts else None)
 
     # ---- worker -------------------------------------------------------------------
@@ -422,10 +502,31 @@ class LiveManager:
                 if self._session is s:
                     self._update_pin(s)
 
+    def _save_auto(self, s: _Session, cut, *, reason: str, at: float, title: str, kind: str, classified: bool,
+                   description: str, hashtags: list[str], text: str) -> None:
+        """A moment from the detector (on its worker). An unclassified one is named like a manual mark."""
+        try:
+            name = self._display_name(s)
+            store.save_moment(cut, channel=s.channel, title=title or f"{name} · {datetime.fromtimestamp(at):%H:%M}",
+                              reason=reason, at=at, session_id=s.id, framing=s.channel.framing, kind=kind,
+                              classified=classified, description=description, hashtags=hashtags, text=text,
+                              display_name=name)
+        except Exception:
+            log.exception("No se pudo guardar un momento automático")
+            self._event("save_error")
+            return
+        log.info("Momento automático (%s, %s) en %s/%s", reason, kind, s.channel.platform, s.channel.handle)
+        self._event("saved", TEXTS["found"])
+
     def _teardown(self, s: _Session) -> None:
         try:
             # waits for the capture thread, so nothing writes into the folder afterwards (not when quitting late)
             s.capture.stop(timeout=0 if self._cancel.is_set() else 10)
+            if s.detector is not None:  # its last saves cut from this buffer
+                s.detector.join(0 if self._cancel.is_set() else DETECTOR_JOIN_S)
+            for part in (s.meter, s.chat):
+                if part:
+                    part.join(1)
             s.buffer.clear()
             shutil.rmtree(s.folder, ignore_errors=True)
         finally:
@@ -448,6 +549,7 @@ class LiveManager:
             if s is None:
                 return {"state": "idle", "channel_id": None, "title": None, "latency_s": None, "buffered_s": 0,
                         "pending": None, "events": events, "has_pdt": None, "ai_left": None}
+            ai_left = s.limit.left() if s.limit is not None else None
             cap = s.capture
             latency = cap.latency() if cap.state in ACTIVE else None
             pending = None
@@ -459,7 +561,7 @@ class LiveManager:
             return {"state": cap.state, "channel_id": s.channel.id, "title": cap.title,
                     "latency_s": round(latency, 1) if latency is not None else None,
                     "buffered_s": round(s.buffer.seconds(), 1), "pending": pending, "events": events,
-                    "has_pdt": bool(cap.has_pdt), "ai_left": None}
+                    "has_pdt": bool(cap.has_pdt), "ai_left": ai_left}
 
     # ---- channels and lifetime ----------------------------------------------------
 

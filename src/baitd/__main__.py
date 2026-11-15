@@ -16,6 +16,7 @@ from waitress import create_server
 
 from . import __version__, config, desktop, instance, updater
 from .jobqueue import JobQueue
+from .live.chat import make_reader
 from .live.hotkey import HotkeyListener
 from .live.session import LiveManager
 from .web.server import UPLOAD_CHUNK_MAX, create_app
@@ -266,7 +267,8 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
         shutil.rmtree(config.data_dir() / "directo" / "buffer", ignore_errors=True)
     except OSError:
         log.exception("No se pudo limpiar directo/buffer")
-    live = LiveManager(config.data_dir(), config.load_settings, hotkey_factory=HotkeyListener)
+    live = LiveManager(config.data_dir(), config.load_settings, hotkey_factory=HotkeyListener,
+                       chat_factory=make_reader)
     global _server, _live
     try:
         # Windows only: waitress would share the port silently there. Elsewhere the probe fails on ports in
