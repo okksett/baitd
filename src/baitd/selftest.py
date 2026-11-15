@@ -9,7 +9,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -187,6 +189,97 @@ def _check_deno(path: str | None) -> None:
         raise SelftestError(f"Faltan los scripts de yt-dlp para YouTube: {type(e).__name__}: {e}") from e
 
 
+_LIVE_T0 = 1_800_000_000.0  # an arbitrary wall-clock start for the generated live segments
+_LIVE_SEG_S = 2.0
+
+
+def _mp4_boxes(data: bytes) -> list[tuple[bytes, bytes]]:
+    """(type, whole box bytes) of the top-level boxes of an MP4 file."""
+    out, pos = [], 0
+    while pos + 8 <= len(data):
+        size, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        if size < 8 or pos + size > len(data):
+            break
+        out.append((kind, data[pos:pos + size]))
+        pos += size
+    return out
+
+
+def _check_live_cut(buf, folder: Path, name: str, what: str) -> None:
+    """Cut 2 s to 6 s of the buffer into an MP4 and check it has video and about 8 s (the 4 segments)."""
+    cut = buf.cut(_LIVE_T0 + 2, _LIVE_T0 + 6, folder / name)
+    info = probe(cut.path)
+    if not info.get("width"):
+        raise SelftestError(f"El corte en directo ({what}) no tiene video")
+    if abs(info["duration"] - 4 * _LIVE_SEG_S) > 0.5:
+        raise SelftestError(f"El corte en directo ({what}) dura {info['duration']:.2f} s y debería durar "
+                            f"unos {4 * _LIVE_SEG_S:.0f} s")
+
+
+def _check_live(workdir: Path) -> None:
+    """The live-clipping pieces a frozen app can lose, offline: an HLS playlist through the parser, MPEG-TS
+    and fragmented-MP4 segments through the ring buffer and a cut, aiohttp, and the hotkey backend.
+    No hotkey is registered and nothing touches the network."""
+    from datetime import datetime, timezone
+    from .live import hls, hotkey
+    from .live.buffer import RingBuffer
+
+    folder = Path(workdir) / "live"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # MPEG-TS: 4 segments of 2 s, a playlist with program-date-times, parsed back
+    names = [f"seg{i}.ts" for i in range(4)]
+    for i, n in enumerate(names):
+        _ff("-f", "lavfi", "-i", f"testsrc2=s=320x180:r=30:d={_LIVE_SEG_S}", "-f", "lavfi",
+            "-i", f"sine=f=220:d={_LIVE_SEG_S}", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-g", "30", "-c:a", "aac", "-shortest", "-muxdelay", "0", "-output_ts_offset", i * _LIVE_SEG_S,
+            "-f", "mpegts", folder / n)
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:100"]
+    for i, n in enumerate(names):
+        stamp = datetime.fromtimestamp(_LIVE_T0 + i * _LIVE_SEG_S, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        lines += [f"#EXT-X-PROGRAM-DATE-TIME:{stamp}", f"#EXTINF:{_LIVE_SEG_S:.3f},live", n]
+    playlist = hls.parse_media_playlist(chr(10).join(lines) + chr(10), "https://live.autoprueba.test/media.m3u8")
+    if len(playlist.segments) != 4 or playlist.has_map or any(s.start is None for s in playlist.segments):
+        raise SelftestError("La lista de reproducción en directo de prueba no se leyó bien")
+    buf = RingBuffer(folder / "ring-ts")
+    for seg, n in zip(playlist.segments, names):
+        buf.add(seg.seq, seg.start, seg.duration, (folder / n).read_bytes())
+    _check_live_cut(buf, folder, "cut-ts.mp4", "MPEG-TS")
+
+    # fMP4: one fragmented file split into its init (ftyp + moov) and two fragments (moof + mdat),
+    # stored as init + fragment per segment, as the capture does
+    frag = folder / "frag.mp4"
+    _ff("-f", "lavfi", "-i", f"testsrc2=s=320x180:r=30:d={2 * _LIVE_SEG_S}", "-c:v", "libx264",
+        "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof", frag)
+    boxes = _mp4_boxes(frag.read_bytes())
+    init = b"".join(b for k, b in boxes if k in (b"ftyp", b"moov"))
+    fragments = [boxes[i][1] + boxes[i + 1][1] for i, (k, _) in enumerate(boxes[:-1])
+                 if k == b"moof" and boxes[i + 1][0] == b"mdat"]
+    if len(fragments) < 2:
+        raise SelftestError("No se pudo preparar el video fragmentado de prueba")
+    buf = RingBuffer(folder / "ring-fmp4")
+    for i, fr in enumerate(fragments[:2]):
+        buf.add(200 + i, _LIVE_T0 + i * _LIVE_SEG_S, _LIVE_SEG_S, init + fr, "mp4")
+    cut = buf.cut(_LIVE_T0 + 1, _LIVE_T0 + 3, folder / "cut-fmp4.mp4")
+    info = probe(cut.path)
+    if not info.get("width") or abs(info["duration"] - 2 * _LIVE_SEG_S) > 0.5:
+        raise SelftestError("El corte en directo (video fragmentado) no salió bien")
+
+    try:
+        import aiohttp  # noqa: F401
+    except Exception as e:
+        raise SelftestError(f"Falta aiohttp, que lee el chat en directo: {type(e).__name__}: {e}") from e
+
+    try:
+        hotkey.parse_hotkey("F9")
+        if sys.platform == "win32":
+            if not hasattr(hotkey._user32(), "RegisterHotKey"):  # resolved, never called
+                raise AttributeError("RegisterHotKey")
+    except Exception as e:
+        raise SelftestError(f"La tecla global no se puede preparar: {type(e).__name__}: {e}") from e
+
+
 def run_selftest(workdir: Path | None = None) -> float:
     """Run the offline job; return the elapsed seconds or raise SelftestError.
 
@@ -224,6 +317,7 @@ def run_selftest(workdir: Path | None = None) -> float:
             raise SelftestError(f"{type(e).__name__}: {e}") from e
         _check_clips(clips)
         _check_clip_deps()
+        _check_live(workdir)
         return time.monotonic() - start
     finally:
         if previous is None:
