@@ -186,30 +186,59 @@ def test_prefetch_ignored(env):
     assert len(env.http.segment_urls) == 2
 
 
-def test_offset_from_server_time(env):
-    extra = f'#EXT-X-DATERANGE:ID="x",START-DATE="{iso(T0)}",X-SERVER-TIME="{T0 + 4.5}"'
-    env.http.playlists += [playlist(1, 2, pdt0=T0, extra=extra)]
+def _date(epoch):
+    from email.utils import formatdate
+    return formatdate(int(epoch), usegmt=True)
+
+
+def test_offset_from_advancing_server_time(env):
+    # the clock advances 1 s per poll; X-SERVER-TIME is 4.5 s ahead and advances with it
+    for i in range(3):
+        extra = f'#EXT-X-DATERANGE:ID="x",START-DATE="{iso(T0)}",X-SERVER-TIME="{T0 + i + 4.5}"'
+        env.http.playlists.append(playlist(1 + i, 1, pdt0=T0 + i * 2, extra=extra))
     env.run()
     assert env.cap.offset() == pytest.approx(4.5)
     assert env.cap.server_now() == env.now + env.cap.offset()
     assert env.cap.latency() == pytest.approx(env.cap.server_now() - env.buf.head())
 
 
-def test_offset_median_of_last_5(env):
-    for i, off in enumerate([100.0, 4.0, 5.0, 4.5, 5.5, 4.0]):
-        extra = f'#EXT-X-DATERANGE:ID="x",START-DATE="{iso(T0)}",X-SERVER-TIME="{T0 + i * 1.0 + off}"'
+def test_offset_from_date_header_adds_half_second(env):
+    env.http.playlists += [Resp(text=playlist(1, 1, pdt0=T0), headers={"Date": _date(T0 + 4)})]
+    env.run()
+    assert env.cap.offset() == pytest.approx(4.5)
+
+
+def test_date_header_without_zone_is_utc(env):
+    env.http.playlists += [Resp(text=playlist(1, 1, pdt0=T0), headers={"Date": _date(T0 + 4).replace("GMT", "-0000")})]
+    env.run()
+    assert env.cap.offset() == pytest.approx(4.5)
+
+
+def test_constant_server_time_is_ignored(env):
+    # a session-fixed X-SERVER-TIME must not freeze server_now
+    for i in range(10):
+        extra = f'#EXT-X-DATERANGE:ID="x",START-DATE="{iso(T0)}",X-SERVER-TIME="{T0 + 4.5}"'
+        env.http.playlists.append(Resp(text=playlist(1 + i, 1, pdt0=T0 + i * 2, extra=extra),
+                                       headers={"Date": _date(env.now + 4 + i)}))
+    env.run()
+    assert env.cap.offset() == pytest.approx(4.5, abs=1.0)
+    assert env.cap.server_now() == pytest.approx(env.now + 4.5, abs=1.0)
+
+
+def test_constant_server_time_without_date_gives_zero(env):
+    for i in range(5):
+        extra = f'#EXT-X-DATERANGE:ID="x",START-DATE="{iso(T0)}",X-SERVER-TIME="{T0 + 4.5}"'
         env.http.playlists.append(playlist(1 + i, 1, pdt0=T0 + i * 2, extra=extra))
     env.run()
-    assert env.cap.offset() == pytest.approx(4.5)  # the 100 s outlier fell out of the window
+    assert env.cap.offset() == 0.0
 
 
-def test_offset_falls_back_to_date_header(env):
-    date = "Sun, 15 Jan 2027 08:00:08 GMT"
-    expected = datetime(2027, 1, 15, 8, 0, 8, tzinfo=timezone.utc).timestamp()
-    env.now = expected - 3.0
-    env.http.playlists += [Resp(text=playlist(1, 1, pdt0=T0), headers={"Date": date})]
+def test_offset_median_of_last_5(env):
+    for i, off in enumerate([100.0, 4.0, 5.0, 4.5, 5.5, 4.0]):
+        env.http.playlists.append(Resp(text=playlist(1 + i, 1, pdt0=T0 + i * 2),
+                                       headers={"Date": _date(T0 + i + off - 0.5 + 0.0)}))
     env.run()
-    assert env.cap.offset() == pytest.approx(3.0)
+    assert env.cap.offset() == pytest.approx(4.5, abs=1.0)  # the 100 s outlier fell out of the window
 
 
 def test_offset_defaults_to_zero(env):

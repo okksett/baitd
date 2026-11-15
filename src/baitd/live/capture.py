@@ -7,6 +7,7 @@ import shutil
 import statistics
 import threading
 import time
+from datetime import timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable
@@ -90,8 +91,8 @@ class Capture(threading.Thread):
         self.info: dict = {}
         self.has_pdt = False
         self.on_segment: Callable[[Path, float, float], None] | None = None
-        self._server_offsets: collections.deque[float] = collections.deque(maxlen=5)
-        self._date_offsets: collections.deque[float] = collections.deque(maxlen=5)
+        self._offsets: collections.deque[float] = collections.deque(maxlen=5)
+        self._last_server_time: float | None = None
         self._last_seq: int | None = None
         self._prev: tuple[int, float] | None = None  # (seq, end) of the last segment handled
         self._announced = False
@@ -102,9 +103,8 @@ class Capture(threading.Thread):
     # ---- public clock helpers -------------------------------------------------
 
     def offset(self) -> float:
-        for samples in (self._server_offsets, self._date_offsets):
-            if samples:
-                return float(statistics.median(list(samples)))
+        if self._offsets:
+            return float(statistics.median(list(self._offsets)))
         return 0.0
 
     def server_now(self) -> float:
@@ -186,15 +186,22 @@ class Capture(threading.Thread):
         got = self._clock()
         pl = parse_media_playlist(r.text, url)
         self._target = pl.target_duration
-        if pl.server_time is not None:
-            self._server_offsets.append(pl.server_time - got)
-        else:
-            date = (getattr(r, "headers", None) or {}).get("Date")
-            if date:
-                try:
-                    self._date_offsets.append(parsedate_to_datetime(date).timestamp() - got)
-                except (TypeError, ValueError):
-                    pass
+        date = (getattr(r, "headers", None) or {}).get("Date")
+        if date:
+            try:
+                dt = parsedate_to_datetime(date)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                # +0.5 s: the header is truncated to whole seconds
+                self._offsets.append(dt.timestamp() + 0.5 - got)
+            except (TypeError, ValueError):
+                pass
+        # some X-SERVER-TIME values are fixed per session: only one that advanced is fresh
+        st = pl.server_time
+        if st is not None:
+            if self._last_server_time is not None and st > self._last_server_time:
+                self._offsets.append(st - got)
+            self._last_server_time = st
         return pl
 
     def _reconnect(self) -> tuple[str, MediaPlaylist]:
