@@ -15,6 +15,7 @@ class Segment:
     duration: float
     start: float | None  # epoch seconds
     ad: bool
+    map_url: str | None = None  # init segment (EXT-X-MAP) in effect for this segment
 
 
 @dataclass
@@ -59,8 +60,9 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
     has_map = False
     server_time: float | None = None
     ad_ranges: list[tuple[float, float]] = []
-    # (seq, url, duration, title, pdt) per segment, in playlist order
-    raw: list[tuple[int, str, float, str, float | None]] = []
+    # (seq, url, duration, title, pdt, map_url) per segment, in playlist order
+    raw: list[tuple[int, str, float, str, float | None, str | None]] = []
+    cur_map: str | None = None
 
     pending_dur = 0.0
     pending_title = ""
@@ -79,6 +81,8 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
                 ended = True
             elif line.startswith("#EXT-X-MAP"):
                 has_map = True
+                uri = _attrs(line).get("URI")
+                cur_map = urljoin(base_url, uri) if uri else cur_map
             elif line.startswith("#EXT-X-PROGRAM-DATE-TIME:"):
                 pending_pdt = _epoch(line.split(":", 1)[1])
             elif line.startswith("#EXT-X-DATERANGE"):
@@ -99,7 +103,7 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
             continue
         # a URI line; EXT-X-PREFETCH lines start with '#', so they never get here
         if have_extinf:
-            raw.append((seq + len(raw), urljoin(base_url, line), pending_dur, pending_title, pending_pdt))
+            raw.append((seq + len(raw), urljoin(base_url, line), pending_dur, pending_title, pending_pdt, cur_map))
         have_extinf = False
         pending_pdt = None
         pending_title = ""
@@ -108,7 +112,7 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
     segments: list[Segment] = []
     prev_start: float | None = None
     prev_dur = 0.0
-    for s_seq, url, dur, title, pdt in raw:
+    for s_seq, url, dur, title, pdt, map_url in raw:
         if pdt is not None:
             start: float | None = pdt
         elif prev_start is not None:
@@ -118,7 +122,7 @@ def parse_media_playlist(text: str, base_url: str) -> MediaPlaylist:
         ad = bool(title) and not title.lower().startswith("live")
         if not ad and start is not None:
             ad = any(a <= start < b for a, b in ad_ranges)
-        segments.append(Segment(s_seq, url, dur, start, ad))
+        segments.append(Segment(s_seq, url, dur, start, ad, map_url))
         prev_start, prev_dur = start, dur
 
     return MediaPlaylist(segments, target, ended, server_time, has_map)

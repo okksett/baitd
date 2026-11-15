@@ -108,3 +108,17 @@ def test_is_master():
     master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nhigh.m3u8\n"
     assert hls.is_master(master) is True
     assert hls.is_master(YOUTUBE) is False
+
+
+def test_map_url_per_segment():
+    text = (
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n"
+        '#EXT-X-MAP:URI="init0.mp4"\n#EXTINF:2.0,\na.m4s\n#EXTINF:2.0,\nb.m4s\n'
+        '#EXT-X-MAP:URI="init1.mp4"\n#EXTINF:2.0,\nc.m4s\n'
+    )
+    pl = hls.parse_media_playlist(text, "https://h/a/index.m3u8")
+    assert [s.map_url for s in pl.segments] == [
+        "https://h/a/init0.mp4", "https://h/a/init0.mp4", "https://h/a/init1.mp4",
+    ]
+    plain = hls.parse_media_playlist("#EXTM3U\n#EXTINF:2.0,\na.ts\n", "https://h/a/index.m3u8")
+    assert [s.map_url for s in plain.segments] == [None]

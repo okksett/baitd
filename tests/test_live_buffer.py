@@ -137,3 +137,75 @@ def test_cut_starting_after_the_window(tmp_path, segments):
     _fill(buf, segments, skip={0})  # footage starts at 1002
     cut = buf.cut(1000, 1006, tmp_path / "out.mp4", pad=0)
     assert cut.start == 0.0 and cut.buffer_time(0.0) == pytest.approx(1002.0)
+
+
+@pytest.fixture
+def fmp4_segments(tmp_path):
+    """Four ~2 s fMP4 fragments of one 8 s stream, each as init + fragment bytes."""
+    src = tmp_path / "fsrc"
+    src.mkdir()
+    ffmpeg.run([
+        "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=8",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=8",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+        "-c:a", "aac", "-shortest",
+        "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4",
+        "-hls_fmp4_init_filename", str(src / "init.mp4"), "-hls_segment_filename", str(src / "f%d.m4s"),
+        str(src / "index.m3u8"),
+    ])
+    frags = sorted(src.glob("f*.m4s"), key=lambda p: int(p.stem[1:]))
+    assert len(frags) == 4
+    init = (src / "init.mp4").read_bytes()
+    return [init + f.read_bytes() for f in frags]
+
+
+def _has_audio(path):
+    import subprocess
+    err = subprocess.run([ffmpeg.ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL, **ffmpeg.popen_kwargs()).stderr
+    return "Audio:" in err and "Video:" in err
+
+
+def test_cut_fmp4_segments(tmp_path, fmp4_segments):
+    buf = RingBuffer(tmp_path / "ring")
+    for i, data in enumerate(fmp4_segments):
+        p = buf.add(i, 1000 + 2 * i, 2.0, data, ext="mp4")
+        assert p == buf.folder / f"{i:010d}.mp4"
+    out = tmp_path / "out.mp4"
+    cut = buf.cut(1003, 1006, out)
+    assert abs(ffmpeg.probe(out)["duration"] - 8) < 0.3
+    assert ffmpeg.probe(out)["width"] == 320
+    assert _has_audio(out)
+    assert abs(cut.start - 3.0) < 0.15
+    assert abs(cut.end - 6.0) < 0.15
+
+
+def test_prune_and_clear_remove_mp4(tmp_path):
+    buf = RingBuffer(tmp_path / "ring", keep_s=5)
+    for i in range(4):
+        buf.add(i, 1000 + 2 * i, 2.0, b"x", ext="mp4")
+    assert not (buf.folder / f"{0:010d}.mp4").exists()
+    assert (buf.folder / f"{3:010d}.mp4").exists()
+    buf.clear()
+    assert not list(buf.folder.glob("*"))
+
+
+def test_cut_fmp4_across_a_gap_closes_it(tmp_path, fmp4_segments):
+    buf = RingBuffer(tmp_path / "ring")
+    for i, data in enumerate(fmp4_segments):
+        if i != 2:
+            buf.add(i, 1000 + 2 * i, 2.0, data, ext="mp4")
+    out = tmp_path / "out.mp4"
+    cut = buf.cut(1001, 1007, out)
+    assert abs(ffmpeg.probe(out)["duration"] - 6) < 0.3
+    assert cut.gap
+    assert _has_audio(out)
+    assert sorted(p.name for p in tmp_path.glob("out.*")) == ["out.mp4"]
+
+
+def test_segment_loudness_reads_a_stored_fmp4_file(tmp_path, fmp4_segments):
+    from baitd.live.signals import segment_loudness
+    buf = RingBuffer(tmp_path / "ring")
+    path = buf.add(1, 1000, 2.0, fmp4_segments[1], ext="mp4")
+    level = segment_loudness(path)
+    assert level is not None and level > -40

@@ -333,12 +333,68 @@ def test_endlist_ends(env):
     assert len(env.http.segment_urls) == 2
 
 
-def test_map_is_unsupported(env):
-    env.http.playlists += [playlist(1, 2, pdt0=T0, extra='#EXT-X-MAP:URI="init.mp4"')]
+def _fmp4_playlist(entries, *, ended=False):
+    """entries: ("map", uri) or (seq, "name.m4s"); 2 s segments with program-date-times."""
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2"]
+    n = 0
+    for kind, val in entries:
+        if kind == "map":
+            lines.append(f'#EXT-X-MAP:URI="{val}"')
+        else:
+            if n == 0:
+                lines.append(f"#EXT-X-MEDIA-SEQUENCE:{kind}")
+            lines += [f"#EXT-X-PROGRAM-DATE-TIME:{iso(T0 + 2 * n)}", "#EXTINF:2.0,live", val]
+            n += 1
+    if ended:
+        lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines) + "\n"
+
+
+def test_fmp4_stream_is_captured(env):
+    env.http.playlists += [
+        _fmp4_playlist([("map", "init0.mp4"), (1, "a1.m4s"), (2, "a2.m4s"),
+                        ("map", "init1.mp4"), (3, "a3.m4s")], ended=True),
+    ]
     env.run()
-    assert env.cap.state == "error"
-    assert env.kinds == ["unsupported"]
-    assert env.http.segment_urls == []
+    assert env.cap.state == "ended"
+    assert "unsupported" not in env.kinds
+    inits = [u.rsplit("/", 1)[1] for u in env.http.requested if u.endswith(("init0.mp4", "init1.mp4"))]
+    assert inits == ["init0.mp4", "init1.mp4"]  # each init fetched once
+    files = sorted(env.buf.folder.iterdir())
+    assert [f.suffix for f in files] == [".mp4"] * 3
+    assert [f.read_bytes() for f in files] == [
+        b"ts-init0.mp4ts-a1.m4s", b"ts-init0.mp4ts-a2.m4s", b"ts-init1.mp4ts-a3.m4s",
+    ]
+
+
+def test_fmp4_init_cached_across_polls_and_failure_reconnects(env):
+    env.http.playlists += [
+        _fmp4_playlist([("map", "init0.mp4"), (1, "a1.m4s")]),
+        _fmp4_playlist([("map", "init0.mp4"), (1, "a1.m4s"), (2, "a2.m4s")], ended=True),
+    ]
+    env.run()
+    assert [u for u in env.http.requested if u.endswith("init0.mp4")] == ["https://cdn.test/live/init0.mp4"]
+    assert env.cap.state == "ended"
+
+
+def test_fmp4_init_failure_counts_as_network_failure(env):
+    real_get = env.http.get
+    calls = {"n": 0}
+
+    def get(url, timeout=None):
+        if url.endswith("init0.mp4"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return Resp(status=500)
+        return real_get(url, timeout)
+
+    env.http.get = get
+    pl = _fmp4_playlist([("map", "init0.mp4"), (1, "a1.m4s")], ended=True)
+    env.http.playlists += [pl, pl]
+    env.run()
+    assert "reconnecting" in env.kinds
+    assert env.cap.state == "ended"
+    assert [f.suffix for f in env.buf.folder.iterdir()] == [".mp4"]
 
 
 def test_disk_full_stops_capture(env, monkeypatch):

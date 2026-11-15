@@ -1,10 +1,12 @@
-"""Ring buffer of the last minutes of a live stream, kept as MPEG-TS segment files.
+"""Ring buffer of the last minutes of a live stream, kept as MPEG-TS or fragmented-MP4 segment files.
 
 `cut` joins the segments around a moment into an MP4 without re-encoding.
 """
 from __future__ import annotations
 
 import bisect
+import shutil
+import struct
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,21 @@ GAP_TOLERANCE_S = 0.5
 
 class NoFootage(Exception):
     """The buffer holds nothing for the requested moment."""
+
+
+def _init_len(path: Path) -> int:
+    """Bytes of the init segment (ftyp + moov boxes) at the start of a stored fMP4 file."""
+    pos = 0
+    with open(path, "rb") as f:
+        while True:
+            head = f.read(8)
+            if len(head) < 8:
+                return pos
+            size, kind = struct.unpack(">I4s", head)
+            if kind not in (b"ftyp", b"moov") or size < 8:
+                return pos
+            pos += size
+            f.seek(pos)
 
 
 @dataclass
@@ -61,14 +78,15 @@ class RingBuffer:
         self._lock = threading.Lock()
         self.folder.mkdir(parents=True, exist_ok=True)
 
-    def add(self, seq: int, start: float, duration: float, data: bytes) -> None:
-        path = self.folder / f"{seq:010d}.ts"
+    def add(self, seq: int, start: float, duration: float, data: bytes, ext: str = "ts") -> Path:
+        path = self.folder / f"{seq:010d}.{ext}"
         path.write_bytes(data)
         seg = _Seg(seq, start, duration, path)
         with self._lock:
             keys = [s.start for s in self._segs]
             self._segs.insert(bisect.bisect_right(keys, start), seg)
             self._prune()
+        return path
 
     def _prune(self) -> None:
         head = max(s.end for s in self._segs)
@@ -82,6 +100,57 @@ class RingBuffer:
                 break  # a cut is reading it; it is pruned when the cut releases it
             self._segs.pop(0)
             oldest.path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _parts(chosen: list[_Seg], out: Path, temps: list[Path]) -> list[Path]:
+        """The files FFmpeg joins: each MPEG-TS segment as is; each run of fMP4 segments with the same
+        init and consecutive numbers as one fragmented MP4 (the init once, then the fragments).
+
+        The concat demuxer cannot join fMP4 files: it takes each file's end timestamp as its duration,
+        so every file after the first is shifted by the time already elapsed (a 6 s cut came out at
+        14 s). Joining the fragments by bytes keeps their timestamps; a gap between runs is closed
+        afterwards, as it is for MPEG-TS."""
+        parts: list[Path] = []
+        run: list[_Seg] = []
+        run_init = b""
+
+        def flush() -> None:
+            nonlocal run
+            if not run:
+                return
+            tmp = out.with_name(f"{out.stem}.run{len(parts)}.raw.mp4")
+            temps.append(tmp)
+            with open(tmp, "wb") as w:
+                for i, seg in enumerate(run):
+                    n = _init_len(seg.path)
+                    with open(seg.path, "rb") as r:
+                        if i:
+                            r.seek(n)
+                        shutil.copyfileobj(r, w)
+            parts.append(tmp)
+            run = []
+
+        for seg in chosen:
+            if seg.path.suffix != ".mp4":
+                flush()
+                parts.append(seg.path)
+                continue
+            n = _init_len(seg.path)
+            with open(seg.path, "rb") as r:
+                init = r.read(n)
+            if run and (init != run_init or seg.seq != run[-1].seq + 1):
+                flush()
+            run_init = init
+            run.append(seg)
+        flush()
+        return parts
+
+    @staticmethod
+    def _remux(raw: Path, cancel, temps: list[Path]) -> Path:
+        done = raw.with_name(raw.name.replace(".raw.mp4", ".mp4"))
+        temps.append(done)
+        ffmpeg.run(["-i", str(raw), "-c", "copy", str(done)], cancel=cancel, low_priority=True)
+        return done
 
     def head(self) -> float | None:
         with self._lock:
@@ -120,18 +189,30 @@ class RingBuffer:
             out = Path(out)
             out.parent.mkdir(parents=True, exist_ok=True)
             listing = out.with_name(out.stem + ".concat.txt")
-            listing.write_text(
-                "".join(f"file '{s.path.resolve().as_posix()}'\n" for s in chosen),
-                encoding="utf-8",
-            )
+            temps: list[Path] = []
             try:
-                ffmpeg.run(
-                    ["-f", "concat", "-safe", "0", "-i", str(listing),
-                     "-c", "copy", "-movflags", "+faststart", str(out)],
-                    cancel=cancel, low_priority=True,
-                )
+                parts = self._parts(chosen, out, temps)
+                if len(parts) == 1:
+                    ffmpeg.run(
+                        ["-i", str(parts[0]), "-c", "copy", "-movflags", "+faststart", str(out)],
+                        cancel=cancel, low_priority=True,
+                    )
+                else:
+                    # each fMP4 run is remuxed on its own, so it starts at 0 and its duration is exact
+                    parts = [self._remux(p, cancel, temps) if p in temps else p for p in parts]
+                    listing.write_text(
+                        "".join(f"file '{p.resolve().as_posix()}'" + chr(10) for p in parts),
+                        encoding="utf-8",
+                    )
+                    ffmpeg.run(
+                        ["-f", "concat", "-safe", "0", "-i", str(listing),
+                         "-c", "copy", "-movflags", "+faststart", str(out)],
+                        cancel=cancel, low_priority=True,
+                    )
             finally:
                 listing.unlink(missing_ok=True)
+                for t in temps:
+                    t.unlink(missing_ok=True)
         finally:
             with self._lock:
                 for s in chosen:

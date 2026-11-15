@@ -32,7 +32,6 @@ _TEXTS = {
     "reconnecting": "Se cortó el directo; reconectando…",
     "ended": "El directo terminó",
     "disk_full": "Queda poco espacio en el disco → Libera espacio y vuelve a capturar",
-    "unsupported": "Este directo usa un formato que Baitd aún no lee",
     "error": "No se pudo seguir el directo → Revisa tu conexión y vuelve a capturar",
 }
 
@@ -98,6 +97,7 @@ class Capture(threading.Thread):
         self._announced = False
         self._first_poll = True
         self._target = 0.0
+        self._inits: dict[str, bytes] = {}  # map url -> init segment bytes
 
     # ---- public clock helpers -------------------------------------------------
 
@@ -225,8 +225,6 @@ class Capture(threading.Thread):
     # ---- playlist handling ------------------------------------------------------
 
     def _handle(self, pl: MediaPlaylist) -> None:
-        if pl.has_map:
-            self._finish("error", "unsupported")
         self.has_pdt = any(s.start is not None for s in pl.segments)
         self.state = "capturing"
         if not self._announced:
@@ -284,6 +282,14 @@ class Capture(threading.Thread):
         prev_seq, prev_end = self._prev
         return prev_end + max(0, seg.seq - prev_seq - 1) * seg.duration
 
+    def _init(self, url: str) -> bytes:
+        """The init segment of an fMP4 stream, downloaded once per distinct EXT-X-MAP url."""
+        data = self._inits.get(url)
+        if data is None:
+            data = self._get(url).content
+            self._inits = {url: data}  # the stream moves on; only the newest init is ever needed again
+        return data
+
     def _store(self, seg: Segment, start: float) -> None:
         try:
             free = shutil.disk_usage(self.buffer.folder).free
@@ -291,11 +297,16 @@ class Capture(threading.Thread):
             free = MIN_FREE_BYTES
         if free < MIN_FREE_BYTES:
             self._finish("error", "disk_full")
-        data = self._get(seg.url).content
-        self.buffer.add(seg.seq, start, seg.duration, data)
+        ext = "ts"
+        data = b""
+        if seg.map_url:
+            data = self._init(seg.map_url)
+            ext = "mp4"
+        data += self._get(seg.url).content
+        path = self.buffer.add(seg.seq, start, seg.duration, data, ext)
         hook = self.on_segment
         if hook is not None:
             try:
-                hook(self.buffer.folder / f"{seg.seq:010d}.ts", start, seg.duration)
+                hook(path, start, seg.duration)
             except Exception:
                 log.exception("on_segment falló")
