@@ -509,8 +509,13 @@ def test_stream_end_stops_the_chat_reader_and_the_meter(auto, chans):
     reader, det = FakeReader.made[-1], FakeDetector.made[-1]
     meter = mgr._session.meter
     cap.state = "ended"
-    assert wait_for(lambda: reader.stopped and det.stopped)
+    assert wait_for(lambda: reader.stopped and det.flushed)
     assert wait_for(lambda: not meter.is_alive())
+    # the detector keeps working on the candidates the flush queued (AI title, transcription)
+    time.sleep(0.2)
+    assert not det.stopped
+    mgr.stop()
+    assert det.stopped and det.joined
 
 
 def test_marking_the_channel_as_mine_stops_the_watch(auto, chans):

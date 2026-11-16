@@ -285,9 +285,10 @@ class LiveManager:
         session.meter.start()
 
     @staticmethod
-    def _unwatch(s: _Session) -> None:
-        """Stop the chat, the meter and the detector. Each only gets the signal; the tear-down waits."""
-        for part in (s.chat, s.meter, s.detector):
+    def _unwatch(s: _Session, detector: bool = True) -> None:
+        """Stop the chat, the meter and (unless `detector` is False) the detector. Each only gets the
+        signal; the tear-down waits."""
+        for part in (s.chat, s.meter, s.detector if detector else None):
             if part:
                 try:
                     part.stop()
@@ -409,7 +410,9 @@ class LiveManager:
                         self._enqueue_seal(s, m)
                     if s.detector is not None:
                         s.detector.flush()
-                    self._unwatch(s)  # the stream is over: the chat reader and the meter have nothing to read
+                    # the stream is over: the chat reader and the meter have nothing to read. The detector
+                    # keeps going on the candidates the flush queued; stop() or a new start ends it.
+                    self._unwatch(s, detector=False)
                     self._update_pin(s)
                 return
             head = s.buffer.head()
