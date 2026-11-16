@@ -50,6 +50,7 @@
   <button type="button" id="update-dismiss" class="icon-btn" data-i18n-aria="update.dismiss" aria-label='{{ t("update.dismiss") }}'>✕</button>
 </div>
 <p id="top-error" class="err" role="alert" hidden></p>
+<p id="live-alert" class="err app-alert" role="alert" hidden></p>
 
 <main class="grid">
   <section class="form" id="panel-short" role="tabpanel" aria-labelledby="tab-short">
@@ -211,6 +212,12 @@
   <section class="form-clip" id="panel-clip" role="tabpanel" aria-labelledby="tab-clip" hidden>
     <h2 class="head" id="clip-head" tabindex="-1"><span data-i18n="clip.head_a">{{ t("clip.head_a") }}</span> <em data-i18n="clip.head_b">{{ t("clip.head_b") }}</em></h2>
 
+    <div class="subtabs" role="tablist" data-i18n-aria="live.subtabs" aria-label='{{ t("live.subtabs") }}'>
+      <button type="button" role="tab" id="subtab-video" aria-selected="true" aria-controls="panel-video" data-subtab="video" data-i18n="live.tab_video">{{ t("live.tab_video") }}</button>
+      <button type="button" role="tab" id="subtab-live" aria-selected="false" aria-controls="panel-live" data-subtab="live" tabindex="-1" data-i18n="live.tab_live">{{ t("live.tab_live") }}</button>
+    </div>
+
+    <div id="panel-video" role="tabpanel" aria-labelledby="subtab-video">
     <div class="drop" id="drop">
       <p class="drop-title" data-i18n="clip.drop">{{ t("clip.drop") }}</p>
       <label class="sr-only" for="c-url" data-i18n="clip.url_label">{{ t("clip.url_label") }}</label>
@@ -399,6 +406,59 @@
         <button type="button" class="b2" id="clip-export" aria-describedby="clip-why" data-i18n="clip.export">{{ t("clip.export") }}</button>
       </div>
     </section>
+    </div>
+
+    <div id="panel-live" role="tabpanel" aria-labelledby="subtab-live" hidden>
+      <section class="live-block" aria-labelledby="live-channels-title">
+        <h3 class="live-h" id="live-channels-title" data-i18n="live.channels">{{ t("live.channels") }}</h3>
+        <p class="hint" data-i18n="live.channels_hint">{{ t("live.channels_hint") }}</p>
+        <div class="live-add">
+          <label class="sr-only" for="live-url" data-i18n="live.url_label">{{ t("live.url_label") }}</label>
+          <input id="live-url" class="input" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="300"
+                 data-i18n-placeholder="live.url_placeholder" placeholder='{{ t("live.url_placeholder") }}'>
+          <label class="check"><input type="checkbox" id="live-mine"> <span data-i18n="live.mine">{{ t("live.mine") }}</span></label>
+          <button type="button" class="pill" id="live-add" data-i18n="live.add">{{ t("live.add") }}</button>
+        </div>
+        <p id="live-channels-error" class="err" role="alert" hidden></p>
+        <p id="live-channels-empty" class="hint" data-i18n="live.channels_empty" hidden>{{ t("live.channels_empty") }}</p>
+        <ul id="live-channels" class="channels"></ul>
+      </section>
+
+      <section id="live-capture" class="capture panel" aria-labelledby="live-capture-title" hidden>
+        <div class="capture-head">
+          <h3 class="live-h" id="live-capture-title"><span class="cap-logo"></span><span id="live-cap-handle"></span></h3>
+          <span class="chip" id="live-cap-state"></span>
+        </div>
+        <p class="hint" id="live-cap-title"></p>
+        <div class="capture-stats">
+          <span id="live-cap-latency"></span>
+          <span id="live-cap-buffered"></span>
+          <span id="live-cap-ai"></span>
+        </div>
+        <button type="button" class="mark-btn" id="live-mark" aria-describedby="live-pending live-hotkey-hint" data-i18n="live.mark">{{ t("live.mark") }}</button>
+        <p class="pending" id="live-pending" role="status"></p>
+        <p class="hint" id="live-hotkey-hint"></p>
+        <div class="btns">
+          <button type="button" class="b1" id="live-stop" data-i18n="live.stop">{{ t("live.stop") }}</button>
+        </div>
+      </section>
+      <ul id="live-notices" class="notices" role="status" aria-live="polite"></ul>
+      <p id="live-capture-error" class="err" role="alert" hidden></p>
+
+      <section class="live-block" aria-labelledby="live-moments-title">
+        <div class="review-head">
+          <h3 class="live-h" id="live-moments-title" tabindex="-1" data-i18n="live.moments">{{ t("live.moments") }}</h3>
+          <span class="hint" id="live-selected"></span>
+        </div>
+        <p id="live-moments-empty" class="hint" data-i18n="live.moments_empty">{{ t("live.moments_empty") }}</p>
+        <div id="live-moments" class="live-moments"></div>
+        <p id="live-moments-error" class="err" role="alert" hidden></p>
+        <p id="live-moments-status" class="status" role="status"></p>
+        <div class="btns">
+          <button type="button" class="b2" id="live-export" data-i18n="live.export">{{ t("live.export") }}</button>
+        </div>
+      </section>
+    </div>
   </section>
 
   <section class="side">
@@ -570,6 +630,43 @@
       <p class="status" id="ytdlp-status" role="status"></p>
       <p class="err" id="ytdlp-error" role="alert" hidden></p>
     </div>
+    <h3 class="lbl" data-i18n="live.settings">{{ t("live.settings") }}</h3>
+    <div class="keys live-keys">
+      <div class="key-row">
+        <label for="s-live_hotkey" data-i18n="live.hotkey">{{ t("live.hotkey") }}</label>
+        <div class="key-input">
+          <input id="s-live_hotkey" class="input" type="text" readonly autocomplete="off" spellcheck="false"
+                 data-setting="live_hotkey" aria-describedby="hotkey-hint">
+          <button type="button" class="pill" id="s-hotkey-record" aria-pressed="false" aria-describedby="hotkey-hint" data-i18n="live.hotkey_change">{{ t("live.hotkey_change") }}</button>
+        </div>
+        <p class="hint" id="hotkey-hint" data-i18n="live.hotkey_hint">{{ t("live.hotkey_hint") }}</p>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="s-live_before_s" data-i18n="live.before">{{ t("live.before") }}</label>
+          <input id="s-live_before_s" class="input" type="number" min="10" max="120" step="1" inputmode="numeric" data-setting="live_before_s">
+        </div>
+        <div class="field">
+          <label class="lbl" for="s-live_after_s" data-i18n="live.after">{{ t("live.after") }}</label>
+          <input id="s-live_after_s" class="input" type="number" min="5" max="60" step="1" inputmode="numeric" data-setting="live_after_s">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="s-live_max_height" data-i18n="live.quality">{{ t("live.quality") }}</label>
+          <select id="s-live_max_height" class="input" data-setting="live_max_height">
+            <option value="720" data-i18n="live.quality_720">{{ t("live.quality_720") }}</option>
+            <option value="1080" data-i18n="live.quality_1080">{{ t("live.quality_1080") }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="lbl" for="s-live_ai_per_hour" data-i18n="live.ai_per_hour">{{ t("live.ai_per_hour") }}</label>
+          <input id="s-live_ai_per_hour" class="input" type="number" min="0" max="30" step="1" inputmode="numeric"
+                 data-setting="live_ai_per_hour" aria-describedby="ai-hour-hint">
+        </div>
+      </div>
+      <p class="hint" id="ai-hour-hint" data-i18n="live.ai_per_hour_hint">{{ t("live.ai_per_hour_hint") }}</p>
+    </div>
     <div class="field quit-row">
       <button type="button" class="b1" id="quit-app" data-i18n="settings.quit">{{ t("settings.quit") }}</button>
     </div>
@@ -663,7 +760,16 @@
       <button type="button" class="link-btn m-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
     </div>
     <p class="m-text" role="button" tabindex="0" aria-expanded="false" hidden></p>
-    <video class="m-video" controls playsinline preload="none" data-i18n-aria="moment.preview" aria-label='{{ t("moment.preview") }}'></video>
+    <div class="m-stage">
+      <video class="m-video" controls playsinline preload="none" data-i18n-aria="moment.preview" aria-label='{{ t("moment.preview") }}'></video>
+      <div class="m-cam" role="group" tabindex="0" hidden data-i18n-aria="live.cam_box" aria-label='{{ t("live.cam_box") }}'>
+        <span class="m-cam-handle" aria-hidden="true"></span>
+      </div>
+    </div>
+    <div class="m-cam-bar" hidden>
+      <p class="hint m-cam-hint"></p>
+      <button type="button" class="link-btn m-cam-auto" data-i18n="live.cam_auto">{{ t("live.cam_auto") }}</button>
+    </div>
     <div class="moment-fields">
       <div class="field wide">
         <label class="lbl m-title-label" data-i18n="moment.title">{{ t("moment.title") }}</label>
@@ -692,6 +798,7 @@
           <option value="cara" data-i18n="framing.cara">{{ t("framing.cara") }}</option>
           <option value="centro" data-i18n="framing.centro">{{ t("framing.centro") }}</option>
           <option value="completo" data-i18n="framing.completo">{{ t("framing.completo") }}</option>
+          <option value="partido" data-i18n="framing.partido">{{ t("framing.partido") }}</option>
         </select>
       </div>
       <div class="field">
@@ -700,6 +807,61 @@
                data-i18n-placeholder="moment.credit_placeholder" placeholder='{{ t("moment.credit_placeholder") }}'>
       </div>
       <p class="err wide m-err" hidden></p>
+    </div>
+  </article>
+</template>
+
+<template id="tpl-channel">
+  <li class="channel">
+    <div class="ch-main">
+      <span class="ch-logo"></span>
+      <span class="ch-handle"></span>
+      <span class="ch-dot" aria-hidden="true"></span>
+      <span class="ch-live"></span>
+      <span class="ch-viewers"></span>
+    </div>
+    <p class="hint ch-title" hidden></p>
+    <div class="ch-controls">
+      <label class="check ch-mine-wrap"><input type="checkbox" class="ch-mine"> <span data-i18n="live.mine">{{ t("live.mine") }}</span></label>
+      <label class="ch-field"><span class="ch-lbl" data-i18n="live.framing">{{ t("live.framing") }}</span>
+        <select class="input ch-framing">
+          <option value="cara" data-i18n="framing.cara">{{ t("framing.cara") }}</option>
+          <option value="partido" data-i18n="framing.partido">{{ t("framing.partido") }}</option>
+        </select>
+      </label>
+      <label class="ch-field ch-delay-wrap" hidden><span class="ch-lbl" data-i18n="live.delay">{{ t("live.delay") }}</span>
+        <input class="input ch-delay" type="number" min="0" max="60" step="1" inputmode="numeric"
+               data-i18n-placeholder="live.delay_placeholder" placeholder='{{ t("live.delay_placeholder") }}'>
+      </label>
+      <span class="ch-buttons">
+        <button type="button" class="pill ch-capture" data-i18n="live.capture">{{ t("live.capture") }}</button>
+        <button type="button" class="link-btn ch-remove" data-i18n="live.remove">{{ t("live.remove") }}</button>
+      </span>
+    </div>
+    <p class="err ch-err" role="alert" hidden></p>
+  </li>
+</template>
+
+<template id="tpl-live-moment">
+  <article class="lm panel">
+    <div class="lm-pic"><img class="lm-thumb" alt="" width="160" height="90" hidden></div>
+    <div class="lm-body">
+      <div class="lm-head">
+        <label class="check lm-pick-wrap"><input type="checkbox" class="lm-pick"> <span data-i18n="moment.pick">{{ t("moment.pick") }}</span></label>
+        <h3 class="lm-title"></h3>
+      </div>
+      <p class="lm-meta"><span class="lm-logo"></span><span class="lm-handle"></span><span class="lm-reason"></span><span class="lm-time"></span><span class="lm-dur"></span></p>
+      <div class="lm-tags">
+        <span class="chip lm-gap" data-i18n="live.gap" hidden>{{ t("live.gap") }}</span>
+        <span class="chip lm-unclassified" data-i18n="live.unclassified" hidden>{{ t("live.unclassified") }}</span>
+        <span class="chip lm-busy" hidden></span>
+      </div>
+      <div class="lm-actions">
+        <button type="button" class="pill lm-review" data-i18n="live.review">{{ t("live.review") }}</button>
+        <button type="button" class="pill lm-ai" data-i18n="live.ai_title">{{ t("live.ai_title") }}</button>
+        <button type="button" class="link-btn lm-remove" data-i18n="live.remove">{{ t("live.remove") }}</button>
+      </div>
+      <p class="err lm-err" hidden></p>
     </div>
   </article>
 </template>

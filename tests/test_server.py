@@ -583,6 +583,46 @@ def test_clipping_ui_lifecycle_seams():
     assert discard.index("setBusy(true)") < discard.index('api("DELETE"') < discard.index("setBusy(false)")
 
 
+def test_index_has_live_tab(client):
+    html = client.get("/").text
+    # the Clipping panel has two sub-tabs, Video (today's content) and En directo, with the tab pattern
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-video"[^>]*aria-selected="true"', html)
+    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-live"[^>]*aria-selected="false"', html)
+    assert 'id="panel-video" role="tabpanel"' in html and 'id="panel-live" role="tabpanel"' in html
+    assert 'id="tpl-channel"' in html and 'id="tpl-live-moment"' in html
+    assert 'id="live-capture"' in html and 'id="live-mark"' in html and 'id="live-stop"' in html
+    # the review card can frame a moment as Partido, and Ajustes has the live settings
+    tpl = html[html.index('id="tpl-moment"'):]
+    assert 'value="partido"' in tpl[:tpl.index("</template>")]
+    for key in ("live_hotkey", "live_before_s", "live_after_s", "live_max_height", "live_ai_per_hour"):
+        assert f'data-setting="{key}"' in html, key
+
+
+def test_live_ui_seams():
+    js = JS.read_text("utf-8")
+    assert "/api/live/status?since=" in js and "/api/live/moments" in js and "/api/live/mark" in js
+    assert "1080 / 768" in js  # the cam box keeps the band's aspect (the renderer scales it straight in)
+    sig = js[js.index("const reviewSignature"):js.index("const reviewEdited")]
+    assert "m.cam" in sig
+    export = js[js.index("async function onExport"):js.index("// ---------- queue")]
+    assert "cam:" in export
+    tabs = js[js.index("function setTab"):js.index("function onTabKey")]
+    assert ".tabs [role=" in tabs  # the sub-tabs are not main tabs
+    # a moment already being exported (e.g. from its review card) is never queued twice and leaves the selection
+    bulk = js[js.index("async function exportLiveMoments"):js.index("// ---------- en directo: the hotkey recorder")]
+    assert 'momentJob(id, "clip_export")' in bulk
+    card = js[js.index("function updateLiveMoment"):js.index("async function askTitle")]
+    assert "L.picked.delete(id)" in card
+    assert "state.live.picked.delete(r.analysisId)" in export
+    # Shift alone does not make a letter or digit usable as the hotkey (as hotkey.parse_hotkey)
+    rec = js[js.index("function hotkeyFromEvent"):js.index("function setHotkeyHint")]
+    assert "e.ctrlKey || e.altKey || e.metaKey" in rec
+    # no_capture and hotkey_busy are explained on every tab, not only inside the En directo panel
+    assert '"no_capture", "hotkey_busy"' in js and 'id="live-alert"' in INDEX.read_text("utf-8")
+    # a refusal at start-up is shown from the status field, standing, in the alert and in the capture hint
+    assert "syncHotkeyAlert(st.hotkey)" in js and "live.hotkey_off" in js
+
+
 def test_index_has_rights_notice_key(client):
     html = client.get("/").text
     es = json.loads(ES.read_text("utf-8"))
@@ -729,7 +769,7 @@ def test_clipping_form_help_toggles_and_visible_min_max(client):
 def test_boot_carries_version_and_page_shows_it(client):
     import baitd
     html = client.get("/").text
-    assert baitd.__version__ == "0.4.1"
+    assert baitd.__version__ == "0.5.0"
     assert f'"version": "{baitd.__version__}"' in html
     assert 'id="app-version"' in html
     es = json.loads(ES.read_text("utf-8"))

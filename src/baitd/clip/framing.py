@@ -15,7 +15,8 @@ from .. import ffmpeg
 from ..ffmpeg import JobCancelled
 from .models import SourceInfo
 
-__all__ = ["MAX_UPSCALE", "CropPlan", "required_scale", "scene_cuts", "detect_faces", "plan_crop", "crop_filter"]
+__all__ = ["MAX_UPSCALE", "CropPlan", "required_scale", "scene_cuts", "detect_faces", "find_cam", "plan_crop",
+           "crop_filter"]
 
 MAX_UPSCALE = 1.8
 SHARPEN_ABOVE = 1.25
@@ -40,6 +41,12 @@ MIN_HOLD_S = 2.0          # stay on a speaker at least this long
 # the summed mouth motion must favour one matching by this much (on a podcast with a guest eating: 0.2).
 VOICE_SIDE_MARGIN = 0.05
 MAX_KEYS = 200
+# "partido": the streamer's cam on top, the game below. The cam band is TOP_SHARE of the output height.
+TOP_SHARE = 0.4
+CAM_MIN_SHARE = 0.6   # the main face must be in this share of the samples to count as a cam
+CORNER = 0.35         # its centre must be within this share of the width and of the height from a corner
+CAM_MAX_AREA = 0.06   # a face covering more of the frame is a close-up, not a cam
+CAM_FACE_SCALE = 3.0  # the cam box is this many face heights tall
 SHARPEN = "unsharp=5:5:0.5:5:5:0.0"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "assets" / "models" / "face_detection_yunet_2023mar.onnx"
 
@@ -48,11 +55,13 @@ Face = tuple  # x, y, w, h, score (source pixels)[, mouth crop: MOUTH_H x MOUTH_
 
 @dataclass
 class CropPlan:
-    mode: str  # "cara" | "centro" | "completo"
+    mode: str  # "cara" | "centro" | "completo" | "partido"
     crop_w: int
     crop_h: int  # source pixels ("completo": the source size)
     keys: list[tuple[float, int]]  # (clip-relative time, crop x), piecewise-linear; two keys at one time = a jump
     sharpen: bool  # scale > 1.25
+    cam: tuple[int, int, int, int] | None = None   # "partido": the cam box (x, y, w, h), source pixels
+    game: tuple[int, int, int, int] | None = None  # "partido": the game box (x, y, w, h), source pixels
 
 
 def _window(src_w: int, src_h: int, out_w: int, out_h: int) -> tuple[float, float]:
@@ -130,7 +139,7 @@ def detect_faces(src: SourceInfo, start: float, end: float, fps: float, cancel) 
     out: list[tuple[float, list[Face]]] = []
     with tempfile.TemporaryFile() as errf:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errf,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                **ffmpeg.popen_kwargs())
         try:
             i = 0
             while True:
@@ -411,11 +420,72 @@ def _even(v: float) -> int:
     return max(2, int(v) // 2 * 2)
 
 
+def _top_h(out_h: int) -> int:
+    return _even(out_h * TOP_SHARE)
+
+
+def _fit_box(x: float, y: float, w: float, h: float, src_w: int, src_h: int) -> tuple[int, int, int, int]:
+    """A box made even and moved inside the frame (shrunk if it is bigger than the frame)."""
+    w, h = min(_even(w), src_w // 2 * 2), min(_even(h), src_h // 2 * 2)
+    x = max(0, min(int(x), src_w - w)) // 2 * 2
+    y = max(0, min(int(y), src_h - h)) // 2 * 2
+    return x, y, w, h
+
+
+def find_cam(samples, src_w: int, src_h: int, out_w: int, top_h: int) -> tuple[int, int, int, int] | None:
+    """The streamer's cam box (x, y, w, h) in source pixels, or None when no face looks like a corner cam:
+    the main face must be present in CAM_MIN_SHARE of the samples, centred in a corner, and small."""
+    import statistics
+
+    if not samples:
+        return None
+    hits = list(_main_track(samples, src_w).values())
+    if len(hits) < CAM_MIN_SHARE * len(samples):
+        return None
+    cx = statistics.median(f[0] + f[2] / 2 for f in hits)
+    cy = statistics.median(f[1] + f[3] / 2 for f in hits)
+    if not ((cx < CORNER * src_w or cx > (1 - CORNER) * src_w) and (cy < CORNER * src_h or cy > (1 - CORNER) * src_h)):
+        return None
+    if statistics.median(f[2] * f[3] for f in hits) >= CAM_MAX_AREA * src_w * src_h:
+        return None
+    h = CAM_FACE_SCALE * statistics.median(f[3] for f in hits)
+    w = h * out_w / top_h
+    return _fit_box(cx - w / 2, cy - h / 2, w, h, src_w, src_h)
+
+
+def _plan_partido(src: SourceInfo, start: float, end: float, out_w: int, out_h: int, cancel, faces,
+                  cam: list[int] | None) -> CropPlan | None:
+    """The two-box plan, or None when the clip has no cam (then it is framed on the face as "cara")."""
+    top_h = _top_h(out_h)
+    if cam is not None:
+        box = _fit_box(cam[0], cam[1], cam[2], cam[3], src.width, src.height)
+    else:
+        if faces is None:
+            faces = detect_faces(src, start, end, SAMPLE_FPS, cancel)
+        box = find_cam(faces, src.width, src.height, out_w, top_h)
+    if box is None:
+        return None
+    game_h = out_h - top_h
+    gw = min(src.width, _even(src.height * out_w / game_h))
+    # The cam crop is a small box blown up by design, so only the game crop honours MAX_UPSCALE.
+    if max(out_w / gw, game_h / src.height) > MAX_UPSCALE:
+        return CropPlan("completo", src.width, src.height, [(0.0, 0)], False)
+    game = ((src.width - gw) // 2, 0, gw, src.height)
+    return CropPlan("partido", 0, 0, [(0.0, 0)], False, cam=box, game=game)
+
+
 def plan_crop(src: SourceInfo, start: float, end: float, out_w: int, out_h: int, mode: str, cancel,
               faces=None, cuts=None, talk: list[tuple[float, float]] | None = None,
-              voices: list[int | None] | None = None) -> CropPlan:
-    """`talk`: clip-relative (start, end) of each sentence; with it a shot of two people follows the speaker.
+              voices: list[int | None] | None = None, cam: list[int] | None = None) -> CropPlan:
+    """`cam`: the user's cam box [x, y, w, h] for "partido"; without it the cam is looked for in the faces.
+    `talk`: clip-relative (start, end) of each sentence; with it a shot of two people follows the speaker.
     `voices`: for each sentence 0, 1 (which of two voices, from clip.voices) or None."""
+    if mode == "partido":
+        landscape = src.width > src.height
+        plan = _plan_partido(src, start, end, out_w, out_h, cancel, faces, cam) if landscape else None
+        if plan is not None:
+            return plan
+        mode = "cara"  # no cam (or a portrait source): frame the face
     scale = required_scale(src.width, src.height, out_w, out_h)
     if scale > MAX_UPSCALE or mode == "completo":
         return CropPlan("completo", src.width, src.height, [(0.0, 0)], False)
@@ -494,6 +564,12 @@ def crop_filter(plan: CropPlan, out_w: int, out_h: int) -> str:
                 f"crop={out_w}:{out_h},boxblur=20:2[bg];"
                 f"[b]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2")
+    if plan.mode == "partido":
+        cx, cy, cw, ch = plan.cam
+        gx, gy, gw, gh = plan.game
+        top_h = _top_h(out_h)
+        return (f"split[pa][pb];[pa]crop={cw}:{ch}:{cx}:{cy},scale={out_w}:{top_h}:flags=lanczos[pt];"
+                f"[pb]crop={gw}:{gh}:{gx}:{gy},scale={out_w}:{out_h - top_h}:flags=lanczos[pg];[pt][pg]vstack")
     keys = plan.keys if plan.mode == "cara" else [plan.keys[0]]
     chain = f"crop={plan.crop_w}:{plan.crop_h}:x='{_x_expr(keys)}':y=(ih-{plan.crop_h})/2,scale={out_w}:{out_h}:flags=lanczos"
     return chain + ("," + SHARPEN if plan.sharpen else "")

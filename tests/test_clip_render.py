@@ -140,9 +140,9 @@ def test_title_and_credit_follow_profile_flags(make_mp4_with_speech, tmp_path, m
     seen = {}
     real = captions.write_clip_ass
 
-    def spy(words, style, width, height, path, fonts_dir, top_text="", top_until=3.0, credit=""):
+    def spy(words, style, width, height, path, fonts_dir, top_text="", top_until=3.0, credit="", credit_badge=""):
         seen.update(top=top_text, credit=credit)
-        return real(words, style, width, height, path, fonts_dir, top_text, top_until, credit)
+        return real(words, style, width, height, path, fonts_dir, top_text, top_until, credit, credit_badge)
 
     monkeypatch.setattr(captions, "write_clip_ass", spy)
     plan = CropPlan("centro", 100, 178, [(0.0, 110)], False)
@@ -216,9 +216,9 @@ def test_a_card_credit_wins_even_with_the_credit_switch_off(make_mp4_with_speech
     seen = {}
     real = captions.write_clip_ass
 
-    def spy(words, style, width, height, path, fonts_dir, top_text="", top_until=3.0, credit=""):
+    def spy(words, style, width, height, path, fonts_dir, top_text="", top_until=3.0, credit="", credit_badge=""):
         seen["credit"] = credit
-        return real(words, style, width, height, path, fonts_dir, top_text, top_until, credit)
+        return real(words, style, width, height, path, fonts_dir, top_text, top_until, credit, credit_badge)
 
     monkeypatch.setattr(captions, "write_clip_ass", spy)
     path, words = make_mp4_with_speech
@@ -226,3 +226,36 @@ def test_a_card_credit_wins_even_with_the_credit_switch_off(make_mp4_with_speech
     render_clip(_src(path), _moment(credit="Mi crédito"), words, plan, _profile(credit=False), OPTS,
                 tmp_path / "w", tmp_path / "o.mp4", threading.Event(), lambda f: None)
     assert seen["credit"] == "Mi crédito"
+
+
+def test_render_passes_badge(make_mp4_with_speech, tmp_path, monkeypatch):
+    seen = {}
+    real = captions.write_clip_ass
+
+    def spy(words, style, width, height, path, fonts_dir, *a, **kw):
+        real(words, style, width, height, path, fonts_dir, *a, **kw)
+        seen["ass"] = Path(path).read_text(encoding="utf-8")  # the work dir goes away after the render
+        seen["badge"] = kw.get("credit_badge")
+
+    monkeypatch.setattr(captions, "write_clip_ass", spy)
+    path, words = make_mp4_with_speech
+    plan = CropPlan("centro", 100, 178, [(0.0, 110)], False)
+    render_clip(_src(path), _moment(badge="twitch", credit="@x"), words, plan, _profile(), OPTS,
+                tmp_path / "w", tmp_path / "o.mp4", threading.Event(), lambda f: None)
+    assert seen["badge"] == "twitch" and "&HFF4691&" in seen["ass"]
+    render_clip(_src(path), _moment(badge="twitch"), words, plan, _profile(credit=False), OPTS,
+                tmp_path / "w2", tmp_path / "o2.mp4", threading.Event(), lambda f: None)
+    assert seen["badge"] == "" and "\\p1" not in seen["ass"]
+
+
+def test_render_partido_dimensions(make_mp4_with_speech, make_mp4, tmp_path):
+    from baitd.clip.framing import plan_crop
+    path = make_mp4(seconds=4, w=1280, h=720, fps=15)
+    m = _moment(end=4.0, framing="partido", cam=[1000, 500, 200, 142])
+    src = _src(path, w=1280, h=720)
+    plan = plan_crop(src, 0.0, 4.0, 1080, 1920, "partido", threading.Event(), cam=m.cam)
+    assert plan.mode == "partido"
+    out = render_clip(src, m, [_w("hola", 0.2, 0.6)], plan, _profile(), OPTS,
+                      tmp_path / "w", tmp_path / "o.mp4", threading.Event(), lambda f: None)
+    info = ffmpeg.probe(out)
+    assert (info["width"], info["height"]) == (1080, 1920)

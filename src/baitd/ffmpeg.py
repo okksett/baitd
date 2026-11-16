@@ -1,10 +1,13 @@
 """Thin wrapper around the FFmpeg binary shipped by imageio-ffmpeg (no ffprobe)."""
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 import threading
 from collections import deque
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
@@ -20,13 +23,59 @@ def ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+_scope = threading.local()
+
+
+@contextmanager
+def low_priority(on: bool = True):
+    """Every FFmpeg call this thread makes inside the block runs below normal priority (on=False: at normal
+    priority), unless the call says otherwise. Blocks nest; the previous value comes back on exit."""
+    before = getattr(_scope, "low", False)
+    _scope.low = on
+    try:
+        yield
+    finally:
+        _scope.low = before
+
+
+_IS_WIN = sys.platform == "win32"
+
+
+def is_low(low: bool | None = None) -> bool:
+    """Whether a call runs below normal priority: `low`, or (None) the thread's low_priority() scope."""
+    return bool(getattr(_scope, "low", False) if low is None else low)
+
+
+def popen_kwargs(low: bool | None = None) -> dict:
+    """creationflags (no console window) and, on Windows, the priority class of a low-priority call.
+    `low` None: the thread's low_priority() scope decides. On POSIX run() lowers the priority after
+    the start (see _set_nice), because preexec_fn is unsafe in a threaded process."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if is_low(low) and _IS_WIN:
+        flags |= 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
+    return {"creationflags": flags}
+
+
+def _set_nice(pid: int) -> None:
+    """Lower a started process to nice 10 (POSIX); errors are ignored."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, pid, 10)
+    except (OSError, AttributeError):
+        pass
+
+
 def run(
     args: list[str],
     cwd: Path | None = None,
     cancel: threading.Event | None = None,
     on_line: Callable[[str], None] | None = None,
+    low_priority: bool | None = None,
 ) -> str:
-    """Run ffmpeg with `args`; return stderr. Raise RuntimeError on failure, JobCancelled on cancel."""
+    """Run ffmpeg with `args`; return stderr. Raise RuntimeError on failure, JobCancelled on cancel.
+
+    `low_priority` runs it below normal priority so it does not disturb a live stream on the same PC; None
+    follows the thread's low_priority() scope.
+    """
     cmd = [ffmpeg_exe(), "-hide_banner", "-y", *args]
     proc = subprocess.Popen(
         cmd,
@@ -34,8 +83,10 @@ def run(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **popen_kwargs(low_priority),
     )
+    if is_low(low_priority) and not _IS_WIN:
+        _set_nice(proc.pid)
     lines: list[str] = []
     tail: deque[str] = deque(maxlen=20)
 
@@ -102,7 +153,7 @@ def probe(path: Path) -> dict:
         encoding="utf-8",
         errors="replace",
         stdin=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **popen_kwargs(),
     )
     err = proc.stderr
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)

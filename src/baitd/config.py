@@ -27,6 +27,11 @@ SETTINGS_DEFAULTS: dict = {
     "yt_cookies_browser": "",  # Clipping: read the YouTube session from this browser (sources.COOKIE_BROWSERS)
     "clip_max_height": 1440,  # Clipping: max download height (sources.QUALITIES)
     "yt_cookies_file": "",  # Clipping: path to an exported cookies.txt; wins over the browser
+    "live_hotkey": "F9",  # En directo: the global key that marks a moment
+    "live_before_s": 45,  # En directo: seconds kept before a mark (10-120)
+    "live_after_s": 15,  # En directo: seconds kept after a mark (5-60)
+    "live_ai_per_hour": 6,  # En directo: AI requests per hour for automatic moments (0-30)
+    "live_max_height": 1080,  # En directo: capture quality, 720 or 1080
 }
 
 

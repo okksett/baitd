@@ -6,10 +6,14 @@ from baitd import selftest
 from baitd.ffmpeg import has_filter, probe
 
 
-def test_offline_end_to_end(tmp_data, tmp_path_factory):
+def test_offline_end_to_end(tmp_data, tmp_path_factory, monkeypatch):
     assert has_filter("ass")
     work = tmp_path_factory.mktemp("selftest")
+    live_calls = []
+    real_live = selftest._check_live
+    monkeypatch.setattr(selftest, "_check_live", lambda wd: (live_calls.append(wd), real_live(wd))[1])
     seconds = selftest.run_selftest(work)
+    assert len(live_calls) == 1  # the live-clipping path is part of the self-test
     assert seconds > 0
     video = next(work.glob("out/*/video.mp4"))
     info = probe(video)
@@ -76,3 +80,14 @@ def test_selftest_fails_when_detector_breaks(monkeypatch):
     monkeypatch.setattr(framing, "_make_detector", boom)
     with pytest.raises(selftest.SelftestError, match="detector de caras"):
         selftest._check_clip_deps()
+
+
+def test_selftest_checks_the_live_path(tmp_path):
+    selftest._check_live(tmp_path)  # MPEG-TS and fMP4 segments through the ring buffer, aiohttp, the hotkey
+
+
+def test_selftest_live_fails_without_aiohttp(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setitem(sys.modules, "aiohttp", None)
+    with pytest.raises(selftest.SelftestError, match="aiohttp"):
+        selftest._check_live(tmp_path)

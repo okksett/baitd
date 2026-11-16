@@ -55,11 +55,13 @@ def _finish(words: list[Word], language: str, duration: float) -> Transcript:
 
 def transcribe(audio: Path, provider: str, language: str | None, settings: dict, model: str,
                cancel: threading.Event, on_progress: Callable[[float], None],
-               on_model_load: Callable[[bool], None] | None = None) -> Transcript:
+               on_model_load: Callable[[bool], None] | None = None, cpu_threads: int | None = None) -> Transcript:
+    """`cpu_threads` caps the local model's threads (None: faster-whisper's default); OpenAI ignores it."""
     if provider == "openai":
         return openai_words(audio, language, settings, cancel, on_progress)
     if provider == "local":
-        return local_words(audio, language, model, cancel, on_progress, on_model_load=on_model_load)
+        return local_words(audio, language, model, cancel, on_progress, on_model_load=on_model_load,
+                           cpu_threads=cpu_threads)
     raise ValueError(f"unknown transcriber: {provider}")
 
 
@@ -130,21 +132,39 @@ def _read_pcm16(path: Path):
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
-def _load_model(model: str):
+_MODELS: dict[tuple[str, int], object] = {}  # the live models, kept while Baitd runs
+_MODELS_LOCK = threading.Lock()
+
+
+def _new_model(model: str, cpu_threads: int | None):
     from faster_whisper import WhisperModel  # lazy: heavy import, optional at test time
-    return WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir()))
+    extra = {"cpu_threads": cpu_threads} if cpu_threads else {}
+    return WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir()), **extra)
+
+
+def _load_model(model: str, cpu_threads: int | None = None):
+    """With `cpu_threads` (the live detector, which transcribes again and again) the model is loaded once and
+    kept, keyed by (model, cpu_threads). Without it (an export) it is loaded and released, as always."""
+    if not cpu_threads:
+        return _new_model(model, None)
+    with _MODELS_LOCK:
+        wm = _MODELS.get((model, cpu_threads))
+        if wm is None:
+            wm = _MODELS[(model, cpu_threads)] = _new_model(model, cpu_threads)
+        return wm
 
 
 def local_words(audio: Path, language: str | None, model: str, cancel: threading.Event,
                 on_progress: Callable[[float], None],
-                on_model_load: Callable[[bool], None] | None = None) -> Transcript:
+                on_model_load: Callable[[bool], None] | None = None,
+                cpu_threads: int | None = None) -> Transcript:
     """`on_model_load(True)` before the model loads (downloaded into modelos/ on first use, which can take
     minutes and cannot be interrupted), `on_model_load(False)` once it is ready."""
     _check(cancel)
     if on_model_load is not None:
         on_model_load(True)
     try:
-        wm = _load_model(model)
+        wm = _load_model(model, cpu_threads)
     except Exception as e:
         raise UserError("No se pudo descargar el modelo de transcripción",
                         "Revisa tu conexión e inténtalo de nuevo") from e

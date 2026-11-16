@@ -2,6 +2,7 @@ import json
 import shutil
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -46,9 +47,10 @@ def providers(make_mp4):
         info.channel = "Canal"
         return info
 
-    def transcribe(audio, provider, language, settings, model, cancel, on_progress, on_model_load=None):
+    def transcribe(audio, provider, language, settings, model, cancel, on_progress, on_model_load=None, **kw):
         assert audio.is_file()
         seen["transcribe"] += 1
+        seen.setdefault("calls", []).append({"provider": provider, "language": language, "model": model, **kw})
         if seen.get("model_load"):  # a local model that has to be downloaded first
             on_model_load(True)
             on_model_load(False)
@@ -726,3 +728,317 @@ def test_failed_export_keeps_its_analysis_until_it_is_removed(tmp_data):
     assert f.exists() and [p.name for p in sources.sources_dir().iterdir()] == ["a" * 12]
     q.remove("q2" + "0" * 10)  # nothing leaks once the export goes too
     assert not f.exists() and not list(sources.sources_dir().iterdir())
+
+
+def _moment_dict(**kw):
+    return {"start": 1.0, "end": 5.0, "kind": "interesante", "score": 0, "title": "t", "description": "",
+            "hashtags": [], "text": "", **kw}
+
+
+def test_moment_badge_and_cam_validation():
+    for bad in ({"badge": "tiktok"}, {"cam": [1, 2, 3]}, {"cam": [0, 0, -1, 5]}, {"cam": [0, 0, 1.5, 5]},
+                {"cam": "x"}, {"cam": [True, 0, 1, 1]}):
+        with pytest.raises(ValueError):
+            pipeline._moment_from_dict(_moment_dict(**bad))
+    m = pipeline._moment_from_dict(_moment_dict(badge="kick", cam=[0, 0, 320, 180]))
+    assert m.badge == "kick" and m.cam == [0, 0, 320, 180]
+    m = pipeline._moment_from_dict(_moment_dict())
+    assert m.badge == "" and m.cam is None
+
+
+def test_moment_accepts_partido_framing():
+    assert pipeline._moment_from_dict(_moment_dict(framing="partido")).framing == "partido"
+
+
+# ---- live moments: transcribed at export, AI title on demand ----
+
+def _live_analysis(make_mp4, start=1.0, end=12.0, seconds=14):
+    from types import SimpleNamespace
+
+    from baitd.live import store
+    from baitd.live.buffer import Cut
+    cut = Cut(make_mp4(seconds=seconds, w=320, h=180, fps=15), start, end, float(seconds), False)
+    ch = SimpleNamespace(platform="kick", handle="westcol", mine=False, framing="cara", url="https://kick.com/westcol")
+    return store.save_moment(cut, channel=ch, title="Mi marca", reason="manual", at=1_700_000_000.0,
+                             session_id="s1", framing="cara")
+
+
+def _rendered(monkeypatch):
+    seen = []
+
+    def fake_render(src, m, words, plan, profile, ropts, workdir, out, cancel, on_progress):
+        seen.append((m.start, m.end))
+        out.write_bytes(b"x")
+
+    monkeypatch.setattr(pipeline, "render_clip", fake_render)
+    return seen
+
+
+def _export_item(aid):
+    return _item("clip_export", {"analysis_id": aid, "moments": pipeline.load_analysis(aid)["moments"]})
+
+
+def test_export_transcribes_live_moment_once(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    aid = _live_analysis(make_mp4)
+    assert pipeline.load_analysis(aid)["transcript"]["words"] == []
+    item = _export_item(aid)
+
+    def broken_render(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(pipeline, "render_clip", broken_render)
+    settings = _settings(tmp_path, keep_sources=True)
+    calls = []
+    with pytest.raises(UserError):  # the render fails after the transcription
+        pipeline.run_clip_export(item, settings, threading.Event(), lambda *a: calls.append(a), providers)
+    assert providers.seen["transcribe"] == 1 and "transcribe" in {c[0] for c in calls}
+    analysis = pipeline.load_analysis(aid)
+    assert len(analysis["transcript"]["words"]) == 80 and analysis["transcript"]["language"] == "es"
+    assert analysis["origin"] == "live"
+    _rendered(monkeypatch)
+    (sources.sources_dir() / analysis["source_id"] / "transcript.json").unlink()  # only the analysis has them now
+    pipeline.run_clip_export(item, settings, threading.Event(), lambda *a: None, providers)  # Reintentar
+    assert providers.seen["transcribe"] == 1  # the retry reads the saved words
+
+
+def test_export_snaps_live_bounds(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    from baitd.live import store
+    monkeypatch.setattr(pipeline, "MIN_CLIP_S", 5.0)  # a clip ending at 9.6 s cannot last the real 10 s minimum
+    aid = _live_analysis(make_mp4, start=2.6, end=9.0, seconds=12)
+    words = [Word("Hola", 1.0, 1.4), Word("amigos.", 1.5, 2.0)]
+    words += [Word(f"palabra{i}", 2.5 + 0.5 * i, 2.9 + 0.5 * i) for i in range(13)]  # 2.5 .. 8.9
+    words += [Word("fin.", 9.2, 9.6), Word("Otra", 10.0, 10.4), Word("cosa.", 10.5, 11.0)]
+    store.update_moment(aid, transcript=Transcript("es", words, 12.0).to_dict())
+    seen = _rendered(monkeypatch)
+    pipeline.run_clip_export(_export_item(aid), _settings(tmp_path, keep_sources=True), threading.Event(),
+                             lambda *a: None, providers)
+    assert providers.seen["transcribe"] == 0  # the analysis already had words
+    assert seen == [(2.5, 9.6)]
+
+
+def test_export_does_not_snap_ordinary_analyses(tmp_data, tmp_path, providers, monkeypatch):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    moment = {**pipeline.load_analysis(path.stem)["moments"][0], "start": 2.2, "end": 13.3}
+    seen = _rendered(monkeypatch)
+    pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem, "moments": [moment]}),
+                             _settings(tmp_path, keep_sources=True), threading.Event(), lambda *a: None, providers)
+    assert seen == [(2.2, 13.3)] and providers.seen["transcribe"] == 1  # only the analyze run transcribed
+
+
+def _title_reply(prompt, tipo="humor"):
+    assert '"inicio"' not in prompt and "palabra" in prompt
+    return "```json\n" + json.dumps({"tipo": tipo, "titulo": "Título de la IA", "descripcion": "Lo que pasa",
+                                      "hashtags": ["risa"]}) + "\n```"
+
+
+def test_live_title_keeps_bounds(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4, start=1.5, end=12.3)
+    providers.complete = _title_reply
+    calls = []
+    item = {**_item("live_title", {"analysis_id": aid})}
+    path = pipeline.run_live_title(item, _settings(tmp_path), threading.Event(), lambda *a: calls.append(a),
+                                   providers)
+    assert path == pipeline.analyses_dir() / f"{aid}.json"
+    analysis = pipeline.load_analysis(aid)
+    m = analysis["moments"][0]
+    assert m["title"] == "Título de la IA" and m["description"] == "Lo que pasa" and m["hashtags"] == ["#risa"]
+    assert (m["start"], m["end"]) == (1.5, 12.3)
+    assert m["kind"] == "gracioso" and analysis["live"]["classified"] is True
+    assert providers.seen["transcribe"] == 1 and len(analysis["transcript"]["words"]) == 80
+    assert [c[0] for c in calls if c[1] == 3][:1] == ["moments"]
+    assert (sources.sources_dir() / analysis["source_id"]).is_dir()  # the title job never releases the source
+
+
+def test_live_title_nothing_keeps_kind(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4)
+    providers.complete = lambda prompt: _title_reply(prompt, tipo="nada")
+    pipeline.run_live_title(_item("live_title", {"analysis_id": aid}), _settings(tmp_path), threading.Event(),
+                            lambda *a: None, providers)
+    analysis = pipeline.load_analysis(aid)
+    assert analysis["moments"][0]["kind"] == "interesante" and analysis["live"]["classified"] is True
+    assert analysis["moments"][0]["title"] == "Título de la IA"
+
+
+def test_live_title_unreadable_reply_changes_nothing(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4)
+    providers.complete = lambda prompt: "no json at all"
+    with pytest.raises(UserError):
+        pipeline.run_live_title(_item("live_title", {"analysis_id": aid}), _settings(tmp_path), threading.Event(),
+                                lambda *a: None, providers)
+    analysis = pipeline.load_analysis(aid)
+    assert analysis["moments"][0]["title"] == "Mi marca" and analysis["live"]["classified"] is False
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_exported_live_moment_leaves_the_live_list(tmp_data, tmp_path, providers, make_mp4, monkeypatch, keep):
+    from baitd.live import store
+    aid = _live_analysis(make_mp4)
+    sid = pipeline.load_analysis(aid)["source_id"]
+    _rendered(monkeypatch)
+    pipeline.run_clip_export(_export_item(aid), _settings(tmp_path, keep_sources=keep), threading.Event(),
+                             lambda *a: None, providers)
+    assert aid not in [m["analysis_id"] for m in store.list_moments()]
+    assert not (pipeline.analyses_dir() / f"{aid}.json").exists()
+    assert (sources.sources_dir() / sid).is_dir() is keep  # the video follows keep_sources
+
+
+def test_removing_a_live_export_keeps_the_moment(tmp_data, make_mp4):
+    aid = _live_analysis(make_mp4)
+    sid = pipeline.load_analysis(aid)["source_id"]
+    payload = {"analysis_id": aid, "moments": []}
+    path = tmp_data / "queue.json"
+    _write_queue(path, [_clip_row("q1" + "0" * 10, "clip_export", "error", payload, aid),
+                        _clip_row("q2" + "0" * 10, "clip_export", "cancelled", payload, aid),
+                        _clip_row("q3" + "0" * 10, "clip_export", "done", payload, aid)])
+    q = JobQueue(path)
+    q.remove("q1" + "0" * 10)
+    assert (pipeline.analyses_dir() / f"{aid}.json").is_file() and (sources.sources_dir() / sid).is_dir()
+    q.clear_finished()
+    assert q.list() == []
+    assert (pipeline.analyses_dir() / f"{aid}.json").is_file() and (sources.sources_dir() / sid).is_dir()
+    pipeline.release_analysis(aid, {}, None)  # whatever releases it, a live moment stays in the live list
+    assert (pipeline.analyses_dir() / f"{aid}.json").is_file()
+
+
+def _ffmpeg_priorities(monkeypatch):
+    """(is low priority) for every FFmpeg process started, through any subprocess helper."""
+    import subprocess
+    import sys
+
+    from baitd import ffmpeg
+    seen, real = [], subprocess.Popen
+
+    def popen(cmd, *a, **kw):
+        if cmd and str(cmd[0]) == ffmpeg.ffmpeg_exe():
+            low = (kw.get("creationflags", 0) & 0x4000) if sys.platform == "win32" else ffmpeg.is_low()
+            seen.append(bool(low))
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return seen
+
+
+def test_live_export_runs_ffmpeg_at_low_priority(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    aid = _live_analysis(make_mp4)
+    item = _export_item(aid)
+    seen = _ffmpeg_priorities(monkeypatch)
+    pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert len(seen) >= 3 and all(seen)  # audio, framing, render: every one below normal
+
+
+def test_ordinary_export_runs_ffmpeg_at_normal_priority(tmp_data, tmp_path, providers, monkeypatch):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    seen = _ffmpeg_priorities(monkeypatch)
+    pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem,
+                                                   "moments": pipeline.load_analysis(path.stem)["moments"]}),
+                             _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert seen and not any(seen)
+
+
+def test_render_all_detects_faces_and_passes_cam_for_partido(monkeypatch):
+    from types import SimpleNamespace
+    seen = {"faces": 0}
+    calls = []
+
+    def detect(src, start, end, fps, cancel):
+        seen["faces"] += 1
+        return []
+
+    def fake_plan(src, start, end, w, h, mode, cancel, faces=None, cuts=None, talk=None, voices=None, cam=None):
+        calls.append((mode, cam))
+        raise pipeline.UserError("stop", "here")
+
+    monkeypatch.setattr(framing, "plan_crop", fake_plan)
+    monkeypatch.setattr(pipeline, "_talk_and_voices", lambda *a: (_ for _ in ()).throw(AssertionError("no talk")))
+    src = SimpleNamespace(has_video=True)
+    steps = SimpleNamespace(begin=lambda *a: None, frac=lambda *a: None, end=lambda *a: None)
+
+    def run(**kw):
+        m = pipeline._moment_from_dict(_moment_dict(framing="partido", **kw))
+        with pytest.raises(pipeline.UserError):
+            pipeline._render_all(src, [m], [], config.default_profile(), pipeline.ClipProfile(), Path("."),
+                                 threading.Event(), steps, pipeline.ClipProviders(detect_faces=detect))
+
+    run()  # no cam given: the faces are sampled to find it
+    assert seen["faces"] == 1 and calls[-1] == ("partido", None)
+    run(cam=[10, 20, 200, 100])  # the user marked it: nothing to detect
+    assert seen["faces"] == 1 and calls[-1] == ("partido", [10, 20, 200, 100])
+
+
+# ---- live moments: the export-time profile, and a light touch on the streaming PC ----
+
+def _live_profile_item(item, **clipping):
+    prof = config.default_profile()
+    prof.clipping = replace(prof.clipping, **clipping)
+    return {**item, "profile": prof.to_dict()}
+
+
+@pytest.fixture
+def priority_log(monkeypatch):
+    """Records when this thread goes below normal priority and back, instead of touching the real thread."""
+    from baitd.live import signals
+    state = {"low": False, "log": []}
+    monkeypatch.setattr(signals, "below_normal_thread", lambda: (state.update(low=True), state["log"].append("low")))
+    monkeypatch.setattr(signals, "_normal_thread", lambda before: (state.update(low=False), state["log"].append("normal")))
+    return state
+
+
+def test_live_export_transcribes_with_the_export_time_profile(tmp_data, tmp_path, providers, make_mp4, monkeypatch):
+    aid = _live_analysis(make_mp4)
+    _rendered(monkeypatch)
+    item = _live_profile_item(_export_item(aid), transcriber="openai", whisper_model="medium", language="en")
+    pipeline.run_clip_export(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    (call,) = providers.seen["calls"]
+    assert (call["provider"], call["model"], call["language"]) == ("openai", "medium", "en")
+
+
+def test_live_title_transcribes_with_the_export_time_profile(tmp_data, tmp_path, providers, make_mp4):
+    aid = _live_analysis(make_mp4, start=1.5, end=12.3)
+    providers.complete = _title_reply
+    item = _live_profile_item(_item("live_title", {"analysis_id": aid}), whisper_model="large-v3", language="es")
+    pipeline.run_live_title(item, _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    (call,) = providers.seen["calls"]
+    assert (call["provider"], call["model"], call["language"]) == ("local", "large-v3", "es")
+
+
+def test_live_export_transcribes_with_two_threads_on_a_low_priority_thread(
+        tmp_data, tmp_path, providers, make_mp4, monkeypatch, priority_log):
+    aid = _live_analysis(make_mp4)
+    _rendered(monkeypatch)
+    during = []
+    real = providers.transcribe
+
+    def watch(*a, **kw):
+        during.append(priority_log["low"])
+        return real(*a, **kw)
+
+    providers.transcribe = watch
+    faces = providers.detect_faces
+    providers.detect_faces = lambda *a: (during.append(("faces", priority_log["low"])), faces(*a))[1]
+    pipeline.run_clip_export(_export_item(aid), _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert providers.seen["calls"][0]["cpu_threads"] == 2
+    assert during and all(d is True or d[1] is True for d in during)  # transcription and face detection
+    assert priority_log["log"] == ["low", "normal"] and priority_log["low"] is False  # restored afterwards
+
+
+def test_live_title_transcribes_with_two_threads_on_a_low_priority_thread(
+        tmp_data, tmp_path, providers, make_mp4, priority_log):
+    aid = _live_analysis(make_mp4, start=1.5, end=12.3)
+    providers.complete = _title_reply
+    pipeline.run_live_title(_item("live_title", {"analysis_id": aid}), _settings(tmp_path), threading.Event(),
+                            lambda *a: None, providers)
+    assert providers.seen["calls"][0]["cpu_threads"] == 2
+    assert priority_log["log"] == ["low", "normal"]
+
+
+def test_ordinary_export_keeps_normal_priority_and_default_threads(
+        tmp_data, tmp_path, providers, monkeypatch, priority_log):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    _rendered(monkeypatch)
+    pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem,
+                                                   "moments": pipeline.load_analysis(path.stem)["moments"]}),
+                             _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert priority_log["log"] == [] and "cpu_threads" not in providers.seen["calls"][0]

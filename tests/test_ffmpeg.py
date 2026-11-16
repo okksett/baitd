@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 import time
@@ -65,3 +66,117 @@ def test_probe_ignores_cover_art(tmp_path):
     info = probe(mp3)
     assert (info["width"], info["height"], info["fps"]) == (None, None, None)
     assert abs(info["duration"] - 2.0) < 0.2
+
+
+def test_low_priority_flag(monkeypatch):
+    import os
+    import sys
+
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        seen.update(kw)
+        return real_popen(*a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run(["-version"], low_priority=True)
+    if sys.platform == "win32":
+        assert seen["creationflags"] & 0x4000
+        assert seen["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    seen.clear()
+    run(["-version"])
+    if sys.platform == "win32":
+        assert not seen["creationflags"] & 0x4000
+    assert "preexec_fn" not in seen
+
+
+def _scope_is_low():
+    import sys
+
+    from baitd import ffmpeg
+    kw = ffmpeg.popen_kwargs()
+    return bool(kw["creationflags"] & 0x4000) if sys.platform == "win32" else ffmpeg.is_low()
+
+
+def test_low_priority_scope_nests_and_restores():
+    from baitd import ffmpeg
+    assert _scope_is_low() is False
+    with ffmpeg.low_priority():
+        assert _scope_is_low() is True
+        with ffmpeg.low_priority(False):
+            assert _scope_is_low() is False
+        assert _scope_is_low() is True
+        with pytest.raises(ValueError):
+            with ffmpeg.low_priority(False):
+                raise ValueError("boom")
+        assert _scope_is_low() is True  # restored after the exception
+    assert _scope_is_low() is False
+    with pytest.raises(ValueError):
+        with ffmpeg.low_priority():
+            raise ValueError("boom")
+    assert _scope_is_low() is False
+
+    other = []
+    with ffmpeg.low_priority():
+        t = threading.Thread(target=lambda: other.append(_scope_is_low()))
+        t.start()
+        t.join()
+    assert other == [False]  # the scope is per thread
+
+
+def test_run_follows_the_scope_unless_told(monkeypatch):
+    import sys
+
+    from baitd import ffmpeg
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        seen.update(kw)
+        return real_popen(*a, **kw)
+
+    def low():
+        return bool(seen["creationflags"] & 0x4000) if sys.platform == "win32" else bool(nice)
+
+    nice = []
+    monkeypatch.setattr(ffmpeg, "_set_nice", lambda pid: nice.append(pid))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    with ffmpeg.low_priority():
+        run(["-version"])
+        assert low() is True
+        seen.clear()
+        nice.clear()
+        run(["-version"], low_priority=False)  # an explicit value wins
+        assert low() is False
+    seen.clear()
+    run(["-version"], low_priority=True)
+    assert low() is True
+
+
+def test_posix_low_priority_uses_setpriority_after_start_not_preexec_fn(monkeypatch):
+    from baitd import ffmpeg
+    calls = []
+    monkeypatch.setattr(ffmpeg, "_IS_WIN", False)
+    monkeypatch.setattr(os, "PRIO_PROCESS", 0, raising=False)
+    monkeypatch.setattr(os, "setpriority", lambda which, pid, prio: calls.append((which, prio)), raising=False)
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        seen.update(kw)
+        return real_popen(*a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run(["-version"], low_priority=True)
+    assert "preexec_fn" not in seen
+    assert calls == [(0, 10)]
+    calls.clear()
+    run(["-version"], low_priority=False)
+    assert calls == []
+    # an error from setpriority is ignored
+    def boom(*a):
+        raise PermissionError
+    monkeypatch.setattr(os, "setpriority", boom, raising=False)
+    run(["-version"], low_priority=True)

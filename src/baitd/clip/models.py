@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..models import Word
 
-__all__ = ["KINDS", "FRAMINGS", "TRANSCRIBERS", "WHISPER_MODELS", "ClipProfile", "SourceInfo", "Transcript", "Moment"]
+__all__ = ["KINDS", "FRAMINGS", "BADGES", "TRANSCRIBERS", "WHISPER_MODELS", "ClipProfile", "SourceInfo", "Transcript", "Moment"]
 
 KINDS = ("gracioso", "interesante", "polemico", "historia")  # moment types; "todos" = all
-FRAMINGS = ("cara", "centro", "completo")
+FRAMINGS = ("cara", "centro", "completo", "partido")
+BADGES = ("kick", "twitch", "youtube")  # platform badge on clips cut from other channels' streams
 TRANSCRIBERS = ("openai", "local")
 WHISPER_MODELS = ("small", "medium", "large-v3")
 
@@ -144,6 +145,8 @@ class Moment:
     text: str  # transcript text of the span
     framing: str = "cara"
     credit: str = ""  # user-edited credit text; "" = auto "Fuente: @<channel>"
+    badge: str = ""  # "" or one of BADGES
+    cam: list[int] | None = None  # [x, y, w, h] of the streamer's webcam in the source frame, or None
 
     def to_dict(self) -> dict:
         return asdict(self)

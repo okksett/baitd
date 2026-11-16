@@ -25,7 +25,9 @@ datas += collect_data_files("faster_whisper")                # VAD asset (silero
 
 # Clipping: yt-dlp extractors are imported dynamically, ctranslate2 ships native libs.
 hiddenimports = (collect_submodules("baitd") + collect_submodules("yt_dlp") + collect_submodules("faster_whisper")
-                 + collect_submodules("yt_dlp_ejs"))
+                 + collect_submodules("yt_dlp_ejs") + collect_submodules("aiohttp"))   # aiohttp: the live chat readers
+if sys.platform != "win32":
+    hiddenimports += collect_submodules("pynput")   # the global hotkey away from Windows (it picks its backend by import)
 binaries = collect_dynamic_libs("ctranslate2")
 # YouTube needs a JavaScript runtime for its challenges: Deno (from the `deno` wheel) goes in
 # _MEIPASS/deno/, where ytdlp_loader.deno_path() looks; yt-dlp's solver scripts are package data.

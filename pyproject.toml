@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "flask",
+    "aiohttp>=3.9,<4",         # the live chat readers (websockets and polling)
     "requests",
     "edge-tts>=7.3,<8",
     "imageio-ffmpeg>=0.8",
@@ -23,6 +24,7 @@ dependencies = [
     "faster-whisper>=1.2,<2",
     "opencv-python-headless>=5,<6",
     "numpy>=2,<3",
+    "pynput>=1.7.6,<2; sys_platform != 'win32'",  # the global hotkey on macOS and Linux (Windows uses user32)
 ]
 
 [project.optional-dependencies]
@@ -40,7 +42,7 @@ baitd = ["assets/fonts/*.ttf", "assets/fonts/LICENSES/*", "assets/music/*/*.mp3"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider -m \"not network\""
 pythonpath = ["src"]
 markers = ["network: tests that need internet access"]
 

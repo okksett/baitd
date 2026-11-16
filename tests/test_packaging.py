@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,3 +32,18 @@ def test_icon_files_exist():
 def test_installer_does_not_restart_applications():
     # the Check: IsUpdate [Run] entry reopens Baitd; Restart Manager must not open it a second time
     assert "RestartApplications=no" in (PACKAGING / "baitd.iss").read_text("utf-8")
+
+
+def test_spec_collects_live_dependencies():
+    spec = (PACKAGING / "baitd.spec").read_text("utf-8")
+    assert 'collect_submodules("aiohttp")' in spec
+    assert 'collect_submodules("pynput")' in spec
+    # pynput is only needed (and only installed) away from Windows
+    assert re.search(r'if sys\.platform != "win32":\s*\n\s*hiddenimports \+= collect_submodules\("pynput"\)', spec)
+
+
+def test_pyproject_lists_live_dependencies():
+    text = (ROOT / "pyproject.toml").read_text("utf-8")
+    deps = text.split("dependencies = [", 1)[1].split("]", 1)[0]
+    assert '"aiohttp>=3.9,<4"' in deps
+    assert "pynput" in deps and "sys_platform != 'win32'" in deps.split("pynput", 1)[1].split("\n", 1)[0]

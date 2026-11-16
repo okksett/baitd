@@ -307,3 +307,100 @@ def test_scene_cuts_finds_a_hard_cut(tmp_path):
                      width=320, height=180, fps=15.0, has_video=True)
     cuts = framing.scene_cuts(src, 0, 4, None)
     assert len(cuts) == 1 and cuts[0] == pytest.approx(2.0, abs=0.2)
+
+
+# ---------------------------------------------------------------- partido (cam on top, game below)
+
+def _cam_samples(face, share=0.8, n=40):
+    return [(i * 0.25, [face] if i < n * share else []) for i in range(n)]
+
+
+def test_find_cam_bottom_right():
+    box = framing.find_cam(_cam_samples((1650, 850, 90, 90, 0.9)), 1920, 1080, 1080, 768)
+    x, y, w, h = box
+    assert (x + w / 2, y + h / 2) == pytest.approx((1695, 895), abs=4)
+    assert w / h == pytest.approx(1080 / 768, rel=0.01)
+    assert x >= 0 and y >= 0 and x + w <= 1920 and y + h <= 1080
+    assert all(v % 2 == 0 for v in box)
+
+
+def test_find_cam_clamps_inside_the_frame():
+    x, y, w, h = framing.find_cam(_cam_samples((1820, 960, 90, 90, 0.9)), 1920, 1080, 1080, 768)
+    assert x + w <= 1920 and y + h <= 1080 and x >= 0 and y >= 0
+
+
+def test_find_cam_centre_face_is_none():
+    assert framing.find_cam(_cam_samples((900, 400, 90, 90, 0.9)), 1920, 1080, 1080, 768) is None
+
+
+def test_find_cam_rare_face_is_none():
+    assert framing.find_cam(_cam_samples((1650, 850, 90, 90, 0.9), share=0.4), 1920, 1080, 1080, 768) is None
+
+
+def test_find_cam_big_face_is_none():
+    # a corner face covering 10% of the frame is the streamer's whole shot, not a cam
+    assert framing.find_cam(_cam_samples((1500, 700, 450, 450, 0.9)), 1920, 1080, 1080, 768) is None
+
+
+def test_find_cam_no_faces_is_none():
+    assert framing.find_cam([(0.0, [])], 1920, 1080, 1080, 768) is None
+
+
+def test_plan_partido_uses_user_cam(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("detection must not run")
+    monkeypatch.setattr(framing, "detect_faces", boom)
+    monkeypatch.setattr(framing, "scene_cuts", boom)
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, cam=[1501, 761, 379, 269])
+    assert plan.mode == "partido"
+    assert plan.cam == (1500, 760, 378, 268)  # made even
+    assert plan.game == ((1920 - 1012) // 2, 0, 1012, 1080)  # the centre of the frame (R7)
+
+
+def test_plan_partido_clamps_a_cam_that_sticks_out(monkeypatch):
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, cam=[1800, 1000, 400, 300])
+    x, y, w, h = plan.cam
+    assert x + w <= 1920 and y + h <= 1080
+
+
+def test_plan_partido_detects_the_cam_when_not_given():
+    faces = _cam_samples((1650, 850, 90, 90, 0.9))
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, faces=faces)
+    assert plan.mode == "partido" and plan.cam is not None
+
+
+def test_plan_partido_works_from_720p():
+    plan = plan_crop(_src(1280, 720), 0, 10, 1080, 1920, "partido", None, cam=[1000, 500, 200, 142])
+    assert plan.mode == "partido" and plan.game == (303, 0, 674, 720)
+
+
+def test_plan_partido_without_cam_falls_back_to_cara():
+    faces = _samples(40, lambda i: [_box(900)])  # a centred face: no corner cam
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, faces=faces, cuts=[])
+    assert plan.mode == "cara" and plan.cam is None and plan.game is None
+    plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, faces=_samples(40, lambda i: []), cuts=[])
+    assert plan.mode == "cara"
+
+
+def test_plan_partido_portrait_source_goes_down_the_cara_path():
+    plan = plan_crop(_src(1080, 1920), 0, 10, 1080, 1920, "partido", None, cam=[10, 10, 200, 140],
+                     faces=_samples(10, lambda i: []), cuts=[])
+    assert plan.mode == "cara" and plan.cam is None
+
+
+def test_plan_partido_game_too_small_to_upscale_falls_back_to_completo():
+    plan = plan_crop(_src(640, 360), 0, 10, 1080, 1920, "partido", None, cam=[500, 280, 100, 70])
+    assert plan.mode == "completo"
+
+
+def test_partido_filter_string():
+    plan = CropPlan("partido", 0, 0, [(0.0, 0)], False, cam=(1500, 760, 378, 268), game=(454, 0, 1012, 1080))
+    assert crop_filter(plan, 1080, 1920) == (
+        "split[pa][pb];[pa]crop=378:268:1500:760,scale=1080:768:flags=lanczos[pt];"
+        "[pb]crop=1012:1080:454:0,scale=1080:1152:flags=lanczos[pg];[pt][pg]vstack")
+
+
+def test_partido_filter_renders_exact_size(make_mp4, tmp_path):
+    src = make_mp4(seconds=3, w=1280, h=720)
+    plan = plan_crop(_src(1280, 720), 0, 3, 1080, 1920, "partido", None, cam=[1000, 500, 200, 142])
+    assert _render(src, plan, tmp_path, "partido.mp4") == (1080, 1920)

@@ -147,7 +147,8 @@ def render_clip(src: SourceInfo, m: Moment, words: list[Word], plan: CropPlan | 
         credit = m.credit or (f"Fuente: {src.channel}" if clipping.credit and src.channel else "")
         captions.write_clip_ass(
             remap_words(words, segs), style, w, h, workdir / ass_name, fonts,
-            top_text=m.title if clipping.hook_title else "", top_until=3.0, credit=credit)
+            top_text=m.title if clipping.hook_title else "", top_until=3.0, credit=credit,
+            credit_badge=m.badge if credit else "")
 
         # pass 2: video
         music = audio.pick_track(profile.music) if clipping.music else None

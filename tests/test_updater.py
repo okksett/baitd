@@ -224,7 +224,7 @@ def _serve(monkeypatch, check_updates):
         def close(self):
             pass
 
-    monkeypatch.setattr(entry, "build_server", lambda port, queue: FakeServer())
+    monkeypatch.setattr(entry, "build_server", lambda port, queue, live=None: FakeServer())
     monkeypatch.setattr(entry.webbrowser, "open", lambda url: None)
     args = entry.argparse.Namespace(no_browser=True, port=None)
     lock = type("L", (), {"write_url": lambda self, url: None})()

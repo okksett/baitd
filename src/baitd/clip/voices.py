@@ -34,8 +34,7 @@ def load_audio(path, start: float, end: float, cancel: threading.Event | None = 
     out = subprocess.run(
         [ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, start):.3f}",
          "-to", f"{end:.3f}", "-i", str(path), "-vn", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"],
-        capture_output=True, stdin=subprocess.DEVNULL, check=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        capture_output=True, stdin=subprocess.DEVNULL, check=True, **ffmpeg.popen_kwargs())
     return np.frombuffer(out.stdout, dtype=np.int16).astype(np.float32) / 32768
 
 

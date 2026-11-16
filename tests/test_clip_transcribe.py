@@ -127,7 +127,7 @@ def test_local_hands_whisper_decoded_audio_not_a_path(monkeypatch, make_wav):
             seg = NS(end=3.0, words=[NS(word=f" w{i}", start=i * 0.1, end=i * 0.1 + 0.05) for i in range(20)])
             return iter([seg]), NS(language="es", duration=3.0)
 
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: M())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: M())
     transcribe.local_words(make_wav(seconds=3), None, "small", threading.Event(), lambda p: None)
     assert len(seen) == 1
     audio = seen[0]
@@ -139,7 +139,7 @@ def test_local_hands_whisper_decoded_audio_not_a_path(monkeypatch, make_wav):
 def test_local_uses_fake_model_and_progress(monkeypatch, make_wav):
     M = _fake_model()
     loaded = []
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: loaded.append(m) or M())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: loaded.append(m) or M())
     progress = []
     t = transcribe.local_words(make_wav(seconds=30), None, "small", threading.Event(), progress.append)
     assert loaded == ["small"]
@@ -150,7 +150,7 @@ def test_local_uses_fake_model_and_progress(monkeypatch, make_wav):
 
 
 def test_local_model_failure_maps_to_user_error(monkeypatch, make_wav):
-    def boom(m):
+    def boom(m, threads=None):
         raise OSError("net down")
     monkeypatch.setattr(transcribe, "_load_model", boom)
     with pytest.raises(UserError) as e:
@@ -162,7 +162,7 @@ def test_local_model_failure_maps_to_user_error(monkeypatch, make_wav):
 
 def test_no_speech_raises(monkeypatch, make_wav):
     wav = make_wav(seconds=5)
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: _fake_model(words_per_seg=3, segs=2)())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: _fake_model(words_per_seg=3, segs=2)())
     with pytest.raises(UserError) as e:
         transcribe.local_words(wav, None, "small", threading.Event(), lambda p: None)
     assert e.value.cause == "No se encontraron momentos con habla en este video"
@@ -188,14 +188,14 @@ def test_cancel_between_chunks_and_segments(monkeypatch, make_wav):
 
     cancel2 = threading.Event()
     monkeypatch.setattr(transcribe, "_load_model",
-                        lambda m: _fake_model(on_seg=lambda s: cancel2.set() if s == 1 else None)())
+                        lambda m, threads=None: _fake_model(on_seg=lambda s: cancel2.set() if s == 1 else None)())
     with pytest.raises(JobCancelled):
         transcribe.local_words(wav, None, "small", cancel2, lambda p: None)
 
 
 def test_dispatch_and_models_dir(monkeypatch, make_wav, tmp_data):
     assert transcribe.models_dir().name == "modelos"
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: _fake_model()())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: _fake_model()())
     t = transcribe.transcribe(make_wav(seconds=3), "local", None, {}, "small", threading.Event(), lambda p: None)
     assert len(t.words) == 30
     with pytest.raises(ValueError):
@@ -214,7 +214,7 @@ def test_local_windows_offsets_language_and_cancel(monkeypatch, make_wav):
             return iter([NS(end=5.0, words=ws)]), NS(language="fr", duration=60.0)
 
     loads = []
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: loads.append(m) or M())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: loads.append(m) or M())
     progress = []
     t = transcribe.local_words(wav, None, "small", threading.Event(), progress.append)
     assert loads == ["small"] and seen == [None, "fr", "fr"]
@@ -229,7 +229,7 @@ def test_local_windows_offsets_language_and_cancel(monkeypatch, make_wav):
             cancel.set()
             return super().transcribe(path, **kw)
 
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: C())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: C())
     seen.clear()
     with pytest.raises(JobCancelled):
         transcribe.local_words(wav, None, "small", cancel, lambda p: None)
@@ -246,7 +246,7 @@ def test_no_tiny_final_chunk(monkeypatch):
 def test_local_model_load_is_announced_and_cancellable(monkeypatch, make_wav):
     wav = make_wav(seconds=3)
     events = []
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: events.append("load") or _fake_model()())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: events.append("load") or _fake_model()())
     t = transcribe.local_words(wav, None, "small", threading.Event(), lambda p: None,
                                on_model_load=lambda loading: events.append(loading))
     assert events == [True, "load", False] and len(t.words) == 30  # the step shows "downloading" around the load
@@ -266,13 +266,42 @@ def test_local_model_load_is_announced_and_cancellable(monkeypatch, make_wav):
             used.append(path)
             return iter([]), NS(language="en", duration=3.0)
 
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: cancel2.set() or M())  # cancelled during the load
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: cancel2.set() or M())  # cancelled during the load
     with pytest.raises(JobCancelled):
         transcribe.local_words(wav, None, "small", cancel2, lambda p: None)
     assert used == []
     # the dispatcher passes the hook through
-    monkeypatch.setattr(transcribe, "_load_model", lambda m: _fake_model()())
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: _fake_model()())
     events.clear()
     transcribe.transcribe(wav, "local", None, {}, "small", threading.Event(), lambda p: None,
                           on_model_load=events.append)
     assert events == [True, False]
+
+
+def test_cpu_threads_reach_the_model(monkeypatch, make_wav):
+    wav = make_wav(seconds=3)
+    seen = []
+    monkeypatch.setattr(transcribe, "_load_model", lambda m, threads=None: seen.append((m, threads)) or _fake_model()())
+    transcribe.transcribe(wav, "local", None, {}, "small", threading.Event(), lambda p: None, cpu_threads=2)
+    transcribe.transcribe(wav, "local", None, {}, "small", threading.Event(), lambda p: None)
+    assert seen == [("small", 2), ("small", None)]
+
+
+def test_models_are_cached_by_name_and_threads(monkeypatch, tmp_data):
+    import sys
+    made = []
+
+    class WhisperModel:
+        def __init__(self, model, **kw):
+            made.append((model, kw.get("cpu_threads")))
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", NS(WhisperModel=WhisperModel))
+    monkeypatch.setattr(transcribe, "_MODELS", {})
+    a = transcribe._load_model("small", 2)
+    assert transcribe._load_model("small", 2) is a  # the live model stays loaded
+    b = transcribe._load_model("small")
+    c = transcribe._load_model("small")  # an export loads its own and lets it go
+    assert b is not a and c is not b
+    transcribe._load_model("medium", 2)
+    assert made == [("small", 2), ("small", None), ("small", None), ("medium", 2)]
+    assert set(transcribe._MODELS) == {("small", 2), ("medium", 2)}

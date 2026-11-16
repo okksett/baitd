@@ -1,6 +1,6 @@
-"""Clipping jobs for the queue: auto (link -> clips), analyze (link -> candidate moments on disk) and
-export (chosen moments -> clips). Every network- or model-facing step can be replaced through
-ClipProviders, so the self-test and the tests run offline."""
+"""Clipping jobs for the queue: auto (link -> clips), analyze (link -> candidate moments on disk), export
+(chosen moments -> clips) and live_title (the AI's title for a saved live moment). Every network- or
+model-facing step can be replaced through ClipProviders, so the self-test and the tests run offline."""
 from __future__ import annotations
 
 import json
@@ -11,28 +11,30 @@ import secrets
 import shutil
 import tempfile
 import threading
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .. import config, ffmpeg
+from .. import config, ffmpeg, llm
 from ..models import JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
 from . import framing, sources, transcribe, voices
-from .models import FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
-from .moments import _sentences, find_moments
+from .models import BADGES, FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
+from .moments import _sentences, find_moments, snap_to_sentences
 from .render import clip_fps, render_clip
 
 __all__ = ["CLIP_STEPS", "CLIP_STEP_LABELS", "MODEL_STEP", "CLIP_JOB_KINDS", "ClipProviders", "analyses_dir",
-           "run_clip_auto", "run_clip_analyze", "run_clip_export", "load_analysis", "delete_analysis"]
+           "run_clip_auto", "run_clip_analyze", "run_clip_export", "run_live_title", "load_analysis",
+           "delete_analysis"]
 
 log = logging.getLogger(__name__)
 
 CLIP_STEPS = ("source", "transcribe", "moments", "framing", "render")
 MODEL_STEP = "model"  # step 2's text while the local whisper model loads (downloaded on first use)
 CLIP_STEP_LABELS = (*CLIP_STEPS, MODEL_STEP)  # every step name a clip job can show (step.<name> in i18n)
-CLIP_JOB_KINDS = ("clip_auto", "clip_analyze", "clip_export")
+CLIP_JOB_KINDS = ("clip_auto", "clip_analyze", "clip_export", "live_title")
 _TOTAL = len(CLIP_STEPS)
 _DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
 _ID = re.compile(r"[0-9a-f]{12}")
@@ -92,10 +94,18 @@ def _moment_from_dict(d) -> Moment:
     framing_ = d.get("framing", "cara")
     if framing_ not in FRAMINGS:
         raise ValueError("bad framing")
+    badge = d.get("badge", "")
+    if not isinstance(badge, str) or badge not in ("", *BADGES):
+        raise ValueError("bad badge")
+    cam = d.get("cam")
+    if cam is not None and not (isinstance(cam, list) and len(cam) == 4
+                                and all(type(v) is int and v >= 0 for v in cam)):
+        raise ValueError("cam must be null or four non-negative integers")
     return Moment(start=start, end=end, kind=_text(d, "kind", "interesante"),
                   score=round(_num(d.get("score", 0))), title=_text(d, "title"),
                   description=_text(d, "description"), hashtags=list(tags), text=_text(d, "text"),
-                  framing=framing_, credit=_text(d, "credit"))
+                  framing=framing_, credit=_text(d, "credit"), badge=badge,
+                  cam=None if cam is None else list(cam))
 
 
 def _transcript_from_dict(d) -> Transcript:
@@ -276,22 +286,56 @@ def _save_transcript(src: SourceInfo, key: list, transcript: Transcript) -> None
         log.warning("No se pudo guardar la transcripción de %s", src.id)
 
 
+LIVE_CPU_THREADS = 2  # the local transcriber's threads for a live moment: a stream may be running on this PC
+
+
+def _live_scope() -> ExitStack:
+    """What a live moment's export or AI title runs inside (spec §4): FFmpeg and this job thread (face
+    detection runs on it too) below normal priority. The thread's priority comes back afterwards."""
+    from ..live import signals  # the live package imports this module
+    stack = ExitStack()
+    stack.enter_context(ffmpeg.low_priority())
+    stack.enter_context(signals.below_normal_scope())
+    return stack
+
+
+def _live_opts(stored: ClipProfile, profile: Profile) -> ClipProfile:
+    """A live moment's analysis keeps a default ClipProfile (nothing was transcribed when it was saved): the
+    transcriber, Whisper model and language are the ones the profile has now, at export or title time."""
+    c = profile.clipping
+    return replace(stored, transcriber=c.transcriber, whisper_model=c.whisper_model, language=c.language)
+
+
+def _transcribe(src: SourceInfo, opts: ClipProfile, settings: dict, cancel: threading.Event, steps: _Steps,
+                providers: ClipProviders, *, audio: Path | None = None, cpu_threads: int | None = None) -> Transcript:
+    """Step 2: the source's transcript, read back from the source folder when it was made with the same
+    settings. `audio` is where to extract the sound for a caller that needs it afterwards (it is then always
+    extracted); without it the sound goes to a temp file, and only when there is no saved transcript."""
+    steps.begin(2)
+    if audio is not None:
+        sources.extract_audio(src, audio, cancel)
+    language = None if opts.language == "auto" else opts.language
+    key = _transcript_key(opts, language)
+    transcript = _saved_transcript(src, key)
+    if transcript is None:
+        with tempfile.TemporaryDirectory(prefix="baitd-clip-") as tmp:
+            wav = audio if audio is not None else sources.extract_audio(src, Path(tmp) / "audio.wav", cancel)
+            extra = {"cpu_threads": cpu_threads} if cpu_threads else {}
+            transcript = (providers.transcribe or transcribe.transcribe)(
+                wav, opts.transcriber, language, settings, opts.whisper_model, cancel,
+                lambda f: steps.frac(2, f),
+                on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0), **extra)
+        _save_transcript(src, key, transcript)
+    steps.end(2)
+    return transcript
+
+
 def _understand(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: dict, cancel: threading.Event,
                 steps: _Steps, providers: ClipProviders, want: int) -> tuple[Transcript, list[Moment]]:
     """Steps 2 and 3: audio + transcript, then the ranked moments. Big files live in a temp folder."""
     with tempfile.TemporaryDirectory(prefix="baitd-clip-") as tmp:
-        steps.begin(2)
-        audio = sources.extract_audio(src, Path(tmp) / "audio.wav", cancel)  # the moments step needs it too
-        language = None if opts.language == "auto" else opts.language
-        key = _transcript_key(opts, language)
-        transcript = _saved_transcript(src, key)
-        if transcript is None:
-            transcript = (providers.transcribe or transcribe.transcribe)(
-                audio, opts.transcriber, language, settings, opts.whisper_model, cancel,
-                lambda f: steps.frac(2, f),
-                on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0))
-            _save_transcript(src, key, transcript)
-        steps.end(2)
+        audio = Path(tmp) / "audio.wav"  # the moments step needs it too
+        transcript = _transcribe(src, opts, settings, cancel, steps, providers, audio=audio)
 
         steps.begin(3)
         moments = find_moments(transcript, audio, opts, profile, settings, want, cancel,
@@ -368,12 +412,12 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
         else:
             mode = m.framing if m.framing in FRAMINGS else opts.framing
             faces = None
-            if providers.detect_faces is not None and mode == "cara":
+            if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and m.cam is None)):
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
-            talk, voice_labels = _talk_and_voices(src, m, words, mode, cancel)
+            talk, voice_labels = (None, None) if mode == "partido" else _talk_and_voices(src, m, words, mode, cancel)
             try:
                 plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces,
-                                               talk=talk, voices=voice_labels))
+                                               talk=talk, voices=voice_labels, cam=m.cam))
             except (JobCancelled, UserError):
                 raise
             except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip
@@ -453,14 +497,25 @@ def release_source_id(source_id, settings: dict, busy: Busy | None) -> None:
 
 def release_analysis(analysis_id, settings: dict, busy: Busy | None) -> None:
     """The finished analyze item that owns this analysis left the queue: the analysis goes unless an unfinished
-    item still needs it, then its source under the same rule as release_source_id."""
+    item still needs it, then its source under the same rule as release_source_id. A live moment never goes
+    this way: removing a queue item leaves it (and its video) in the live list."""
     if not _valid_id(analysis_id) or (busy is not None and analysis_id in busy()[1]):
         return
     file = analyses_dir() / f"{analysis_id}.json"
+    if _is_live(file):  # a live moment belongs to the live list, not to the queue item that used it
+        return
     source_id = _source_of(file) if file.is_file() else None
     delete_analysis(analysis_id)
     if source_id is not None:
         release_source_id(source_id, settings, busy)
+
+
+def _is_live(analysis_file: Path) -> bool:
+    """A moment cut from a live capture: no queue item lists it, yet the user still has to review it."""
+    try:
+        return json.loads(analysis_file.read_text(encoding="utf-8")).get("origin") == "live"
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def sweep(analysis_ids: set[str], source_ids: set[str], keep_sources: bool) -> None:
@@ -469,7 +524,7 @@ def sweep(analysis_ids: set[str], source_ids: set[str], keep_sources: bool) -> N
     remaining analysis needs. Partial uploads and downloads (no meta.json: never finished before this start)
     go even when sources are kept, since they are not sources yet."""
     for f in analyses_dir().glob("*.json"):
-        if _valid_id(f.stem) and f.stem not in analysis_ids:
+        if _valid_id(f.stem) and f.stem not in analysis_ids and not _is_live(f):
             delete_analysis(f.stem)
     needed = set(source_ids) | {_source_of(f) for f in analyses_dir().glob("*.json")}
     for d in sources.sources_dir().iterdir():
@@ -580,8 +635,11 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
             delete_analysis(payload.get("analysis_id"))  # useless without its source
             raise _original_gone() from None
         # the extras follow what the user sees at export time; the rest is what the analysis was made with
+        live = analysis.get("origin") == "live"
         opts = replace(ClipProfile.from_dict(analysis["profile"]), hook_title=profile.clipping.hook_title,
                        credit=profile.clipping.credit, music=profile.clipping.music)
+        if live:  # a live moment was never transcribed: it is, with the settings the user has now
+            opts = _live_opts(opts, profile)
         transcript = _transcript_from_dict(analysis["transcript"])
         raw = payload.get("moments")
         if not isinstance(raw, list) or not 1 <= len(raw) <= _MAX_EXPORT:
@@ -597,12 +655,92 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
-        folder = _open_output(settings, src.title, on_output)
-        _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
-        _write_texts(folder, moments)
+        with _live_scope() if live else nullcontext():  # a capture may be running on this PC
+            if live and not transcript.words:  # not transcribed while capturing
+                transcript = _transcribe(src, opts, settings, cancel, steps, providers,
+                                         cpu_threads=LIVE_CPU_THREADS)
+                _keep_transcript(payload.get("analysis_id"), transcript)
+            if live:  # the user's marks, moved only to the nearest whole sentences
+                for m in moments:
+                    snapped = snap_to_sentences(m.start, m.end, transcript.words, MIN_CLIP_S, MAX_CLIP_S)
+                    if snapped is not None:
+                        m.start, m.end = snapped
+            folder = _open_output(settings, src.title, on_output)
+            _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
+            _write_texts(folder, moments)
     except BaseException:
         _discard(folder, None)
         raise
     shutil.rmtree(folder / ".work", ignore_errors=True)
-    _release_source(src, settings, busy)  # with keep_sources the analysis stays too: the user may export again
+    if live:  # an exported live moment leaves the live list; its video follows keep_sources as any source
+        delete_analysis(payload.get("analysis_id"))
+    _release_source(src, settings, busy)  # with keep_sources an ordinary analysis stays: the user may export again
     return folder
+
+
+def _keep_transcript(analysis_id: str, transcript: Transcript) -> None:
+    """A live moment's transcript goes into its analysis: the next export or AI title reads it back."""
+    from ..live import store  # store imports this module
+    store.update_moment(analysis_id, transcript=transcript.to_dict())
+
+
+def _no_title() -> UserError:
+    return UserError("La IA no devolvió un título válido", "Inténtalo de nuevo o cambia de modelo en Ajustes")
+
+
+def _silent_moment() -> UserError:
+    return UserError("En este momento no se oye a nadie hablar", "Escribe el título a mano")
+
+
+def run_live_title(item: dict, settings: dict, cancel: threading.Event, progress: ProgressFn,
+                   providers: ClipProviders | None = None, *,
+                   on_output: Callable[[Path], None] | None = None,
+                   on_title: Callable[[str], None] | None = None,
+                   on_source: Callable[[dict], None] | None = None,
+                   busy: Busy | None = None) -> Path:
+    """The AI's kind, title, description and hashtags for one saved live moment (asked for in review). The
+    moment's start and end never change. Returns the analysis file; the source and the analysis stay."""
+    from ..live import ai, store  # store imports this module
+    providers = providers or ClipProviders()
+    profile, _ = _resolve(item, with_overrides=False)
+    analysis_id = _payload(item).get("analysis_id")
+    steps = _Steps(progress, cancel)
+
+    steps.begin(1)
+    analysis = load_analysis(analysis_id)
+    if analysis.get("origin") != "live":
+        raise _original_gone()
+    src = sources.load_source(analysis["source_id"])
+    if on_title is not None:
+        on_title(src.title)
+    opts = _live_opts(ClipProfile.from_dict(analysis["profile"]), profile)
+    transcript = _transcript_from_dict(analysis["transcript"])
+    steps.end(1)
+
+    if not transcript.words:
+        with _live_scope():  # a capture may be running on this PC
+            transcript = _transcribe(src, opts, settings, cancel, steps, providers, cpu_threads=LIVE_CPU_THREADS)
+        _keep_transcript(analysis_id, transcript)
+
+    steps.begin(3)
+    m = analysis["moments"][0]
+    lines = ai.window_lines(transcript.words, m["start"], m["end"])
+    if not lines:
+        raise _silent_moment()
+    language = transcript.language or (opts.language if opts.language != "auto" else "the transcript's own")
+    complete = providers.complete or (lambda p: llm.complete(p, profile, settings, cancel=cancel))
+    verdict = ai.parse_reply(complete(ai.build_prompt(lines, language, want_span=False)), m["start"], m["end"],
+                             want_span=False)
+    if verdict is None or not verdict.title:
+        raise _no_title()
+    steps.end(3)
+
+    fields: dict = {"title": verdict.title, "classified": True}
+    if verdict.description:
+        fields["description"] = verdict.description
+    if verdict.hashtags:
+        fields["hashtags"] = verdict.hashtags
+    if verdict.kind != "nada":
+        fields["kind"] = verdict.kind
+    store.update_moment(analysis_id, **fields)
+    return analyses_dir() / f"{analysis_id}.json"

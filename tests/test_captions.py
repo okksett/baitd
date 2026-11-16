@@ -318,3 +318,35 @@ def test_caja_text_outline_is_nearly_opaque(tmp_path):
     out = tmp_path / "s.ass"
     write_ass(ws("uno dos"), PRESETS["caja_azul"], 0, 1080, 1920, out, FONTS)
     assert styles(out)["Caja_Text"][5] == "&H33000000"
+
+
+def test_credit_badge_drawn(tmp_path):
+    from baitd.captions import _SAFE_MARGIN, write_clip_ass
+    style = PRESETS["poster"]
+    words = ws("hola mundo")
+    plain, no_param, shown = tmp_path / "a.ass", tmp_path / "b.ass", tmp_path / "c.ass"
+    write_clip_ass(words, style, 1080, 1920, plain, FONTS, credit="@canal")
+    write_clip_ass(words, style, 1080, 1920, no_param, FONTS, credit="@canal", credit_badge="")
+    assert plain.read_bytes() == no_param.read_bytes()
+    write_clip_ass(words, style, 1080, 1920, shown, FONTS, credit="@canal", credit_badge="kick")
+    text = shown.read_text(encoding="utf-8")
+    logo = [ln for ln in text.splitlines() if ln.startswith("Dialogue") and ",Credit," in ln and "\\p1" in ln]
+    assert len(logo) == 2 and "&H18FC53&" in logo[0] and all("\\an1" in ln for ln in logo)  # square + black K
+    cred = [ln for ln in text.splitlines() if ",Credit," in ln and "@canal" in ln]
+    assert len(cred) == 1
+    x = int(re.search(r"\\pos\((\d+),", cred[0]).group(1))
+    size = round(style.size * 0.45)  # the credit size in pixels
+    assert x > _SAFE_MARGIN + size
+    # a badge without a credit, or an unknown badge, draws nothing
+    write_clip_ass(words, style, 1080, 1920, shown, FONTS, credit="", credit_badge="kick")
+    assert "\\p1" not in shown.read_text(encoding="utf-8")
+    write_clip_ass(words, style, 1080, 1920, shown, FONTS, credit="@canal", credit_badge="vimeo")
+    assert shown.read_bytes() == plain.read_bytes()
+
+
+@pytest.mark.parametrize("badge,colour", [("twitch", "&HFF4691&"), ("youtube", "&H0000FF&")])
+def test_other_badges_use_their_brand_colour(tmp_path, badge, colour):
+    out = tmp_path / "x.ass"
+    from baitd.captions import write_clip_ass
+    write_clip_ass(ws("hola"), PRESETS["poster"], 1080, 1920, out, FONTS, credit="@x", credit_badge=badge)
+    assert colour in out.read_text(encoding="utf-8")
