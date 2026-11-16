@@ -150,8 +150,10 @@ def fmp4_segments(tmp_path):
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
         "-c:a", "aac", "-shortest",
         "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", str(src / "init.mp4"), "-hls_segment_filename", str(src / "f%d.m4s"),
-        str(src / "index.m3u8"),
+        # a bare name: the muxer puts the init file next to the playlist, and on macOS/Linux it would
+        # prefix an absolute path with the playlist's folder (…/fsrc//tmp/…/init.mp4)
+        "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(src / "f%d.m4s"),
+        (src / "index.m3u8").as_posix(),  # "/" so the muxer finds its folder on Windows too
     ])
     frags = sorted(src.glob("f*.m4s"), key=lambda p: int(p.stem[1:]))
     assert len(frags) == 4
