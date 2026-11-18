@@ -238,6 +238,15 @@
         <span id="c-source-title"></span>
         <button type="button" class="link-btn" id="c-source-remove" data-i18n="clip.source_remove">{{ t("clip.source_remove") }}</button>
       </div>
+      <div class="drop-row">
+        <button type="button" class="pill" id="c-chat-btn" aria-describedby="c-chat-hint" data-i18n="clip.chat_btn">{{ t("clip.chat_btn") }}</button>
+        <span class="hint" id="c-chat-hint" data-i18n="clip.chat_hint">{{ t("clip.chat_hint") }}</span>
+        <input type="file" id="c-chat-file" accept=".json,application/json" hidden>
+      </div>
+      <div id="c-chat" class="source-chip" hidden>
+        <span id="c-chat-title"></span>
+        <button type="button" class="link-btn" id="c-chat-remove" data-i18n="clip.chat_remove">{{ t("clip.chat_remove") }}</button>
+      </div>
     </div>
 
     <div id="clip-settings">

@@ -20,9 +20,9 @@ from typing import Callable
 from .. import config, ffmpeg, llm
 from ..models import JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
-from . import framing, sources, transcribe, voices
+from . import chat_replay, framing, sources, transcribe, voices
 from .models import BADGES, FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
-from .moments import _sentences, find_moments, snap_to_sentences
+from .moments import TITLE_WORDS, _sentences, find_moments, snap_to_sentences
 from .render import clip_fps, render_clip
 
 __all__ = ["CLIP_STEPS", "CLIP_STEP_LABELS", "MODEL_STEP", "CLIP_JOB_KINDS", "ClipProviders", "analyses_dir",
@@ -330,9 +330,118 @@ def _transcribe(src: SourceInfo, opts: ClipProfile, settings: dict, cancel: thre
     return transcript
 
 
+def _chat_of(item: dict, src: SourceInfo) -> list[tuple[float, str]] | None:
+    """The stream's chat: the file the user gave (Twitch), else the replay yt-dlp saved with the video
+    (YouTube). None without one; a saved replay that cannot be read only means no chat."""
+    chat_id = _payload(item).get("chat_id")
+    if chat_id is not None:
+        return chat_replay.load(chat_id)
+    replay = sources.chat_replay_path(src)
+    if replay is None:
+        return None
+    try:
+        return chat_replay.parse(replay.read_text("utf-8"))
+    except (UserError, OSError) as e:
+        log.info("El chat del directo no sirve (%s): se buscan los momentos con la IA", e)
+        return None
+
+
+CHAT_BEFORE_S, CHAT_AFTER_S = 40.0, 30.0  # around a chat peak's 10 s bin: what made the chat react comes first
+_JOIN_SILENCE_S = 1.0  # between windows in the joined audio: longer than a sentence pause, so no sentence spans two
+
+
+def _windows_audio(src: SourceInfo, windows: list[tuple[float, float]], out: Path, cancel: threading.Event
+                   ) -> list[float]:
+    """The windows' sound one after another (with silence between) in one WAV, so the model loads once.
+    Returns where each window starts in it."""
+    import wave
+    starts, frames = [], []
+    for i, (w0, w1) in enumerate(windows):
+        part = out.with_name(f"w{i}.wav")
+        try:
+            ffmpeg.run(["-ss", f"{w0:.3f}", "-t", f"{w1 - w0:.3f}", "-i", str(src.path), "-map", "0:a:0", "-vn",
+                        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(part)], cancel=cancel)
+        except RuntimeError:
+            raise UserError("No se pudo leer el audio del video", "Comprueba que el archivo tiene sonido") from None
+        with wave.open(str(part)) as w:
+            starts.append(sum(len(f) for f in frames) / 2 / 16000)
+            frames.append(w.readframes(w.getnframes()) + b"\0\0" * int(_JOIN_SILENCE_S * 16000))
+        part.unlink()
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"".join(frames))
+    return starts
+
+
+def _understand_chat(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: dict, cancel: threading.Event,
+                     steps: _Steps, providers: ClipProviders, want: int, chat: list[tuple[float, str]]
+                     ) -> tuple[Transcript, list[Moment]]:
+    """Steps 2 and 3 from the chat: only the windows around its peaks are transcribed, and the AI reads each
+    window once for its kind, span and title. Without an answer a peak is still a moment, named by its words."""
+    from ..live import ai  # ai imports this module
+    peaks = [p for p in chat_replay.peaks(chat, want) if p.t < src.duration]
+    if not peaks:
+        raise UserError("El chat de este directo no tiene picos claros",
+                        "Quita el chat y Baitd buscará los momentos con la IA")
+    peaks.sort(key=lambda p: p.t)
+    windows = [(max(0.0, p.t - CHAT_BEFORE_S), min(src.duration, p.t + CHAT_AFTER_S)) for p in peaks]
+    language = None if opts.language == "auto" else opts.language
+    steps.begin(2)
+    with tempfile.TemporaryDirectory(prefix="baitd-clip-") as tmp:
+        wav = Path(tmp) / "audio.wav"
+        starts = _windows_audio(src, windows, wav, cancel)
+        heard = (providers.transcribe or transcribe.transcribe)(
+            wav, opts.transcriber, language, settings, opts.whisper_model, cancel, lambda f: steps.frac(2, f),
+            on_model_load=lambda loading: steps.show(2, MODEL_STEP) if loading else steps.frac(2, 0.0))
+    words = []
+    for w in heard.words:  # back to the video's clock: the window each word starts in
+        k = max(i for i, s in enumerate(starts) if s <= w.start + 1e-6) if w.start >= starts[0] else 0
+        shift = windows[k][0] - starts[k]
+        if w.start + shift < windows[k][1]:  # one placed in the silence after a window belongs to no window
+            words.append(Word(w.text, w.start + shift, min(w.end + shift, windows[k][1])))
+    steps.end(2)
+
+    steps.begin(3)
+    lang = heard.language or language or "the transcript's own"
+    complete = providers.complete or (lambda p: llm.complete(p, profile, settings, cancel=cancel))
+    top = max(p.messages for p in peaks)
+    moments = []
+    for i, (p, (w0, w1)) in enumerate(zip(peaks, windows)):
+        lines = ai.window_lines(words, w0, w1)
+        verdict = None
+        if lines:
+            try:
+                verdict = ai.parse_reply(complete(ai.build_prompt(lines, lang, want_span=True)), w0, w1,
+                                         want_span=True)
+            except JobCancelled:
+                raise
+            except UserError as e:  # no key, quota, blocked: the peak stays, unnamed by the AI
+                log.warning("La IA no respondió por un pico del chat: %s", e.cause)
+        s, e = (verdict.start, verdict.end) if verdict is not None else (w0, w1)
+        s, e = snap_to_sentences(s, e, words, opts.min_s, opts.max_s) or (w0, min(w1, w0 + opts.max_s))
+        text = " ".join(w.text for w in words if s - 1e-6 <= w.start < e)
+        kind = verdict.kind if verdict is not None and verdict.kind != "nada" else (
+            "gracioso" if p.reason == "laughs" else "interesante")
+        moments.append(Moment(
+            start=s, end=e, kind=kind, score=round(100 * p.messages / top),
+            title=(verdict.title if verdict is not None else "") or " ".join(text.split()[:TITLE_WORDS]),
+            description=verdict.description if verdict is not None else "",
+            hashtags=verdict.hashtags if verdict is not None else [], text=text, framing=opts.framing))
+        steps.frac(3, (i + 1) / len(peaks))
+    steps.end(3)
+    return (Transcript(heard.language or (language or ""), words, src.duration),
+            sorted(moments, key=lambda m: -m.score))
+
+
 def _understand(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: dict, cancel: threading.Event,
-                steps: _Steps, providers: ClipProviders, want: int) -> tuple[Transcript, list[Moment]]:
-    """Steps 2 and 3: audio + transcript, then the ranked moments. Big files live in a temp folder."""
+                steps: _Steps, providers: ClipProviders, want: int,
+                chat: list[tuple[float, str]] | None = None) -> tuple[Transcript, list[Moment]]:
+    """Steps 2 and 3: audio + transcript, then the ranked moments. Big files live in a temp folder. With the
+    stream's chat, its peaks pick the moments instead (_understand_chat)."""
+    if chat:
+        return _understand_chat(src, profile, opts, settings, cancel, steps, providers, want, chat)
     with tempfile.TemporaryDirectory(prefix="baitd-clip-") as tmp:
         audio = Path(tmp) / "audio.wav"  # the moments step needs it too
         transcript = _transcribe(src, opts, settings, cancel, steps, providers, audio=audio)
@@ -570,7 +679,8 @@ def run_clip_auto(item: dict, settings: dict, cancel: threading.Event, progress:
             on_title(src.title)
         steps.end(1)
         folder = _open_output(settings, src.title, on_output)
-        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, opts.count)
+        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, opts.count,
+                                         _chat_of(item, src))
         _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
         _write_texts(folder, moments)
     except BaseException:
@@ -601,7 +711,8 @@ def run_clip_analyze(item: dict, settings: dict, cancel: threading.Event, progre
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
-        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, 2 * opts.count)
+        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, 2 * opts.count,
+                                         _chat_of(item, src))
         path = analyses_dir() / f"{secrets.token_hex(6)}.json"
         config._write_json(path, {
             "source_id": src.id, "profile": opts.to_dict(), "transcript": transcript.to_dict(),
@@ -661,6 +772,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
                                          cpu_threads=LIVE_CPU_THREADS)
                 _keep_transcript(payload.get("analysis_id"), transcript)
             if live:  # the user's marks, moved only to the nearest whole sentences
+                if all(_stand_in_title(analysis, m.title) for m in moments):  # "Samulx · 00:10" is no hook
+                    opts = replace(opts, hook_title=False)
                 for m in moments:
                     snapped = snap_to_sentences(m.start, m.end, transcript.words, MIN_CLIP_S, MAX_CLIP_S)
                     if snapped is not None:
@@ -676,6 +789,14 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         delete_analysis(payload.get("analysis_id"))
     _release_source(src, settings, busy)  # with keep_sources an ordinary analysis stays: the user may export again
     return folder
+
+
+def _stand_in_title(analysis: dict, title: str) -> bool:
+    """The name a live moment gets when saved ("<channel> · HH:MM"), still unchanged: no AI title yet and
+    not retyped by the user."""
+    live = analysis.get("live") or {}
+    at = str(live.get("at") or "")  # ISO, local time: the HH:MM the name was made from
+    return not live.get("classified") and len(at) >= 16 and title.endswith(f" · {at[11:16]}")
 
 
 def _keep_transcript(analysis_id: str, transcript: Transcript) -> None:

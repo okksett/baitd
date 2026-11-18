@@ -45,13 +45,14 @@ _M_VALUE = re.compile(r"\bt:\s*(\d+(?:\.\d+)?)\s.*?\bM:\s*(-?\d+(?:\.\d+)?)")
 
 def _sentences(words: list[Word]) -> list[tuple[float, float, int, int]]:
     """(start, end, first word index, last word index) per sentence. A sentence ends after a word
-    whose text ends in . ? ! … (trailing quotes/brackets allowed) or before a pause >= PAUSE_S."""
+    whose text ends in . ? ! (trailing quotes/brackets allowed) or before a pause >= PAUSE_S. An ellipsis
+    ("..." or "…") is no end: Whisper writes one where a speaker hesitates mid-sentence."""
     out: list[tuple[float, float, int, int]] = []
     first = 0
     for i, w in enumerate(words):
         last = i == len(words) - 1
         t = w.text.rstrip(_TRAILING_CLOSERS)
-        ends = bool(t) and t[-1] in _SENTENCE_END
+        ends = bool(t) and t[-1] in _SENTENCE_END and not t.endswith(("...", "…"))
         if last or ends or words[i + 1].start - w.end >= PAUSE_S:
             out.append((words[first].start, w.end, first, i))
             first = i + 1

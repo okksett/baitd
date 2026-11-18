@@ -216,6 +216,22 @@ def test_upload_abort_removes_the_partial_file(client):
         assert client.delete(f"/api/uploads/{bad}", json={}).status_code == 404
 
 
+def test_a_chat_file_goes_with_the_job(client, profile_id, queue):
+    from test_clip_chat import _chat, _twitch_file
+    r = client.post("/api/chats", json={"text": _twitch_file(_chat())})
+    assert r.status_code == 200 and r.get_json()["messages"] == len(_chat())
+    chat_id = r.get_json()["chat_id"]
+    r = client.post("/api/clips", json={"profile_id": profile_id, "mode": "review",
+                                        "url": "https://twitch.tv/videos/1", "chat_id": chat_id})
+    assert r.status_code == 200
+    item = next(i for i in queue._items if i["id"] == r.get_json()["job_id"])
+    assert item["payload"]["chat_id"] == chat_id
+    assert client.post("/api/chats", json={"text": "no es un chat"}).status_code == 400
+    assert client.post("/api/chats", json={}).status_code == 400
+    assert client.post("/api/clips", json={"profile_id": profile_id, "mode": "review",
+                                           "url": "https://twitch.tv/videos/1", "chat_id": "f" * 12}).status_code == 400
+
+
 def test_clips_auto_and_review_create_jobs(client, profile_id, queue, make_mp4):
     r = client.post("/api/clips", json={"profile_id": profile_id, "mode": "auto",
                                         "url": "https://youtube.com/watch?v=abc", "overrides": {"count": 3}})
