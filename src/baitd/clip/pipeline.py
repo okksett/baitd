@@ -661,6 +661,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
                                          cpu_threads=LIVE_CPU_THREADS)
                 _keep_transcript(payload.get("analysis_id"), transcript)
             if live:  # the user's marks, moved only to the nearest whole sentences
+                if all(_stand_in_title(analysis, m.title) for m in moments):  # "Samulx · 00:10" is no hook
+                    opts = replace(opts, hook_title=False)
                 for m in moments:
                     snapped = snap_to_sentences(m.start, m.end, transcript.words, MIN_CLIP_S, MAX_CLIP_S)
                     if snapped is not None:
@@ -676,6 +678,14 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
         delete_analysis(payload.get("analysis_id"))
     _release_source(src, settings, busy)  # with keep_sources an ordinary analysis stays: the user may export again
     return folder
+
+
+def _stand_in_title(analysis: dict, title: str) -> bool:
+    """The name a live moment gets when saved ("<channel> · HH:MM"), still unchanged: no AI title yet and
+    not retyped by the user."""
+    live = analysis.get("live") or {}
+    at = str(live.get("at") or "")  # ISO, local time: the HH:MM the name was made from
+    return not live.get("classified") and len(at) >= 16 and title.endswith(f" · {at[11:16]}")
 
 
 def _keep_transcript(analysis_id: str, transcript: Transcript) -> None:

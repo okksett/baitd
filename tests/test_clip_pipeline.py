@@ -816,6 +816,31 @@ def test_export_snaps_live_bounds(tmp_data, tmp_path, providers, make_mp4, monke
     assert seen == [(2.5, 9.6)]
 
 
+def test_live_export_draws_no_hook_for_the_channel_and_time_name(tmp_data, tmp_path, providers, make_mp4,
+                                                                   monkeypatch):
+    from datetime import datetime
+
+    from baitd.live import store
+    seen = []
+
+    def fake_render(src, m, words, plan, profile, ropts, workdir, out, cancel, on_progress):
+        seen.append((m.title, profile.clipping.hook_title))
+        out.write_bytes(b"x")
+
+    monkeypatch.setattr(pipeline, "render_clip", fake_render)
+    settings = _settings(tmp_path, keep_sources=True)
+    aid = _live_analysis(make_mp4)
+    name = f"Westcol · {datetime.fromtimestamp(1_700_000_000.0):%H:%M}"  # what a mark is called when saved
+    store.update_moment(aid, title=name)
+    pipeline.run_clip_export(_export_item(aid), settings, threading.Event(), lambda *a: None, providers)
+    assert seen == [(name, False)]  # only a stand-in name: no blue title on the video
+    for title, classified in (("Se cae de la silla", False), ("Se cae", True)):  # typed by the user, or the AI's
+        aid = _live_analysis(make_mp4)
+        store.update_moment(aid, title=title, classified=classified)
+        pipeline.run_clip_export(_export_item(aid), settings, threading.Event(), lambda *a: None, providers)
+        assert seen[-1] == (title, True)
+
+
 def test_export_does_not_snap_ordinary_analyses(tmp_data, tmp_path, providers, monkeypatch):
     path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
                                      threading.Event(), lambda *a: None, providers)

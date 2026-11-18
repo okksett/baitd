@@ -79,6 +79,16 @@ def test_snap_never_cuts_mid_sentence():
     assert round(e, 6) in boundaries
 
 
+def test_snap_does_not_end_on_a_trailing_off():
+    # Whisper writes "..." where a speaker hesitates mid-sentence (seen on a live clip: "me decía de que...")
+    texts = "Hola amigos. Me decía de que... ya lo sabía. Otra cosa… sin acabar y más. Fin.".split()
+    words = [Word(w, i * 0.5, i * 0.5 + 0.4) for i, w in enumerate(texts)]
+    s, e = moments.snap_to_sentences(1.1, 2.6, words, 1, 60)  # "Me decía" .. "que..."
+    assert (s, e) == (pytest.approx(1.0), pytest.approx(4.4))  # through "sabía."
+    s, e = moments.snap_to_sentences(5.1, 5.4, words, 1, 60)  # "cosa…"
+    assert (s, e) == (pytest.approx(4.5), pytest.approx(7.4))  # "Otra" through "más."
+
+
 def test_snap_respects_min_max_or_none():
     t = make_transcript()
     # too long: shrink from the end by whole sentences
