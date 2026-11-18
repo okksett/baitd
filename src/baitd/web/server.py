@@ -24,6 +24,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import HTTPException
 
 from .. import __version__, audio, captions, config, llm, tts, updater
+from ..clip import chat_replay as clip_chat
 from ..clip import pipeline as clip_pipeline
 from ..clip import sources as clip_sources
 from ..clip import ytdlp_loader
@@ -759,9 +760,22 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
             source = {"url": url}
         else:
             source = {"source_id": clip_sources.load_source(source_id).id}
-        job_id = queue.add_clip_job("clip_auto" if mode == "auto" else "clip_analyze",
-                                    {"source": source, "overrides": overrides}, profile)
+        payload = {"source": source, "overrides": overrides}
+        chat_id = data.get("chat_id")
+        if chat_id is not None:
+            clip_chat.load(chat_id)  # a bad or missing id fails here, not hours into the job
+            payload["chat_id"] = chat_id
+        job_id = queue.add_clip_job("clip_auto" if mode == "auto" else "clip_analyze", payload, profile)
         return jsonify(job_id=job_id)
+
+    @app.post("/api/chats")
+    def post_chat():
+        """The chat file of a finished stream (TwitchDownloader's JSON), read once and kept small."""
+        text = _body().get("text")
+        if not isinstance(text, str):
+            raise UserError("Falta el archivo del chat", "Elige el archivo .json del chat")
+        messages = clip_chat.parse(text)
+        return jsonify(chat_id=clip_chat.save(messages), messages=len(messages))
 
     def analysis_or_404(analysis_id: str) -> dict:
         if not _ID.fullmatch(analysis_id) or not (clip_pipeline.analyses_dir() / f"{analysis_id}.json").is_file():

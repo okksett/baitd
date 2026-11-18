@@ -53,6 +53,7 @@
     tab: "short",
     clip: {
       source: null, // uploaded file: {source_id, title, duration, has_video, unused}
+      chat: null, // a stream's chat file read by the server: {chat_id, messages}
       upload: null, // upload in flight: {id, xhr, cancelled}
       watch: new Set(), // clip_analyze jobs started from this page: their review opens when done
       review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
@@ -591,6 +592,7 @@
     $("#clip-find").disabled = busy;
     $("#clip-create").disabled = busy;
     $("#c-file-btn").disabled = busy;
+    $("#c-chat-btn").disabled = busy;
     $("#clip-discard").disabled = busy;
     $$("#moment-list .m-remove").forEach((b) => { b.disabled = busy; });
     renderExportState();
@@ -939,6 +941,26 @@
     $("#c-url").disabled = false;
   }
 
+  // A finished stream's chat (TwitchDownloader's JSON): its peaks pick the moments instead of the AI.
+  function setChat(chat) {
+    state.clip.chat = chat;
+    $("#c-chat").hidden = !chat;
+    if (chat) $("#c-chat-title").textContent = tr("clip.chat_loaded", { n: chat.messages.toLocaleString() });
+  }
+
+  async function readChat(file) {
+    if (!file) return;
+    showError($("#clip-error"), null);
+    $("#c-chat").hidden = false;
+    $("#c-chat-title").textContent = tr("clip.chat_reading");
+    try {
+      setChat(await api("POST", "/api/chats", { text: await file.text() }));
+    } catch (e) {
+      setChat(null);
+      showError($("#clip-error"), e);
+    }
+  }
+
   // An upload no job has used yet is also deleted on the server; the server refuses (409) if something needs it.
   function dropSource() {
     const s = state.clip.source;
@@ -1110,6 +1132,7 @@
       state.clip.settingsBad = Boolean(problem);
       if (problem) throw new Error(problem);
       if (state.clip.source) body.source_id = state.clip.source.source_id;
+      if (state.clip.chat) body.chat_id = state.clip.chat.chat_id;
       else if (!url) throw new Error(tr("err.clip_source"));
       else body.url = url; // the server fixes "youtu.be/x" or "Mira este video https://…" and says if it is no link
       body.overrides = { ...state.current.clipping }; // what the screen shows, even if the save lags or failed
@@ -1123,6 +1146,7 @@
       $("#clip-status").textContent = tr(mode === "review" ? "clip.analyzing" : "clip.added");
       $("#c-url").value = "";
       clearSource();
+      setChat(null);
       refreshJobs();
     } catch (e) {
       showError($("#clip-error"), e);
@@ -2636,6 +2660,13 @@
       startUpload(file);
     });
     $("#upload-cancel").addEventListener("click", cancelUpload);
+    $("#c-chat-btn").addEventListener("click", () => $("#c-chat-file").click());
+    $("#c-chat-file").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      e.target.value = ""; // the same file can be chosen again
+      readChat(file);
+    });
+    $("#c-chat-remove").addEventListener("click", () => { setChat(null); $("#c-chat-btn").focus(); });
     $("#c-source-remove").addEventListener("click", () => { dropSource(); $("#c-url").focus(); });
     bindDrop();
     $("#c-url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !state.busy) onClipRun("auto"); });

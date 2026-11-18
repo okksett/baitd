@@ -266,6 +266,31 @@ def _is_live(info: dict) -> bool:
     return bool(info.get("is_live")) or info.get("live_status") in ("is_live", "is_upcoming")
 
 
+_CHAT_FILE = "chat.live_chat.json"  # what yt-dlp writes for outtmpl "chat.%(ext)s" and the live_chat track
+
+
+def _fetch_chat_replay(ytdlp, url: str, opts: dict, info: dict, folder: Path, cancel: threading.Event) -> None:
+    """A finished stream's chat replay (YouTube offers it as the `live_chat` subtitle track) next to the
+    video, for clip.chat_replay. Best effort: without it the moments come from the AI as for any video."""
+    if info.get("live_status") != "was_live" or "live_chat" not in (info.get("subtitles") or {}):
+        return
+    try:
+        with ytdlp.YoutubeDL({**opts, "skip_download": True, "writesubtitles": True,
+                              "subtitleslangs": ["live_chat"], "outtmpl": str(folder / "chat.%(ext)s")}) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        if cancel.is_set():
+            raise JobCancelled() from e
+        log.info("No se pudo bajar el chat del directo: %s", e)
+        (folder / _CHAT_FILE).unlink(missing_ok=True)
+
+
+def chat_replay_path(src: SourceInfo) -> Path | None:
+    """The chat replay saved with a downloaded stream, if any."""
+    p = Path(src.path).parent / _CHAT_FILE
+    return p if p.is_file() else None
+
+
 def _find_download(folder: Path) -> Path | None:
     files = [p for p in folder.glob("source.*") if p.suffix.lower() not in (".part", ".ytdl", ".temp")]
     files.sort(key=lambda p: p.suffix.lower() != ".mp4")
@@ -327,6 +352,7 @@ def fetch_url(url: str, cancel: threading.Event, on_progress: Callable[[float], 
             src = _build_info(source_id, path, title=info.get("title") or "Video",
                               channel=_channel_credit(info), url=url)
             _write_meta(folder, src)
+            _fetch_chat_replay(ytdlp, url, {**opts, **extra}, info, folder, cancel)
             on_progress(1.0)
             return src
         except BaseException as e:
