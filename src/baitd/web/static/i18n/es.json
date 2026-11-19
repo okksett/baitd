@@ -42,6 +42,8 @@
   "lang.other_placeholder": "p. ej. pt",
   "format.label": "Formato",
   "format.vertical": "9:16 · 1080p",
+  "format.feed": "4:5 · 1080p",
+  "format.square": "1:1 · 1080p",
   "format.horizontal": "16:9 · 1080p",
   "fps.label": "Fotogramas por segundo",
   "fps.30": "30 fps",

@@ -12,7 +12,7 @@ from typing import Callable
 
 from . import audio, captions, ffmpeg, llm, timeline, tts
 from .config import data_dir, slugify
-from .models import (JobCancelled, Media, Profile, ProgressFn, RenderOptions, Script, UserError,
+from .models import (ASPECTS, JobCancelled, Media, Profile, ProgressFn, RenderOptions, Script, UserError,
                      first_sentence)
 from .render import render_video
 from .stock import cache
@@ -22,7 +22,6 @@ log = logging.getLogger(__name__)
 
 STEPS = ("script", "voice", "clips", "edit", "captions", "render")
 _TOTAL = len(STEPS)
-_DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
 
 
 @dataclass
@@ -141,7 +140,7 @@ def _run(topic: str, profile: Profile, settings: dict, script: Script | None,
     def end(i: int) -> None:
         progress(STEPS[i - 1], i, _TOTAL, 100.0)
 
-    width, height = _DIMS[profile.aspect]
+    width, height = ASPECTS[profile.aspect]
 
     begin(1)
     if script is None:

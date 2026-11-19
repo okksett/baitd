@@ -204,6 +204,7 @@ select option, select optgroup { background: var(--panel-solid); color: var(--te
 .slider output { min-width: 4.5em; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .btns { display: flex; gap: 10px; margin-top: 18px; }
+.btns select.input { width: auto; }
 .b1, .b2 { flex: 1; text-align: center; padding: 12px; border-radius: 999px; font-weight: 600; }
 .b1 { border: 1px solid var(--line); color: var(--b1); background: transparent; }
 .b2 {
@@ -401,6 +402,8 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
   overflow: hidden; background: var(--phone); border: 1px solid var(--phone-line); container-type: inline-size;
 }
 .phone[data-aspect="16:9"] { width: 100%; aspect-ratio: 16 / 9; border-radius: 16px; }
+.phone[data-aspect="4:5"] { width: min(340px, 90%); aspect-ratio: 4 / 5; }
+.phone[data-aspect="1:1"] { width: min(360px, 90%); aspect-ratio: 1; border-radius: 16px; }
 .phone .tag {
   position: absolute; top: 10px; left: 10px; z-index: 2; font-size: 11px; color: #fff;
   background: rgba(0, 0, 0, .55); padding: 3px 8px; border-radius: 999px;
@@ -466,8 +469,7 @@ dialog:has(.dlg.small) { width: min(420px, calc(100% - 32px)); }
 .clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-top: 16px; }
 .clips-grid.wide { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 .clip-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; }
-.clip-tile video { width: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: 12px; object-fit: contain; }
-.clips-grid.wide .clip-tile video { aspect-ratio: 16 / 9; }
+.clip-tile video { width: 100%; aspect-ratio: var(--clip-ar, 9 / 16); background: #000; border-radius: 12px; object-fit: contain; }
 .clip-tile figcaption { font-size: 13px; overflow-wrap: anywhere; }
 #clips-view .btns { margin-top: 18px; }
 

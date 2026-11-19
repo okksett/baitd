@@ -545,11 +545,12 @@ def test_clips_route_lists_clips_json_in_render_order(client, queue, tmp_path):
                                       {"file": "clip-02.mp4", "title": "Segundo"}], "aspect": "9:16"}
 
 
-def test_clips_route_reports_a_wide_profile_aspect(client, queue, tmp_path):
+@pytest.mark.parametrize("aspect", ["16:9", "4:5", "1:1"])
+def test_clips_route_reports_the_profile_aspect(client, queue, tmp_path, aspect):
     profile = config.default_profile()
-    profile.aspect = "16:9"
+    profile.aspect = aspect
     jid = _done_clip_job(queue, _clip_folder(tmp_path), profile=profile)
-    assert client.get(f"/api/jobs/{jid}/clips").get_json()["aspect"] == "16:9"
+    assert client.get(f"/api/jobs/{jid}/clips").get_json()["aspect"] == aspect
 
 
 def test_clips_route_without_clips_json_lists_the_files_sorted(client, queue, tmp_path):

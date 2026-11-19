@@ -12,7 +12,7 @@ from typing import Callable
 from . import config
 from .clip import pipeline as clip_pipeline
 from .clip import sources as clip_sources
-from .models import JobCancelled, Profile, Script, UserError
+from .models import ASPECTS, JobCancelled, Profile, Script, UserError
 from .pipeline import run_job
 
 log = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ class JobQueue:
         with self._lock:
             item = self._find(id)
             value = item["profile"].get("aspect") if item else None
-        return value if value in ("9:16", "16:9") else "9:16"
+        return value if value in ASPECTS else "9:16"
 
     def cancel(self, id: str) -> None:
         with self._lock:

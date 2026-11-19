@@ -15,6 +15,9 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+# output size of each format, vertical first
+ASPECTS = {"9:16": (1080, 1920), "4:5": (1080, 1350), "1:1": (1080, 1080), "16:9": (1920, 1080)}
+
 _SENTENCE_END = ".?!…"
 _CLOSERS = _SENTENCE_END + "\"'»”’)]"
 
@@ -135,7 +138,7 @@ class Profile:
     id: str
     name: str
     language: str
-    aspect: Literal["9:16", "16:9"]
+    aspect: Literal["9:16", "4:5", "1:1", "16:9"]
     fps: Literal[30, 60]
     seconds: Literal[30, 45, 60]
     tone: str
@@ -172,7 +175,7 @@ class Profile:
         for key in ("id", "name"):
             if not isinstance(d.get(key), str) or not d[key]:
                 raise ValueError(f"profile needs a non-empty {key}")
-        if base["aspect"] not in ("9:16", "16:9"):
+        if base["aspect"] not in ASPECTS:
             raise ValueError("bad aspect")
         if base["fps"] not in (30, 60) or base["seconds"] not in (30, 45, 60):
             raise ValueError("bad fps/seconds")
