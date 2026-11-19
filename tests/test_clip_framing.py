@@ -404,3 +404,29 @@ def test_partido_filter_renders_exact_size(make_mp4, tmp_path):
     src = make_mp4(seconds=3, w=1280, h=720)
     plan = plan_crop(_src(1280, 720), 0, 3, 1080, 1920, "partido", None, cam=[1000, 500, 200, 142])
     assert _render(src, plan, tmp_path, "partido.mp4") == (1080, 1920)
+
+
+# ---------------------------------------------------------------- formats other than 9:16
+
+@pytest.mark.parametrize("aspect", ["4:5", "1:1"])
+def test_feed_and_square_crops_render_exact_size(make_mp4, tmp_path, aspect):
+    from baitd.models import ASPECTS
+    out_w, out_h = ASPECTS[aspect]
+    src = make_mp4(seconds=2)
+    for mode in ("centro", "completo"):
+        plan = plan_crop(_src(), 0, 2, out_w, out_h, mode, None)
+        if mode == "centro":
+            assert (plan.crop_w, plan.crop_h) == ({"4:5": 864, "1:1": 1080}[aspect], 1080)
+        out = tmp_path / f"{aspect.replace(':', 'x')}-{mode}.mp4"
+        ffmpeg.run(["-i", str(src), "-vf", crop_filter(plan, out_w, out_h), "-an", "-c:v", "libx264",
+                    "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out)])
+        info = ffmpeg.probe(out)
+        assert (info["width"], info["height"]) == (out_w, out_h), mode
+
+
+def test_plan_partido_widens_the_user_cam_to_a_square_band():
+    # the box is drawn for the 9:16 band (1080x768); the 1:1 band is 1080x432, so it gets wider, same centre
+    plan = plan_crop(_src(), 0, 10, 1080, 1080, "partido", None, cam=[300, 760, 378, 268])
+    x, y, w, h = plan.cam
+    assert w / h == pytest.approx(1080 / 432, rel=0.02)
+    assert x + w / 2 == pytest.approx(300 + 378 / 2, abs=2) and x + w <= 1920 and y + h <= 1080

@@ -87,6 +87,8 @@
       <label class="sr-only" for="f-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
       <select id="f-aspect" class="input">
         <option value="9:16" data-i18n="format.vertical">{{ t("format.vertical") }}</option>
+        <option value="4:5" data-i18n="format.feed">{{ t("format.feed") }}</option>
+        <option value="1:1" data-i18n="format.square">{{ t("format.square") }}</option>
         <option value="16:9" data-i18n="format.horizontal">{{ t("format.horizontal") }}</option>
       </select>
       <label class="sr-only" for="f-fps" data-i18n="fps.label">{{ t("fps.label") }}</label>
@@ -288,6 +290,8 @@
         <label class="sr-only" for="c-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
         <select id="c-aspect" class="input">
           <option value="9:16" data-i18n="format.vertical">{{ t("format.vertical") }}</option>
+          <option value="4:5" data-i18n="format.feed">{{ t("format.feed") }}</option>
+          <option value="1:1" data-i18n="format.square">{{ t("format.square") }}</option>
           <option value="16:9" data-i18n="format.horizontal">{{ t("format.horizontal") }}</option>
         </select>
         <label class="sr-only" for="c-fps" data-i18n="fps.label">{{ t("fps.label") }}</label>
@@ -464,6 +468,13 @@
         <p id="live-moments-error" class="err" role="alert" hidden></p>
         <p id="live-moments-status" class="status" role="status"></p>
         <div class="btns">
+          <label class="sr-only" for="live-aspect" data-i18n="format.label">{{ t("format.label") }}</label>
+          <select id="live-aspect" class="input">
+            <option value="9:16" data-i18n="format.vertical">{{ t("format.vertical") }}</option>
+            <option value="4:5" data-i18n="format.feed">{{ t("format.feed") }}</option>
+            <option value="1:1" data-i18n="format.square">{{ t("format.square") }}</option>
+            <option value="16:9" data-i18n="format.horizontal">{{ t("format.horizontal") }}</option>
+          </select>
           <button type="button" class="b2" id="live-export" data-i18n="live.export">{{ t("live.export") }}</button>
         </div>
       </section>

@@ -821,6 +821,7 @@
     $("#c-max").value = String(c.max_s);
     $("#c-kind").value = c.kind;
     $("#c-aspect").value = p.aspect;
+    $("#live-aspect").value = p.aspect;
     $("#c-fps").value = String(p.fps);
     $("#c-transcriber").value = c.transcriber;
     $("#c-model").value = c.whisper_model;
@@ -1633,6 +1634,7 @@
       const r = await api("GET", `/api/jobs/${encodeURIComponent(id)}/clips`);
       if (seq !== clipsSeq) return;
       grid.classList.toggle("wide", r.aspect === "16:9");
+      grid.style.setProperty("--clip-ar", r.aspect.replace(":", " / "));
       for (const c of r.clips) {
         const tile = document.createElement("figure");
         tile.className = "clip-tile";
@@ -2649,6 +2651,12 @@
     $("#live-mark").addEventListener("click", markMoment);
     $("#live-stop").addEventListener("click", stopCapture);
     $("#live-export").addEventListener("click", exportLiveMoments);
+    $("#live-aspect").addEventListener("change", (e) => { // the same format as Clipping and Crear short
+      if (!state.current) return;
+      state.current.aspect = e.target.value;
+      fillForm();
+      if (state.current.language) scheduleSave();
+    });
 
     const clipPanel = $(".form-clip");
     clipPanel.addEventListener("input", onClipInput);

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import config, ffmpeg, llm
-from ..models import JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
+from ..models import ASPECTS, JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
 from . import chat_replay, framing, sources, transcribe, voices
 from .models import BADGES, FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
@@ -36,7 +36,6 @@ MODEL_STEP = "model"  # step 2's text while the local whisper model loads (downl
 CLIP_STEP_LABELS = (*CLIP_STEPS, MODEL_STEP)  # every step name a clip job can show (step.<name> in i18n)
 CLIP_JOB_KINDS = ("clip_auto", "clip_analyze", "clip_export", "live_title")
 _TOTAL = len(CLIP_STEPS)
-_DIMS = {"9:16": (1080, 1920), "16:9": (1920, 1080)}
 _ID = re.compile(r"[0-9a-f]{12}")
 MIN_CLIP_S, MAX_CLIP_S = 10.0, 180.0  # clip length limits
 _MAX_EXPORT = 20  # same cap as the clip count of a run
@@ -508,7 +507,7 @@ def _talk_and_voices(src: SourceInfo, m: Moment, words: list[Word], mode: str, c
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,
                 folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders) -> None:
     """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order."""
-    width, height = _DIMS[profile.aspect]
+    width, height = ASPECTS[profile.aspect]
     n = len(moments)
 
     steps.begin(4)

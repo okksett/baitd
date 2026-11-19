@@ -175,3 +175,17 @@ def test_old_profile_with_llm_fields_still_loads():
     d.update(llm_provider="openai", llm_model="gpt-x")
     p = Profile.from_dict(d)
     assert p == default_profile() and not hasattr(p, "llm_model")
+
+
+@pytest.mark.parametrize("aspect", ["9:16", "4:5", "1:1", "16:9"])
+def test_every_format_is_a_valid_profile(aspect):
+    p = default_profile()
+    p.aspect = aspect
+    assert Profile.from_dict(p.to_dict()).aspect == aspect
+
+
+def test_an_unknown_format_is_refused():
+    d = default_profile().to_dict()
+    d["aspect"] = "3:2"
+    with pytest.raises(ValueError):
+        Profile.from_dict(d)

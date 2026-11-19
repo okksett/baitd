@@ -458,7 +458,13 @@ def _plan_partido(src: SourceInfo, start: float, end: float, out_w: int, out_h: 
     """The two-box plan, or None when the clip has no cam (then it is framed on the face as "cara")."""
     top_h = _top_h(out_h)
     if cam is not None:
-        box = _fit_box(cam[0], cam[1], cam[2], cam[3], src.width, src.height)
+        x, y, w, h = cam
+        want = out_w / top_h  # the box is drawn for the 9:16 band; another format's band is wider
+        if abs(w / h - want) > 0.02 * want:  # reshape around its centre, or the cam would be stretched
+            w2 = min(h * want, src.width)
+            h2 = w2 / want
+            x, y, w, h = x + (w - w2) / 2, y + (h - h2) / 2, w2, h2
+        box = _fit_box(x, y, w, h, src.width, src.height)
     else:
         if faces is None:
             faces = detect_faces(src, start, end, SAMPLE_FPS, cancel)
