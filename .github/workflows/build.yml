@@ -62,6 +62,7 @@ jobs:
           echo "$out" | grep -q "^SELFTEST OK"
 
       - name: Launch the frozen app and request the page
+        timeout-minutes: 5  # it now reads the OS credential store: never hang a runner on it
         run: |
           "${{ matrix.exe }}" --no-browser --port 18765 > app.log 2>&1 &
           pid=$!

@@ -267,6 +267,7 @@ def _serve(args: argparse.Namespace, lock: instance.InstanceLock) -> None:
     handlers = _setup_logging()
     try:  # 0.3: the AI provider/model moved from the profiles to the settings
         config.migrate_llm_settings()
+        config.migrate_secrets()
     except OSError:
         log.exception("No se pudo migrar el proveedor de IA a los ajustes")
     queue = JobQueue(config.data_dir() / "queue.json")

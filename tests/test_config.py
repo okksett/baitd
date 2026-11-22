@@ -189,3 +189,55 @@ def test_an_unknown_format_is_refused():
     d["aspect"] = "3:2"
     with pytest.raises(ValueError):
         Profile.from_dict(d)
+
+
+class _FakeVault:
+    priority = 5
+
+    def __init__(self):
+        self.items = {}
+
+    def get_password(self, service, key):
+        return self.items.get((service, key))
+
+    def set_password(self, service, key, value):
+        self.items[(service, key)] = value
+
+    def delete_password(self, service, key):
+        self.items.pop((service, key))
+
+
+def _settings_file(tmp_data):
+    import json
+    return json.loads((tmp_data / "settings.json").read_text(encoding="utf-8"))
+
+
+def test_keys_go_to_the_credential_store_not_the_file(tmp_data, monkeypatch):
+    vault = _FakeVault()
+    monkeypatch.setattr(config, "_vault", lambda: vault)
+    save_settings({"gemini_key": "AIza-secret", "output_dir": "x"})
+    assert vault.items[("Baitd", "gemini_key")] == "AIza-secret"
+    assert _settings_file(tmp_data)["gemini_key"] == "" and _settings_file(tmp_data)["output_dir"] == "x"
+    assert load_settings()["gemini_key"] == "AIza-secret"
+    save_settings({"gemini_key": ""})  # removing a key removes it from the store too
+    assert ("Baitd", "gemini_key") not in vault.items and load_settings()["gemini_key"] == ""
+
+
+def test_old_keys_in_the_file_move_to_the_store(tmp_data, monkeypatch):
+    save_settings({"pexels_key": "old-pexels", "theme": "dark"})  # no store yet: the file keeps it
+    assert _settings_file(tmp_data)["pexels_key"] == "old-pexels"
+    vault = _FakeVault()
+    monkeypatch.setattr(config, "_vault", lambda: vault)
+    config.migrate_secrets()
+    assert vault.items[("Baitd", "pexels_key")] == "old-pexels"
+    assert _settings_file(tmp_data)["pexels_key"] == "" and load_settings()["pexels_key"] == "old-pexels"
+
+
+def test_a_failing_store_keeps_the_key_in_the_file(tmp_data, monkeypatch):
+    class Broken(_FakeVault):
+        def set_password(self, service, key, value):
+            raise RuntimeError("locked")
+
+    monkeypatch.setattr(config, "_vault", lambda: Broken())
+    save_settings({"openai_key": "sk-x"})
+    assert _settings_file(tmp_data)["openai_key"] == "sk-x" and load_settings()["openai_key"] == "sk-x"

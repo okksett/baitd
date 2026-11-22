@@ -20,6 +20,13 @@ def installer_not_launched(monkeypatch):
     monkeypatch.setattr("baitd.updater.installing", False)
 
 
+@pytest.fixture(autouse=True)
+def no_real_keyring(monkeypatch):
+    """Tests never read or write the developer's real credential store."""
+    monkeypatch.setenv("BAITD_NO_KEYRING", "1")
+    monkeypatch.setattr("baitd.config._secrets", None)
+
+
 @pytest.fixture
 def tmp_data(tmp_path, monkeypatch):
     monkeypatch.setenv("BAITD_DATA", str(tmp_path))

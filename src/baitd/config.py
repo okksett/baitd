@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -33,6 +34,61 @@ SETTINGS_DEFAULTS: dict = {
     "live_ai_per_hour": 6,  # En directo: AI requests per hour for automatic moments (0-30)
     "live_max_height": 1080,  # En directo: capture quality, 720 or 1080
 }
+
+
+# API keys live in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service);
+# settings.json keeps them only where no store works, as before.
+SECRET_KEYS = ("openai_key", "gemini_key", "elevenlabs_key", "pexels_key", "pixabay_key", "compat_key")
+_SERVICE = "Baitd"
+log = logging.getLogger(__name__)
+_secrets: dict[str, str] | None = None  # what the store holds, read once per run
+
+
+def _vault():
+    """The OS credential store, or None (no usable backend, or BAITD_NO_KEYRING set: the tests)."""
+    if os.environ.get("BAITD_NO_KEYRING"):
+        return None
+    try:
+        import keyring
+        from keyring.backends import fail
+        backend = keyring.get_keyring()
+        return None if isinstance(backend, fail.Keyring) or backend.priority <= 0 else backend
+    except Exception as e:  # no backend on this system (e.g. Linux without a Secret Service)
+        log.info("Sin almacén de credenciales del sistema (%s); las claves quedan en settings.json",
+                 type(e).__name__)
+        return None
+
+
+def _stored_secrets(vault) -> dict[str, str]:
+    global _secrets
+    if _secrets is None:
+        found = {}
+        for key in SECRET_KEYS:
+            try:
+                found[key] = vault.get_password(_SERVICE, key) or ""
+            except Exception as e:
+                log.warning("No se pudo leer %s del almacén de credenciales (%s)", key, type(e).__name__)
+                found[key] = ""
+        _secrets = found
+    return _secrets
+
+
+def _store_secret(vault, key: str, value: str) -> bool:
+    """True when the store now holds `value` ("" deletes it)."""
+    try:
+        if value:
+            vault.set_password(_SERVICE, key, value)
+        else:
+            try:
+                vault.delete_password(_SERVICE, key)
+            except Exception:  # nothing stored under that name
+                pass
+    except Exception as e:
+        log.warning("No se pudo guardar %s en el almacén de credenciales (%s); queda en settings.json",
+                    key, type(e).__name__)
+        return False
+    _stored_secrets(vault)[key] = value
+    return True
 
 
 # Serialises read-modify-write of settings.json / profiles.json (waitress serves on several
@@ -97,13 +153,36 @@ def raw_settings() -> dict:
 
 
 def load_settings() -> dict:
-    return {**SETTINGS_DEFAULTS, **raw_settings()}
+    with _LOCK:
+        s = {**SETTINGS_DEFAULTS, **raw_settings()}
+        vault = _vault()
+        if vault is not None:
+            for key, value in _stored_secrets(vault).items():
+                if value and not s.get(key):  # a key still in the file (no store before) wins
+                    s[key] = value
+        return s
 
 
 def save_settings(d: dict) -> None:
-    """Merge d over the stored settings (partial updates keep other keys; defaults stay implicit)."""
+    """Merge d over the stored settings (partial updates keep other keys; defaults stay implicit).
+    API keys go to the OS credential store when there is one, and the file keeps "" for them."""
     with _LOCK:
+        d = dict(d)
+        vault = _vault()
+        if vault is not None:
+            for key in SECRET_KEYS:
+                if key in d and isinstance(d[key], str) and _store_secret(vault, key, d[key]):
+                    d[key] = ""
         _write_json(data_dir() / "settings.json", {**raw_settings(), **d})
+
+
+def migrate_secrets() -> None:
+    """Move API keys saved in settings.json (before 0.6.1) into the OS credential store."""
+    with _LOCK:
+        raw = raw_settings()
+        found = {k: raw[k] for k in SECRET_KEYS if isinstance(raw.get(k), str) and raw[k]}
+        if found and _vault() is not None:
+            save_settings(found)
 
 
 def migrate_llm_settings() -> None:
