@@ -1363,7 +1363,7 @@
     $("#clip-why").textContent = why;
     $("#clip-export").disabled = state.busy || Boolean(why);
     const n = r.moments.filter((m) => m.pick).length;
-    $("#clip-selected").textContent = tr("clip.selected", { n });
+    $("#clip-selected").textContent = n === 1 ? tr("clip.selected_one") : tr("clip.selected", { n });
     $("#clip-export span").textContent = n === 1 ? tr("clip.export_one") : tr("clip.export", { n });
   }
 
@@ -2230,7 +2230,7 @@
     byId.forEach((n, id) => { if (!L.moments.some((m) => m.analysis_id === id)) n.remove(); });
     wanted.forEach((n, i) => { if (list.children[i] !== n) list.insertBefore(n, list.children[i] || null); });
     $("#live-moments-empty").hidden = L.moments.length > 0;
-    $("#live-selected").textContent = L.moments.length ? tr("clip.selected", { n: L.picked.size }) : "";
+    $("#live-selected").textContent = !L.moments.length ? "" : L.picked.size === 1 ? tr("clip.selected_one") : tr("clip.selected", { n: L.picked.size });
     $("#live-export").disabled = L.exporting || !L.picked.size;
   }
 
