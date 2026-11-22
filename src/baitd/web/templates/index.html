@@ -13,21 +13,22 @@
 <a class="skip" href="#head" data-i18n="skip">{{ t("skip") }}</a>
 <div class="app">
 
-<header class="top">
+<aside class="nav">
   <div class="brandrow">
     <img class="brand-icon" src="/static/icon.png" alt="" width="28" height="28">
     <h1 class="brand"><span data-i18n="brand.a">{{ t("brand.a") }}</span><em data-i18n="brand.b">{{ t("brand.b") }}</em></h1>
-    <div class="tabs" role="tablist" data-i18n-aria="tabs.label" aria-label='{{ t("tabs.label") }}'>
-      <button type="button" role="tab" id="tab-short" aria-selected="true" aria-controls="panel-short" data-tab="short" data-i18n="tab.short">{{ t("tab.short") }}</button>
-      <button type="button" role="tab" id="tab-clip" aria-selected="false" aria-controls="panel-clip" data-tab="clip" tabindex="-1" data-i18n="tab.clip">{{ t("tab.clip") }}</button>
-    </div>
   </div>
+  <nav class="navtabs" role="tablist" aria-orientation="vertical" data-i18n-aria="nav.label" aria-label='{{ t("nav.label") }}'>
+      <button type="button" role="tab" id="nav-clips" aria-selected="true" aria-controls="panel-clip" data-view="clips"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9.5 4.5 2.5-4.5 2.5z"/></svg><span data-i18n="nav.clips">{{ t("nav.clips") }}</span></button>
+      <button type="button" role="tab" id="nav-live" aria-selected="false" aria-controls="panel-clip" data-view="live" tabindex="-1"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/></svg><span data-i18n="nav.live">{{ t("nav.live") }}</span></button>
+      <button type="button" role="tab" id="nav-short" aria-selected="false" aria-controls="panel-short" data-view="short" tabindex="-1"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18.5 16l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg><span data-i18n="nav.short">{{ t("nav.short") }}</span></button>
+  </nav>
   <div class="tools">
     <div class="profile">
       <label class="sr-only" for="profile" data-i18n="profile.label">{{ t("profile.label") }}</label>
       <select id="profile" class="pill"></select>
       <button type="button" id="profile-menu-btn" class="pill icon-btn" aria-haspopup="menu" aria-expanded="false"
-              aria-controls="profile-menu" data-i18n-aria="profile.actions" aria-label='{{ t("profile.actions") }}'>⋯</button>
+              aria-controls="profile-menu" data-i18n-aria="profile.actions" aria-label='{{ t("profile.actions") }}'><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
       <div id="profile-menu" class="menu" role="menu" hidden>
         <button type="button" role="menuitem" data-profile-act="new" data-i18n="profile.new">{{ t("profile.new") }}</button>
         <button type="button" role="menuitem" data-profile-act="duplicate" data-i18n="profile.duplicate">{{ t("profile.duplicate") }}</button>
@@ -35,10 +36,9 @@
         <button type="button" role="menuitem" data-profile-act="delete" data-i18n="profile.delete">{{ t("profile.delete") }}</button>
       </div>
     </div>
-    <button type="button" id="open-settings" class="gear" data-i18n-aria="settings.open" aria-label='{{ t("settings.open") }}'
-            data-i18n-title="settings.open" title='{{ t("settings.open") }}'>⚙</button>
+    <button type="button" id="open-settings" class="navbtn"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/></svg><span data-i18n="settings.open">{{ t("settings.open") }}</span></button>
   </div>
-</header>
+</aside>
 <div id="update-bar" class="update-bar" role="status" hidden>
   <span id="update-text"></span>
   <button type="button" id="update-install" class="b2" hidden data-i18n="update.install">{{ t("update.install") }}</button>
@@ -49,7 +49,7 @@
 <p id="live-alert" class="err app-alert" role="alert" hidden></p>
 
 <main class="grid">
-  <section class="form" id="panel-short" role="tabpanel" aria-labelledby="tab-short">
+  <section class="form" id="panel-short" role="tabpanel" aria-labelledby="nav-short">
     <h2 class="head" id="head" tabindex="-1"><span data-i18n="head.a">{{ t("head.a") }}</span> <em data-i18n="head.b">{{ t("head.b") }}</em></h2>
 
     <fieldset class="seg">
@@ -207,15 +207,10 @@
     </section>
   </section>
 
-  <section class="form-clip" id="panel-clip" role="tabpanel" aria-labelledby="tab-clip" hidden>
+  <section class="form-clip" id="panel-clip" role="tabpanel" aria-labelledby="nav-clips" hidden>
     <h2 class="head" id="clip-head" tabindex="-1"><span data-i18n="clip.head_a">{{ t("clip.head_a") }}</span> <em data-i18n="clip.head_b">{{ t("clip.head_b") }}</em></h2>
 
-    <div class="subtabs" role="tablist" data-i18n-aria="live.subtabs" aria-label='{{ t("live.subtabs") }}'>
-      <button type="button" role="tab" id="subtab-video" aria-selected="true" aria-controls="panel-video" data-subtab="video" data-i18n="live.tab_video">{{ t("live.tab_video") }}</button>
-      <button type="button" role="tab" id="subtab-live" aria-selected="false" aria-controls="panel-live" data-subtab="live" tabindex="-1" data-i18n="live.tab_live">{{ t("live.tab_live") }}</button>
-    </div>
-
-    <div id="panel-video" role="tabpanel" aria-labelledby="subtab-video">
+    <div id="panel-video">
     <div class="drop" id="drop">
       <p class="drop-title" data-i18n="clip.drop">{{ t("clip.drop") }}</p>
       <label class="sr-only" for="c-url" data-i18n="clip.url_label">{{ t("clip.url_label") }}</label>
@@ -418,7 +413,7 @@
     </section>
     </div>
 
-    <div id="panel-live" role="tabpanel" aria-labelledby="subtab-live" hidden>
+    <div id="panel-live" hidden>
       <section class="live-block" aria-labelledby="live-channels-title">
         <h3 class="live-h" id="live-channels-title" data-i18n="live.channels">{{ t("live.channels") }}</h3>
         <p class="hint" data-i18n="live.channels_hint">{{ t("live.channels_hint") }}</p>

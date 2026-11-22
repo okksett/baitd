@@ -541,12 +541,11 @@ def test_index_is_dark_only(client):
 def test_index_has_clipping_tab_and_drop_zone(client):
     html = client.get("/").text
     es = json.loads(ES.read_text("utf-8"))
-    # two keyboard-usable tabs next to the logo, each with its own left panel
-    assert 'role="tablist"' in html
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-short"[^>]*aria-selected="true"', html)
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-clip"[^>]*aria-selected="false"', html)
-    assert 'id="panel-short" role="tabpanel"' in html and 'id="panel-clip" role="tabpanel"' in html
-    assert es["tab.short"] in html and es["tab.clip"] in html
+    assert re.search(r'<nav[^>]*role="tablist"[^>]*aria-orientation="vertical"', html)
+    for view, panel in (("clips", "panel-clip"), ("live", "panel-clip"), ("short", "panel-short")):
+        assert re.search(rf'<button[^>]*role="tab"[^>]*id="nav-{view}"[^>]*aria-controls="{panel}"', html), view
+    assert 'id="panel-video"' in html and 'id="panel-live"' in html and "subtab-" not in html
+    assert es["nav.clips"] in html and es["nav.live"] in html and es["nav.short"] in html
     # the drop zone: link input, file button, drag-and-drop area and the upload progress/cancel
     assert 'id="drop"' in html and es["clip.drop"] in html
     assert 'id="c-url"' in html and 'id="c-file"' in html and 'id="c-file-btn"' in html
@@ -583,10 +582,12 @@ def test_clipping_ui_lifecycle_seams():
 
 def test_index_has_live_tab(client):
     html = client.get("/").text
-    # the Clipping panel has two sub-tabs, Video (today's content) and En directo, with the tab pattern
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-video"[^>]*aria-selected="true"', html)
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-live"[^>]*aria-selected="false"', html)
-    assert 'id="panel-video" role="tabpanel"' in html and 'id="panel-live" role="tabpanel"' in html
+    es = json.loads(ES.read_text("utf-8"))
+    assert re.search(r'<nav[^>]*role="tablist"[^>]*aria-orientation="vertical"', html)
+    for view, panel in (("clips", "panel-clip"), ("live", "panel-clip"), ("short", "panel-short")):
+        assert re.search(rf'<button[^>]*role="tab"[^>]*id="nav-{view}"[^>]*aria-controls="{panel}"', html), view
+    assert 'id="panel-video"' in html and 'id="panel-live"' in html and "subtab-" not in html
+    assert es["nav.clips"] in html and es["nav.live"] in html and es["nav.short"] in html
     assert 'id="tpl-channel"' in html and 'id="tpl-live-moment"' in html
     assert 'id="live-capture"' in html and 'id="live-mark"' in html and 'id="live-stop"' in html
     # the review card can frame a moment as Partido, and Ajustes has the live settings
@@ -604,8 +605,8 @@ def test_live_ui_seams():
     assert "m.cam" in sig
     export = js[js.index("async function onExport"):js.index("// ---------- queue")]
     assert "cam:" in export
-    tabs = js[js.index("function setTab"):js.index("function onTabKey")]
-    assert ".tabs [role=" in tabs  # the sub-tabs are not main tabs
+    tabs = js[js.index("function setView"):js.index("function onTabKey")]
+    assert ".navtabs [role=" in tabs  # one side menu drives every view
     # a moment already being exported (e.g. from its review card) is never queued twice and leaves the selection
     bulk = js[js.index("async function exportLiveMoments"):js.index("// ---------- en directo: the hotkey recorder")]
     assert 'momentJob(id, "clip_export")' in bulk

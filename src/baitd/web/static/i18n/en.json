@@ -16,9 +16,10 @@
   "profile.confirm_delete": "Delete the profile “{name}”? This cannot be undone.",
   "profile.last": "The last profile cannot be deleted → Create another profile first",
 
-  "theme.label": "Colour mode",
-  "theme.dark": "Dark",
-  "theme.light": "Light",
+  "nav.clips": "Clips",
+  "nav.live": "Live",
+  "nav.short": "AI Short",
+  "nav.label": "Sections",
   "settings.open": "Settings",
 
   "head.a": "Create your",
@@ -199,9 +200,6 @@
   "err.name": "The name is missing → Type a name for the profile",
   "err.lang": "The language code is missing → Type one, for example pt",
 
-  "tabs.label": "Section",
-  "tab.short": "Create short",
-  "tab.clip": "Clipping",
   "clip.head_a": "Make your",
   "clip.head_b": "clips",
   "clip.drop": "Drop a file or paste a link",
@@ -338,9 +336,6 @@
   "err.upload": "The upload failed → Upload the file again",
   "err.upload_type": "That file type can't be uploaded → Use MP4, MOV, MKV, WEBM, MP3 or WAV",
   "err.analysis_gone": "That analysis no longer exists → Find moments again",
-  "live.subtabs": "Clip source",
-  "live.tab_video": "Video",
-  "live.tab_live": "Live",
   "live.channels": "Channels",
   "live.channels_hint": "Paste a Kick, Twitch or YouTube channel link. Capture starts only when you press Capture, and closing Baitd stops it.",
   "live.url_label": "Channel link",

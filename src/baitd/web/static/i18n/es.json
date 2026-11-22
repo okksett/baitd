@@ -16,9 +16,10 @@
   "profile.confirm_delete": "¿Borrar el perfil «{name}»? No se puede deshacer.",
   "profile.last": "No se puede borrar el último perfil → Crea otro perfil antes de borrar este",
 
-  "theme.label": "Modo de color",
-  "theme.dark": "Oscuro",
-  "theme.light": "Claro",
+  "nav.clips": "Clips",
+  "nav.live": "En vivo",
+  "nav.short": "Short con IA",
+  "nav.label": "Secciones",
   "settings.open": "Ajustes",
 
   "head.a": "Crea tu",
@@ -199,9 +200,6 @@
   "err.name": "Falta el nombre → Escribe un nombre para el perfil",
   "err.lang": "Falta el código de idioma → Escribe uno, por ejemplo pt",
 
-  "tabs.label": "Sección",
-  "tab.short": "Crear short",
-  "tab.clip": "Clipping",
   "clip.head_a": "Haz tus",
   "clip.head_b": "clips",
   "clip.drop": "Suelta un archivo o pega un enlace",
@@ -338,9 +336,6 @@
   "err.upload": "La subida falló → Vuelve a subir el archivo",
   "err.upload_type": "Ese tipo de archivo no se puede subir → Usa MP4, MOV, MKV, WEBM, MP3 o WAV",
   "err.analysis_gone": "Ese análisis ya no existe → Vuelve a buscar momentos",
-  "live.subtabs": "Origen del clip",
-  "live.tab_video": "Video",
-  "live.tab_live": "En directo",
   "live.channels": "Canales",
   "live.channels_hint": "Pega el enlace de un canal de Kick, Twitch o YouTube. La captura empieza solo cuando pulsas Capturar, y cerrar Baitd la detiene.",
   "live.url_label": "Enlace del canal",

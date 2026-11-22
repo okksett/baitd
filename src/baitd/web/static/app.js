@@ -735,53 +735,52 @@
     }
   }
 
-  // ---------- tabs ----------
+  // ---------- side menu ----------
 
-  function setTab(tab, focus = false) {
-    state.tab = tab === "clip" ? "clip" : "short";
-    $$('.tabs [role="tab"]').forEach((b) => {
-      const on = b.dataset.tab === state.tab;
+  // One menu, three views: Clips and En vivo share #panel-clip; Short con IA has #panel-short.
+  // state.tab ("short"/"clip") and state.live.sub ("video"/"live") keep their meaning for the rest of the app.
+  function setView(view, focus = false) {
+    if (view !== "live" && view !== "short") view = "clips";
+    state.tab = view === "short" ? "short" : "clip";
+    state.live.sub = view === "live" ? "live" : "video";
+    $$('.navtabs [role="tab"]').forEach((b) => {
+      const on = b.dataset.view === view;
       b.setAttribute("aria-selected", String(on));
       b.tabIndex = on ? 0 : -1;
       if (on && focus) b.focus();
     });
-    $("#panel-short").hidden = state.tab !== "short";
-    $("#panel-clip").hidden = state.tab !== "clip";
-    $(".skip").setAttribute("href", state.tab === "clip" ? "#clip-head" : "#head");
-    remember("tab", state.tab);
+    $("#panel-short").hidden = view !== "short";
+    $("#panel-clip").hidden = view === "short";
+    $("#panel-clip").setAttribute("aria-labelledby", `nav-${view === "live" ? "live" : "clips"}`);
+    $("#panel-video").hidden = view !== "clips";
+    $("#panel-live").hidden = view !== "live";
+    $(".skip").setAttribute("href", view === "short" ? "#head" : "#clip-head");
+    remember("view", view);
     syncLiveShown();
   }
 
-  // The Clipping panel's own sub-tabs: Video (a link or a file) and En directo.
-  function setSubTab(sub, focus = false) {
-    state.live.sub = sub === "live" ? "live" : "video";
-    $$('.subtabs [role="tab"]').forEach((b) => {
-      const on = b.dataset.subtab === state.live.sub;
-      b.setAttribute("aria-selected", String(on));
-      b.tabIndex = on ? 0 : -1;
-      if (on && focus) b.focus();
-    });
-    $("#panel-video").hidden = state.live.sub !== "video";
-    $("#panel-live").hidden = state.live.sub !== "live";
-    remember("subtab", state.live.sub);
-    syncLiveShown();
+  // Saved view, or the one implied by the old tab/subtab values.
+  function savedView() {
+    const v = remembered("view");
+    if (v === "clips" || v === "live" || v === "short") return v;
+    if (remembered("tab") === "short") return "short";
+    return remembered("tab") === "clip" && remembered("subtab") === "live" ? "live" : "clips";
   }
 
-  // Arrow keys, Home and End move between the tabs of the tablist that has focus (tabs or sub-tabs).
+  // Arrow up/down, Home and End move between the menu buttons.
   function onTabKey(e) {
     const tabs = $$('[role="tab"]', e.currentTarget);
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     const next = {
-      ArrowRight: tabs[(i + 1) % tabs.length],
-      ArrowLeft: tabs[(i - 1 + tabs.length) % tabs.length],
+      ArrowDown: tabs[(i + 1) % tabs.length],
+      ArrowUp: tabs[(i - 1 + tabs.length) % tabs.length],
       Home: tabs[0],
       End: tabs[tabs.length - 1],
     }[e.key];
     if (!next) return;
     e.preventDefault();
-    if (next.dataset.subtab) setSubTab(next.dataset.subtab, true);
-    else setTab(next.dataset.tab, true);
+    setView(next.dataset.view, true);
   }
 
   // ---------- clipping: settings (profile.clipping, plus the shared aspect, fps and subtitle) ----------
@@ -1185,8 +1184,7 @@
       renderClipReview();
     }
     if (userAsked) {
-      setTab("clip");
-      setSubTab("video"); // the review card lives in the Video sub-tab
+      setView("clips"); // the review card lives in the Clips view
       $("#clip-review-title").focus();
     }
   }
@@ -2604,16 +2602,11 @@
       $("#write-script").focus();
     });
 
-    $(".tabs").addEventListener("click", (e) => {
+    $(".navtabs").addEventListener("click", (e) => {
       const b = e.target.closest('[role="tab"]');
-      if (b) setTab(b.dataset.tab);
+      if (b) setView(b.dataset.view);
     });
-    $(".tabs").addEventListener("keydown", onTabKey);
-    $(".subtabs").addEventListener("click", (e) => {
-      const b = e.target.closest('[role="tab"]');
-      if (b) setSubTab(b.dataset.subtab);
-    });
-    $(".subtabs").addEventListener("keydown", onTabKey);
+    $(".navtabs").addEventListener("keydown", onTabKey);
     document.addEventListener("visibilitychange", syncLiveShown);
 
     $("#live-add").addEventListener("click", addChannel);
@@ -2705,8 +2698,7 @@
 
   async function init() {
     bind();
-    setTab(remembered("tab") || "short");
-    setSubTab(remembered("subtab") || "video");
+    setView(savedView());
     try {
       await loadStrings(BOOT.lang);
       renderVersion();
