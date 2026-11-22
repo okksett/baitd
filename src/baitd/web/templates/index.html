@@ -1,3 +1,4 @@
+<!-- {% from "_icons.html" import icon %} -->
 <!doctype html>
 <html lang="{{ lang }}" data-theme="dark">
 <head>
@@ -28,7 +29,7 @@
       <label class="sr-only" for="profile" data-i18n="profile.label">{{ t("profile.label") }}</label>
       <select id="profile" class="pill"></select>
       <button type="button" id="profile-menu-btn" class="pill icon-btn" aria-haspopup="menu" aria-expanded="false"
-              aria-controls="profile-menu" data-i18n-aria="profile.actions" aria-label='{{ t("profile.actions") }}'><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
+              aria-controls="profile-menu" data-i18n-aria="profile.actions" aria-label='{{ t("profile.actions") }}'>{{ icon("more") }}</button>
       <div id="profile-menu" class="menu" role="menu" hidden>
         <button type="button" role="menuitem" data-profile-act="new" data-i18n="profile.new">{{ t("profile.new") }}</button>
         <button type="button" role="menuitem" data-profile-act="duplicate" data-i18n="profile.duplicate">{{ t("profile.duplicate") }}</button>
@@ -36,14 +37,14 @@
         <button type="button" role="menuitem" data-profile-act="delete" data-i18n="profile.delete">{{ t("profile.delete") }}</button>
       </div>
     </div>
-    <button type="button" id="open-settings" class="navbtn"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/></svg><span data-i18n="settings.open">{{ t("settings.open") }}</span></button>
+    <button type="button" id="open-settings" class="navbtn">{{ icon("settings") }}<span data-i18n="settings.open">{{ t("settings.open") }}</span></button>
   </div>
 </aside>
 <div id="update-bar" class="update-bar" role="status" hidden>
   <span id="update-text"></span>
   <button type="button" id="update-install" class="b2" hidden data-i18n="update.install">{{ t("update.install") }}</button>
   <button type="button" id="update-download" class="b1" hidden data-i18n="update.download">{{ t("update.download") }}</button>
-  <button type="button" id="update-dismiss" class="icon-btn" data-i18n-aria="update.dismiss" aria-label='{{ t("update.dismiss") }}'>✕</button>
+  <button type="button" id="update-dismiss" class="icon-btn" data-i18n-aria="update.dismiss" aria-label='{{ t("update.dismiss") }}'>{{ icon("close") }}</button>
 </div>
 <p id="top-error" class="err" role="alert" hidden></p>
 <p id="live-alert" class="err app-alert" role="alert" hidden></p>
@@ -337,6 +338,7 @@
               <option value="cara" data-i18n="framing.cara">{{ t("framing.cara") }}</option>
               <option value="centro" data-i18n="framing.centro">{{ t("framing.centro") }}</option>
               <option value="completo" data-i18n="framing.completo">{{ t("framing.completo") }}</option>
+              <option value="partido" data-i18n="framing.partido">{{ t("framing.partido") }}</option>
             </select>
           </div>
           <p class="hint wide" id="c-framing-hint" data-i18n="framing.hint">{{ t("framing.hint") }}</p>
@@ -489,7 +491,7 @@
 
     <section class="queue panel" aria-labelledby="queue-title">
       <div class="queue-head">
-        <h3 id="queue-title" tabindex="-1" data-i18n="queue.title">{{ t("queue.title") }}</h3>
+        <h3 id="queue-title" tabindex="-1" data-i18n="queue.short_title">{{ t("queue.short_title") }}</h3>
         <button type="button" class="link-btn" id="clear-finished" data-i18n="queue.clear">{{ t("queue.clear") }}</button>
       </div>
       <p id="queue-error" class="err" role="alert" hidden></p>
@@ -504,7 +506,7 @@
   <div class="dlg">
     <div class="dlg-head">
       <h2 id="settings-title" data-i18n="settings.title">{{ t("settings.title") }}</h2>
-      <button type="button" class="gear" data-close data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>✕</button>
+      <button type="button" class="gear" data-close data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>{{ icon("close") }}</button>
     </div>
     <h3 class="lbl" data-i18n="settings.keys">{{ t("settings.keys") }}</h3>
     <p class="hint" data-i18n="settings.keys_hint">{{ t("settings.keys_hint") }}</p>
@@ -704,7 +706,7 @@
   <div class="dlg">
     <div class="dlg-head">
       <h2 id="clips-title" data-i18n="clips.title">{{ t("clips.title") }}</h2>
-      <button type="button" class="gear" id="clips-close" data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>✕</button>
+      <button type="button" class="gear" id="clips-close" data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>{{ icon("close") }}</button>
     </div>
     <p id="clips-error" class="err" role="alert" hidden></p>
     <p id="clips-empty" class="hint" hidden data-i18n="clips.empty">{{ t("clips.empty") }}</p>

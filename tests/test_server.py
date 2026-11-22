@@ -469,8 +469,8 @@ class _CopyChecker(HTMLParser):
 
     def handle_data(self, data):
         text = data.strip()
-        if not text or not any(ch.isalpha() for ch in text):
-            return
+        if not text or not any(ch.isalpha() for ch in text) or re.fullmatch(r'\{\{ icon\("\w+"\) \}\}', text):
+            return  # icons are SVG, not copy
         tag, attrs = self.stack[-1] if self.stack else ("", {})
         if tag in ("script", "style"):
             return
@@ -908,3 +908,16 @@ def test_second_concurrent_install_gets_409(queue, monkeypatch, tmp_data):
     assert first["r"].status_code == 200 and calls == ["download", "launch"]
     assert updater.install_lock.acquire(blocking=False)  # released afterwards
     updater.install_lock.release()
+
+
+_EMOJI = re.compile("[\u2600-\u27BF\U0001F000-\U0001FAFF\u2B00-\u2BFF\u22EF\u25BE]")  # \u2192 stays: errors read "cause \u2192 fix"
+
+
+def test_no_emojis_or_symbol_icons_in_the_ui():
+    es = json.loads((WEB / "static/i18n/es.json").read_text(encoding="utf-8"))
+    en = json.loads((WEB / "static/i18n/en.json").read_text(encoding="utf-8"))
+    for name, text in (("index", INDEX.read_text(encoding="utf-8")), ("js", (WEB / "static/app.js").read_text(encoding="utf-8")),
+                       ("es", json.dumps(es, ensure_ascii=False)), ("en", json.dumps(en, ensure_ascii=False))):
+        assert not _EMOJI.search(text), (name, _EMOJI.search(text).group())
+    assert es["framing.partido"] == "Gameplay + cámara" and es["clip.kind.interesante"] == "Épico"
+    assert '<option value="partido" data-i18n="framing.partido">' in INDEX.read_text(encoding="utf-8").split('id="c-framing"')[1].split("</select>")[0]
