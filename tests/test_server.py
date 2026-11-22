@@ -944,6 +944,29 @@ def test_clip_jobs_live_in_the_clips_screen(client):
     assert "function renderJobList(" in js and "isClipJob" in js.split("function renderProgress(")[1].split("function ")[0]
 
 
+def test_clips_screen_final_fixes(client):
+    html = client.get("/").text
+    # the sheet is outside the drop zone: hiding the box (review) or dropping a file on the sheet must not touch it
+    before = html.split('id="drop"')[1].split('<dialog id="c-options"')[0]
+    assert before.count("</div>") > before.count("<div")  # #drop is closed before the sheet starts
+    assert 'id="c-options"' in html.split('id="panel-video"')[1].split('id="panel-live"')[0]
+    js = JS.read_text("utf-8")
+    assert 'closest("#clip-settings, #c-options")' in js
+    view = js[js.index("function setView("):js.index("function savedView(")]
+    assert "closeOptions()" in view and "closeMomentEditor()" in view
+    # a colour inside background-image drops the whole declaration (no glow)
+    css = CSS.read_text("utf-8")
+    grad = re.search(r"--grad:([^;]*);", css).group(1)
+    assert grad.count("radial-gradient(") == 2 and not re.search(r",\s*#[0-9a-fA-F]+\s*$", grad)
+    # Tus clips: cards with a format-shaped block, the title and a status line
+    tpl = html.split('id="tpl-clip-card"')[1].split("</template>")[0]
+    for part in ('class="clip-face"', 'class="clip-thumb"', 'class="job-topic"', 'class="chip"', 'class="bar small"'):
+        assert part in tpl, part
+    for act in ("review", "open", "retry", "cancel", "remove"):
+        assert f'data-job-act="{act}"' in tpl, act
+    assert '$("#tpl-clip-card")' in js and "aspect-ratio: 9 / 16" in css
+
+
 def test_moment_editor_opens_in_a_side_sheet(client):
     html = client.get("/").text
     assert '<dialog id="moment-editor"' in html

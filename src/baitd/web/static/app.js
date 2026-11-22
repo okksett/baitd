@@ -63,7 +63,7 @@
     },
     live: {
       ready: false, // strings loaded: before that nothing in the panel is drawn
-      sub: "video", // the Clipping sub-tab: "video" or "live"
+      sub: "video", // which view of #panel-clip: "video" (Clips) or "live" (En vivo)
       shown: false, // the En directo panel is on screen (tab, sub-tab and window visible)
       channels: [],
       channelsTimer: null,
@@ -742,6 +742,9 @@
   // state.tab ("short"/"clip") and state.live.sub ("video"/"live") keep their meaning for the rest of the app.
   function setView(view, focus = false) {
     if (view !== "live" && view !== "short") view = "clips";
+    // a modal left open in a panel that gets hidden would sit at 0x0 and make the whole page inert
+    if ($("#c-options").open) closeOptions();
+    closeMomentEditor();
     state.tab = view === "short" ? "short" : "clip";
     state.live.sub = view === "live" ? "live" : "video";
     $$('.navtabs [role="tab"]').forEach((b) => {
@@ -756,9 +759,15 @@
     $("#side").hidden = view !== "short";
     $("#panel-video").hidden = view !== "clips";
     $("#panel-live").hidden = view !== "live";
-    $(".skip").setAttribute("href", view === "short" ? "#head" : "#clip-head");
+    syncSkip();
     remember("view", view);
     syncLiveShown();
+  }
+
+  // The skip link goes to the visible title: while choosing moments "Haz clips." is hidden.
+  function syncSkip() {
+    const target = state.tab === "short" ? "#head" : state.clip.review && state.live.sub === "video" ? "#clip-review-title" : "#clip-head";
+    $(".skip").setAttribute("href", target);
   }
 
   // Saved view, or the one implied by the old tab/subtab values.
@@ -842,6 +851,8 @@
       lbl.id = lbl.id || `${select.id}-label`;
       group.setAttribute("aria-labelledby", lbl.id);
     }
+    const hint = select.getAttribute("aria-describedby");
+    if (hint) group.setAttribute("aria-describedby", hint);
     for (const o of select.options) {
       const b = document.createElement("button");
       b.type = "button";
@@ -889,6 +900,9 @@
     document.addEventListener("click", (e) => {
       pills.forEach((p) => { if (!p.parentElement.contains(e.target)) togglePop(p, false); });
     });
+    pills.forEach((p) => p.parentElement.addEventListener("focusout", (e) => {
+      if (!p.parentElement.contains(e.relatedTarget)) togglePop(p, false);
+    }));
     pills.forEach((p) => p.parentElement.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || p.getAttribute("aria-expanded") !== "true") return;
       e.preventDefault();
@@ -936,7 +950,7 @@
   function onClipInput(e) {
     if (!state.current) return;
     const t = e.target;
-    if (!t.closest || !t.closest("#clip-settings") || !t.matches("select, input")) return;
+    if (!t.closest || !t.closest("#clip-settings, #c-options") || !t.matches("select, input")) return;
     const problem = readClip(t);
     if (problem) showError($("#clip-error"), new Error(problem));
     else if (state.clip.settingsBad) showError($("#clip-error"), null);
@@ -1370,7 +1384,10 @@
   function renderClipReview() {
     const r = state.clip.review;
     closeMomentEditor(); // its card is about to be replaced
+    // focus in the part the review hides (the box, Tus clips or the Más opciones sheet) moves to the review title
+    const lost = document.activeElement && document.activeElement.closest("#drop, #c-options, #clip-jobs");
     $("#panel-video").classList.toggle("reviewing", Boolean(r)); // the review takes the place of the box and Tus clips
+    syncSkip();
     if (!r) {
       $("#moment-list").replaceChildren();
       $("#clip-review").hidden = true;
@@ -1383,6 +1400,8 @@
     $("#clip-review-source").textContent = `${r.source.title} · ${fmtTime(r.source.duration, false)}`;
     $("#moment-list").replaceChildren(...r.moments.map((m, i) => momentCard(m, i)));
     renderExportState();
+    if ($("#c-options").open) closeOptions(); // an analysis finished while the sheet was open: it is hidden now
+    if (lost) $("#clip-review-title").focus();
   }
 
   function momentCard(m, idx) {
@@ -1595,11 +1614,13 @@
       const { jobs } = await api("GET", "/api/jobs");
       state.jobs = jobs;
       showError($("#queue-error"), null);
+      showError($("#clip-jobs-error"), null);
       renderJobs();
       checkAnalyses();
       onLiveJobs();
     } catch (e) {
       showError($("#queue-error"), e);
+      showError($("#clip-jobs-error"), e); // the Short column (and its #queue-error) is hidden in Clips and En vivo
     }
     if (state.jobs.some((j) => ACTIVE.includes(j.status))) state.pollTimer = setTimeout(refreshJobs, POLL_MS);
   }
@@ -1633,21 +1654,21 @@
   }
 
   function renderJobs() {
-    renderJobList($("#queue-list"), state.jobs.filter((j) => !isClipJob(j)), $("#queue-empty"), $("#clear-finished"));
+    renderJobList($("#queue-list"), state.jobs.filter((j) => !isClipJob(j)), $("#queue-empty"), $("#clear-finished"), $("#tpl-job"));
     const clips = state.jobs.filter(isClipJob);
     // the queue is oldest first: running ones first in queue order (full width), then the rest, newest first
     const sorted = [...clips.filter((j) => ACTIVE.includes(j.status)), ...clips.filter((j) => !ACTIVE.includes(j.status)).reverse()];
-    renderJobList($("#clip-jobs-list"), sorted, $("#clip-jobs-empty"), $("#clip-jobs-clear"));
+    renderJobList($("#clip-jobs-list"), sorted, $("#clip-jobs-empty"), $("#clip-jobs-clear"), $("#tpl-clip-card"));
     renderProgress();
     renderPreview();
   }
 
-  function renderJobList(list, jobs, empty, clear) {
+  function renderJobList(list, jobs, empty, clear, tpl) {
     const byId = new Map($$(".job", list).map((li) => [li.dataset.id, li]));
     const wanted = jobs.map((job) => {
       let li = byId.get(job.id);
       if (!li) {
-        li = $("#tpl-job").content.firstElementChild.cloneNode(true);
+        li = tpl.content.firstElementChild.cloneNode(true);
         li.dataset.id = job.id;
         applyI18n(li);
       }
@@ -1677,13 +1698,28 @@
     bar.hidden = !running;
     $("i", bar).style.width = `${job.percent}%`;
     showError($(".job-err", li), job.error ? new Error(job.error) : null);
-    // a finished analysis has no folder: it opens its review list instead
-    $('[data-job-act="review"]', li).hidden = !(job.kind === "clip_analyze" && job.status === "done" && job.analysis_id);
-    $('[data-job-act="clips"]', li).hidden = !(job.status === "done" && job.output);
-    $('[data-job-act="open"]', li).hidden = !(job.status === "done" && job.output);
-    $('[data-job-act="retry"]', li).hidden = !RETRYABLE.includes(job.status);
-    $('[data-job-act="cancel"]', li).hidden = !ACTIVE.includes(job.status);
-    $('[data-job-act="remove"]', li).hidden = !FINISHED.includes(job.status);
+    const viewable = Boolean(job.status === "done" && job.output);
+    // a Tus clips card: its face is the "clips" button while there are clips to see, plain text otherwise
+    const face = $(".clip-face", li);
+    if (face && (face.tagName === "BUTTON") !== viewable) {
+      const next = document.createElement(viewable ? "button" : "div");
+      next.className = face.className;
+      if (viewable) {
+        next.type = "button";
+        next.dataset.jobAct = "clips";
+      }
+      next.append(...face.childNodes);
+      face.replaceWith(next);
+    }
+    const show = {
+      review: job.kind === "clip_analyze" && job.status === "done" && job.analysis_id, // an analysis has no folder
+      clips: viewable,
+      open: viewable,
+      retry: RETRYABLE.includes(job.status),
+      cancel: ACTIVE.includes(job.status),
+      remove: FINISHED.includes(job.status),
+    };
+    $$("[data-job-act]", li).forEach((b) => { b.hidden = !show[b.dataset.jobAct]; });
   }
 
   function renderProgress() {
@@ -1800,7 +1836,7 @@
 
   // ---------- en directo: panel lifetime ----------
 
-  // The panel is "shown" while the Clipping tab, its En directo sub-tab and the window are all visible:
+  // The panel is "shown" while the En vivo view and the window are both visible:
   // opening it re-checks the channels and reloads the moments; the channel list refreshes every minute.
   function syncLiveShown() {
     const L = state.live;
@@ -2108,7 +2144,7 @@
   }
 
   // A hotkey press with no capture, or a hotkey the system refused, is explained on every tab (spec §6.1):
-  // in the app-wide line under the header instead of the panel's notices.
+  // in the app-wide line above the main area instead of the panel's notices.
   let appAlertTimer = null;
   let appAlertNow = ""; // the passing notice (a press without a capture, a refusal as it happens)
   let hotkeyAlert = ""; // the standing one: the system refused the hotkey, so it stays until it works
@@ -2669,6 +2705,7 @@
     renderMusicSelect();
     renderDerived();
     renderClipDerived();
+    syncPills(); // the duration and count pills are written by script, not by data-i18n
     renderClipReview();
     renderReview();
     $$("#live-channels .channel, #live-moments .lm").forEach((n) => applyI18n(n));
