@@ -25,7 +25,7 @@ def test_profile_clipping_roundtrips_as_plain_json():
 
 
 def test_clip_profile_rejects_bad_values():
-    for bad in ({"count": 0}, {"count": 21}, {"min_s": 9}, {"max_s": 181}, {"min_s": 60, "max_s": 30},
+    for bad in ({"count": -1}, {"count": 21}, {"min_s": 9}, {"max_s": 181}, {"min_s": 60, "max_s": 30},
                 {"kind": "x"}, {"framing": "x"}, {"transcriber": "x"},
                 {"whisper_model": "tiny"}, {"language": "Spanish"}, {"language": "ES"}, {"language": ""}):
         with pytest.raises(ValueError):
@@ -80,3 +80,7 @@ def test_api_saves_valid_clipping(client):
     r = client.post("/api/profiles", json={"id": "a", "name": "A", "clipping": {"count": 3}})
     assert r.status_code == 200
     assert r.get_json()["clipping"]["count"] == 3
+
+
+def test_clip_count_zero_means_every_good_moment():
+    assert ClipProfile.from_dict({"count": 0}).count == 0

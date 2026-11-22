@@ -816,7 +816,9 @@
     const p = state.current;
     if (!p) return;
     const c = p.clipping;
-    $("#c-count").value = String(c.count);
+    $("#c-count").value = String(c.count || MAX_EXPORT);
+    $("#c-count-all").checked = c.count === 0;
+    $("#c-count").disabled = c.count === 0;
     $("#c-min").value = String(c.min_s);
     $("#c-max").value = String(c.max_s);
     $("#c-kind").value = c.kind;
@@ -876,10 +878,12 @@
     c.credit = $("#c-credit").checked;
     c.music = $("#c-music").checked;
     const int = (sel) => (/^\d+$/.test($(sel).value.trim()) ? Number($(sel).value) : NaN);
-    const count = int("#c-count");
+    const all = $("#c-count-all").checked; // every good moment found, up to MAX_EXPORT
+    $("#c-count").disabled = all;
+    const count = all ? 0 : int("#c-count");
     const min = int("#c-min");
     const max = int("#c-max");
-    if (!(count >= 1 && count <= MAX_EXPORT)) return tr("err.clip_count");
+    if (!all && !(count >= 1 && count <= MAX_EXPORT)) return tr("err.clip_count");
     if (!(min >= MIN_CLIP_S && max <= MAX_CLIP_S && min <= max)) return tr("err.clip_len");
     Object.assign(c, { count, min_s: min, max_s: max });
     return "";
@@ -1132,8 +1136,8 @@
       const problem = readClip(null);
       state.clip.settingsBad = Boolean(problem);
       if (problem) throw new Error(problem);
-      if (state.clip.source) body.source_id = state.clip.source.source_id;
       if (state.clip.chat) body.chat_id = state.clip.chat.chat_id;
+      if (state.clip.source) body.source_id = state.clip.source.source_id;
       else if (!url) throw new Error(tr("err.clip_source"));
       else body.url = url; // the server fixes "youtu.be/x" or "Mira este video https://…" and says if it is no link
       body.overrides = { ...state.current.clipping }; // what the screen shows, even if the save lags or failed

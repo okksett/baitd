@@ -44,7 +44,7 @@ def _choice(d: dict, key: str, default: str, allowed: tuple[str, ...]) -> str:
 
 @dataclass
 class ClipProfile:
-    count: int = 5  # 1..20
+    count: int = 5  # 1..20, or 0: every good moment found (up to 20)
     min_s: int = 20  # 10..180
     max_s: int = 60  # 10..180, >= min_s
     kind: str = "todos"  # "todos" | one of KINDS
@@ -69,7 +69,7 @@ class ClipProfile:
         if not isinstance(lang, str) or (lang != "auto" and not _LANG.fullmatch(lang)):
             raise ValueError("language must be 'auto' or a lowercase ISO code")
         c = cls(
-            count=_int_in(d, "count", base.count, 1, 20),
+            count=_int_in(d, "count", base.count, 0, 20),
             min_s=_int_in(d, "min_s", base.min_s, 10, 180),
             max_s=_int_in(d, "max_s", base.max_s, 10, 180),
             kind=_choice(d, "kind", base.kind, ("todos", *KINDS)),
@@ -144,7 +144,7 @@ class Moment:
     hashtags: list[str]
     text: str  # transcript text of the span
     framing: str = "cara"
-    credit: str = ""  # user-edited credit text; "" = auto "Fuente: @<channel>"
+    credit: str = ""  # user-edited credit text; "" = the channel (its @handle when known)
     badge: str = ""  # "" or one of BADGES
     cam: list[int] | None = None  # [x, y, w, h] of the streamer's webcam in the source frame, or None
 
