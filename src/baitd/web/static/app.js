@@ -57,6 +57,7 @@
       upload: null, // upload in flight: {id, xhr, cancelled}
       watch: new Set(), // clip_analyze jobs started from this page: their review opens when done
       review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
+      editing: null, // the moment card whose editor is open in #moment-editor
       settingsBad: false, // a typed clip number is out of range (shown in #clip-error, not applied)
       saveFailed: false, // a profile save failed while this tab was shown (also in #clip-error)
     },
@@ -570,7 +571,7 @@
     $("#c-file-btn").disabled = busy;
     $("#c-chat-btn").disabled = busy;
     $("#clip-discard").disabled = busy;
-    $$("#moment-list .m-remove").forEach((b) => { b.disabled = busy; });
+    $$(".moment-editor .m-remove").forEach((b) => { b.disabled = busy; });
     renderExportState();
     $("#profile").disabled = busy; // a batch must be submitted under the profile that wrote it
     $("#profile-menu-btn").disabled = busy;
@@ -1361,17 +1362,22 @@
     const why = exportProblem();
     $("#clip-why").textContent = why;
     $("#clip-export").disabled = state.busy || Boolean(why);
-    $("#clip-selected").textContent = tr("clip.selected", { n: r.moments.filter((m) => m.pick).length });
+    const n = r.moments.filter((m) => m.pick).length;
+    $("#clip-selected").textContent = tr("clip.selected", { n });
+    $("#clip-export span").textContent = tr("clip.export", { n });
   }
 
   function renderClipReview() {
     const r = state.clip.review;
+    closeMomentEditor(); // its card is about to be replaced
+    $("#panel-video").classList.toggle("reviewing", Boolean(r)); // the review takes the place of the box and Tus clips
     if (!r) {
       $("#moment-list").replaceChildren();
       $("#clip-review").hidden = true;
       return;
     }
     $("#clip-review").hidden = false;
+    $("#clip-review-title").textContent = tr("clip.review_title", { n: r.moments.length });
     $("#clip-keep-note").hidden = state.clip.keepSources === true;
     $("#clip-review-source").textContent = `${r.source.title} · ${fmtTime(r.source.duration, false)}`;
     $("#moment-list").replaceChildren(...r.moments.map((m, i) => momentCard(m, i)));
@@ -1398,7 +1404,15 @@
       const name = m.title.trim() || `${fmtTime(m.start)}`;
       pick.setAttribute("aria-label", `${tr("moment.pick")}: ${name}`);
       remove.setAttribute("aria-label", `${tr("review.remove")}: ${name}`);
+      // the card face: title (or what is said), type, length and where it is in the video
+      $(".m-name", node).textContent = m.title.trim() || m.text || name;
+      const len = m.end - m.start;
+      $(".m-meta", node).textContent = [tr(`clip.kind.${m.kind}`), Number.isFinite(len) ? fmtTime(Math.max(0, len), false) : "",
+        Number.isFinite(m.start) ? fmtTime(m.start, false) : ""].filter(Boolean).join(" · ");
+      node.dataset.name = name;
+      if (state.clip.editing === node) $("#moment-editor-title").textContent = name;
     };
+    $(".m-face", node).addEventListener("click", () => openMomentEditor(node));
 
     pick.checked = m.pick;
     pick.addEventListener("change", () => { m.pick = pick.checked; renderExportState(); });
@@ -1437,18 +1451,20 @@
     };
     video.addEventListener("timeupdate", () => { if (video.currentTime >= m.end) video.pause(); });
     video.addEventListener("play", () => {
-      $$("#moment-list .m-video").forEach((v) => { if (v !== video) v.pause(); });
+      $$(".moment-editor .m-video").forEach((v) => { if (v !== video) v.pause(); });
       if (video.currentTime < m.start - 0.25 || video.currentTime >= m.end - 0.05) video.currentTime = m.start;
     });
 
+    const lenBox = $(".m-len", node); // found now: the editor leaves the card while it is open
+    const errBox = $(".m-err", node);
     const showTimes = () => {
       for (const edge of ["start", "end"]) {
         times[edge].value = Number.isFinite(m[edge]) ? fmtTime(m[edge]) : m.raw[edge] || "";
       }
       const len = m.end - m.start;
-      $(".m-len", node).textContent = Number.isFinite(len) ? tr("moment.len", { s: fmtTime(Math.max(0, len)) }) : "";
+      lenBox.textContent = Number.isFinite(len) ? tr("moment.len", { s: fmtTime(Math.max(0, len)) }) : "";
       const problem = momentProblem(m, r.source.duration);
-      showError($(".m-err", node), problem ? new Error(problem) : null);
+      showError(errBox, problem ? new Error(problem) : null);
       node.classList.toggle("bad", Boolean(problem));
     };
     const changed = () => { showTimes(); setSrc(); renderExportState(); named(); };
@@ -1476,6 +1492,32 @@
     return node;
   }
 
+  // The card's editor is moved (not copied) into the side sheet, so its listeners keep working.
+  function openMomentEditor(card) {
+    closeMomentEditor();
+    const dlg = $("#moment-editor");
+    const ed = $(".moment-editor", card);
+    state.clip.editing = card;
+    $("#moment-editor-title").textContent = card.dataset.name;
+    ed.hidden = false;
+    $(".dlg", dlg).append(ed);
+    dlg.showModal();
+  }
+
+  // Puts the editor back in its card and focuses the card (Esc, the close button, the backdrop or a re-render).
+  function closeMomentEditor() {
+    const dlg = $("#moment-editor");
+    const card = state.clip.editing;
+    state.clip.editing = null;
+    if (dlg.open) dlg.close(); // its "close" event calls back here and finds nothing left to do
+    if (!card) return;
+    const ed = $(".moment-editor", dlg);
+    $(".m-video", ed).pause();
+    ed.hidden = true;
+    card.append(ed);
+    if (card.isConnected) $(".m-face", card).focus();
+  }
+
   // Removing the last card is the same as discarding the whole analysis.
   async function removeMoment(m) {
     const r = state.clip.review;
@@ -1488,8 +1530,8 @@
     if (i < 0) return;
     r.moments.splice(i, 1);
     renderClipReview();
-    const buttons = $$("#moment-list .m-remove");
-    (buttons[Math.min(i, buttons.length - 1)] || $("#clip-discard")).focus();
+    const faces = $$("#moment-list .m-face");
+    (faces[Math.min(i, faces.length - 1)] || $("#clip-discard")).focus();
   }
 
   async function discardAnalysis() {
@@ -2710,6 +2752,10 @@
     $("#c-options-close").addEventListener("click", closeOptions);
     $("#c-options").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeOptions(); }); // the backdrop
     $("#c-options").addEventListener("close", () => $("#c-more").focus());
+    $("#moment-editor-close").addEventListener("click", closeMomentEditor);
+    $("#moment-editor").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeMomentEditor(); }); // the backdrop
+    // Esc; a late event after a re-render must not close an editor opened since
+    $("#moment-editor").addEventListener("close", () => { if (!$("#moment-editor").open) closeMomentEditor(); });
     $("#c-file-btn").addEventListener("click", () => $("#c-file").click());
     $("#c-file").addEventListener("change", (e) => {
       const file = e.target.files[0];

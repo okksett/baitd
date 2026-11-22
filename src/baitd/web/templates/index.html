@@ -415,20 +415,30 @@
 
     <section id="clip-review" class="review" aria-labelledby="clip-review-title" hidden>
       <div class="review-head">
-        <h3 id="clip-review-title" tabindex="-1" data-i18n="clip.review_title">{{ t("clip.review_title") }}</h3>
-        <span class="hint" id="clip-selected"></span>
+        <div class="review-intro">
+          <h3 id="clip-review-title" tabindex="-1"></h3>
+          <p class="hint" data-i18n="clip.review_hint">{{ t("clip.review_hint") }}</p>
+          <p class="hint"><span id="clip-review-source"></span> · <span id="clip-selected"></span></p>
+          <p class="hint" id="clip-keep-note" data-i18n="clip.keep_note">{{ t("clip.keep_note") }}</p>
+        </div>
+        <div class="btns">
+          <button type="button" class="b1" id="clip-discard" data-i18n="clip.discard">{{ t("clip.discard") }}</button>
+          <button type="button" class="b2" id="clip-export" aria-describedby="clip-why"><span></span>{{ icon("arrow") }}</button>
+        </div>
       </div>
-      <p class="hint" id="clip-review-source"></p>
-      <p class="hint" data-i18n="clip.review_hint">{{ t("clip.review_hint") }}</p>
-      <p class="hint" id="clip-keep-note" data-i18n="clip.keep_note">{{ t("clip.keep_note") }}</p>
-      <div id="moment-list"></div>
       <p id="clip-why" class="why" role="status"></p>
       <p id="clip-review-error" class="err" role="alert" hidden></p>
-      <div class="btns">
-        <button type="button" class="b1" id="clip-discard" data-i18n="clip.discard">{{ t("clip.discard") }}</button>
-        <button type="button" class="b2" id="clip-export" aria-describedby="clip-why" data-i18n="clip.export">{{ t("clip.export") }}</button>
-      </div>
+      <div id="moment-list"></div>
     </section>
+
+    <dialog id="moment-editor" class="sheet wide" aria-labelledby="moment-editor-title">
+      <div class="dlg">
+        <div class="dlg-head">
+          <h2 id="moment-editor-title"></h2>
+          <button type="button" class="gear" id="moment-editor-close" data-i18n-aria="btn.close" aria-label='{{ t("btn.close") }}'>{{ icon("close") }}</button>
+        </div>
+      </div>
+    </dialog>
     </div>
 
     <div id="panel-live" hidden>
@@ -776,8 +786,13 @@
 
 <template id="tpl-moment">
   <article class="moment panel">
+    <label class="m-pick-wrap"><input type="checkbox" class="m-pick"><span class="sr-only" data-i18n="moment.pick">{{ t("moment.pick") }}</span></label>
+    <button type="button" class="m-face" aria-haspopup="dialog">
+      <span class="m-thumb" aria-hidden="true"></span>
+      <span class="m-face-text"><b class="m-name"></b><span class="m-meta"></span></span>
+    </button>
+    <div class="moment-editor" hidden>
     <div class="moment-head">
-      <label class="check m-pick-wrap"><input type="checkbox" class="m-pick"> <span data-i18n="moment.pick">{{ t("moment.pick") }}</span></label>
       <span class="chip m-score"></span>
       <span class="chip m-kind"></span>
       <button type="button" class="link-btn m-remove" data-i18n="review.remove">{{ t("review.remove") }}</button>
@@ -830,6 +845,7 @@
                data-i18n-placeholder="moment.credit_placeholder" placeholder='{{ t("moment.credit_placeholder") }}'>
       </div>
       <p class="err wide m-err" hidden></p>
+    </div>
     </div>
   </article>
 </template>

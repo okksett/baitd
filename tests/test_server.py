@@ -942,3 +942,12 @@ def test_clip_jobs_live_in_the_clips_screen(client):
         assert f'id="{i}"' in video, i
     js = (WEB / "static/app.js").read_text(encoding="utf-8")
     assert "function renderJobList(" in js and "isClipJob" in js.split("function renderProgress(")[1].split("function ")[0]
+
+
+def test_moment_editor_opens_in_a_side_sheet(client):
+    html = client.get("/").text
+    assert '<dialog id="moment-editor"' in html
+    tpl = html.split('id="tpl-moment"')[1].split("</template>")[0]
+    assert 'class="moment-editor"' in tpl
+    es = json.loads((WEB / "static/i18n/es.json").read_text(encoding="utf-8"))
+    assert "{n}" in es["clip.review_title"] and "{n}" in es["clip.export"]
