@@ -529,15 +529,13 @@ def test_index_renders_offline_and_translated(client):
         assert r.json == json.loads(EN.read_text("utf-8"))
 
 
-def test_index_uses_saved_language_and_theme(client):
+def test_index_is_dark_only(client):
     client.post("/api/settings", json={"ui_lang": "en", "theme": "light"})
     html = client.get("/").text
-    en = json.loads(EN.read_text("utf-8"))
-    assert 'lang="en"' in html and 'data-theme="light"' in html and en["create"] in html
-
-
-def test_index_theme_unset_on_first_run(client):
-    assert 'data-theme=""' in client.get("/").text  # CSS follows prefers-color-scheme
+    assert 'lang="en"' in html and 'data-theme="dark"' in html
+    assert "data-theme-set" not in html and 'id="s-theme"' not in html
+    css = CSS.read_text(encoding="utf-8")
+    assert 'data-theme="light"' not in css and "prefers-color-scheme: light" not in css
 
 
 def test_index_has_clipping_tab_and_drop_zone(client):
@@ -694,7 +692,6 @@ def test_small_ui_items_are_wired():
     es, en = json.loads(ES.read_text("utf-8")), json.loads(EN.read_text("utf-8"))
     assert es["fps.hint"] == "60 fps puede tardar más" and en["fps.hint"] == "60 fps may take longer"
     assert 'id="rate-note"' in html and '$("#f-rate").disabled = noSpeed' in js  # M6
-    assert "if (body.theme === dlg.dataset.themeShown) delete body.theme" in js  # M8
     assert '$("#profile").disabled = busy' in js and '$("#profile-menu-btn").disabled = busy' in js  # M9
     assert "const previous = state.savePromise" in js  # M9: saves are chained
 

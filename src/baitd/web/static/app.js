@@ -143,30 +143,6 @@
     el.hidden = !msg;
   }
 
-  // ---------- theme ----------
-
-  const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
-
-  function effectiveTheme() {
-    return document.documentElement.dataset.theme || (lightQuery.matches ? "light" : "dark");
-  }
-
-  function renderTheme() {
-    const t = effectiveTheme();
-    $$("[data-theme-set]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeSet === t)));
-  }
-
-  async function setTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    renderTheme();
-    try {
-      await api("POST", "/api/settings", { theme });
-      showError($("#top-error"), null);
-    } catch (e) {
-      showError($("#top-error"), e);
-    }
-  }
-
   // ---------- profiles ----------
 
   function profileById(id) {
@@ -2367,8 +2343,6 @@
       $("#s-check_updates").checked = s.check_updates !== false;
       $("#ytdlp-status").textContent = "";
       showError($("#ytdlp-error"), null);
-      $("#s-theme").value = effectiveTheme();
-      dlg.dataset.themeShown = effectiveTheme();
       $$(".show-btn", dlg).forEach((b) => setShown(b, false));
     } catch (e) {
       showError($("#top-error"), e);
@@ -2527,8 +2501,6 @@
     $$("[data-setting]", dlg).forEach((el) => { body[el.dataset.setting] = el.value; });
     body.keep_sources = $("#s-keep_sources").checked;
     body.check_updates = $("#s-check_updates").checked;
-    // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
-    if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
     stopHotkeyRecord(false);
     let saved;
@@ -2542,10 +2514,6 @@
     if (saved && saved.live_hotkey) { // in its canonical form ("ctrl+f9" comes back as "Ctrl+F9")
       state.live.hotkey = saved.live_hotkey;
       renderCapture();
-    }
-    if (body.theme) {
-      document.documentElement.dataset.theme = body.theme;
-      renderTheme();
     }
     if (langChanged) {
       BOOT.lang = body.ui_lang;
@@ -2601,8 +2569,6 @@
 
   function bind() {
     bindHelpToggles();
-    $$("[data-theme-set]").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themeSet)));
-    lightQuery.addEventListener("change", renderTheme);
 
     $("#profile").addEventListener("change", (e) => switchProfile(e.target.value));
     $("#profile-menu-btn").addEventListener("click", () => {
@@ -2739,7 +2705,6 @@
 
   async function init() {
     bind();
-    renderTheme();
     setTab(remembered("tab") || "short");
     setSubTab(remembered("subtab") || "video");
     try {
