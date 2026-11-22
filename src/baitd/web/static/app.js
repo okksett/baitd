@@ -1364,7 +1364,7 @@
     $("#clip-export").disabled = state.busy || Boolean(why);
     const n = r.moments.filter((m) => m.pick).length;
     $("#clip-selected").textContent = tr("clip.selected", { n });
-    $("#clip-export span").textContent = tr("clip.export", { n });
+    $("#clip-export span").textContent = n === 1 ? tr("clip.export_one") : tr("clip.export", { n });
   }
 
   function renderClipReview() {
@@ -1377,7 +1377,8 @@
       return;
     }
     $("#clip-review").hidden = false;
-    $("#clip-review-title").textContent = tr("clip.review_title", { n: r.moments.length });
+    const found = r.moments.length;
+    $("#clip-review-title").textContent = found === 1 ? tr("clip.review_title_one") : tr("clip.review_title", { n: found });
     $("#clip-keep-note").hidden = state.clip.keepSources === true;
     $("#clip-review-source").textContent = `${r.source.title} · ${fmtTime(r.source.duration, false)}`;
     $("#moment-list").replaceChildren(...r.moments.map((m, i) => momentCard(m, i)));
