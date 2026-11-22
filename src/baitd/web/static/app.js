@@ -1221,7 +1221,7 @@
   // `job` is a queue item with an analysis_id, or {analysis_id, live} for a moment of the En directo list
   // (`live` is its list entry: the card then shows its reason instead of a score).
   async function openReview(job, userAsked) {
-    const errBox = userAsked ? (job.live ? $("#live-moments-error") : $("#queue-error")) : $("#clip-error");
+    const errBox = userAsked ? (job.live ? $("#live-moments-error") : $("#clip-jobs-error")) : $("#clip-error");
     const open = state.clip.review;
     if (!open || open.analysisId !== job.analysis_id) {
       if (open && userAsked && reviewEdited(open)) {
@@ -1592,8 +1592,8 @@
   function renderJobs() {
     renderJobList($("#queue-list"), state.jobs.filter((j) => !isClipJob(j)), $("#queue-empty"), $("#clear-finished"));
     const clips = state.jobs.filter(isClipJob);
-    // running ones first (full width), then the rest, newest first
-    const sorted = [...clips.filter((j) => ACTIVE.includes(j.status)), ...clips.filter((j) => !ACTIVE.includes(j.status))];
+    // the queue is oldest first: running ones first in queue order (full width), then the rest, newest first
+    const sorted = [...clips.filter((j) => ACTIVE.includes(j.status)), ...clips.filter((j) => !ACTIVE.includes(j.status)).reverse()];
     renderJobList($("#clip-jobs-list"), sorted, $("#clip-jobs-empty"), $("#clip-jobs-clear"));
     renderProgress();
     renderPreview();
@@ -2746,10 +2746,14 @@
         showError($("#clips-error"), err);
       }
     });
-    // the server clears every finished job, whatever its kind: both buttons do the same
-    for (const [btn, err, title] of [["#clear-finished", "#queue-error", "#queue-title"], ["#clip-jobs-clear", "#clip-jobs-error", "#clip-jobs-title"]]) {
+    // each button removes only the finished jobs of its own list (/api/jobs/clear would take every kind)
+    for (const [btn, err, title, clips] of [["#clear-finished", "#queue-error", "#queue-title", false], ["#clip-jobs-clear", "#clip-jobs-error", "#clip-jobs-title", true]]) {
       $(btn).addEventListener("click", async () => {
-        try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($(err), e); }
+        const done = state.jobs.filter((j) => isClipJob(j) === clips && FINISHED.includes(j.status));
+        try {
+          await Promise.all(done.map((j) => api("DELETE", `/api/jobs/${encodeURIComponent(j.id)}`, {})));
+          showError($(err), null);
+        } catch (e) { showError($(err), e); }
         await refreshJobs();
         $(title).focus();
       });
