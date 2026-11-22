@@ -917,6 +917,7 @@ def test_no_emojis_or_symbol_icons_in_the_ui():
     es = json.loads((WEB / "static/i18n/es.json").read_text(encoding="utf-8"))
     en = json.loads((WEB / "static/i18n/en.json").read_text(encoding="utf-8"))
     for name, text in (("index", INDEX.read_text(encoding="utf-8")), ("js", (WEB / "static/app.js").read_text(encoding="utf-8")),
+                       ("css", (WEB / "static/app.css").read_text(encoding="utf-8")),
                        ("es", json.dumps(es, ensure_ascii=False)), ("en", json.dumps(en, ensure_ascii=False))):
         assert not _EMOJI.search(text), (name, _EMOJI.search(text).group())
     assert es["framing.partido"] == "Gameplay + cámara" and es["clip.kind.interesante"] == "Épico"

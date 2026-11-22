@@ -187,7 +187,6 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 .b2:hover:not(:disabled) { filter: brightness(.94); }
 
 .err { color: var(--warn); margin: 10px 0 0; font-size: 13px; }
-.err::before { content: "⚠ "; }
 .status { color: var(--muted); margin: 10px 0 0; font-size: 13px; min-height: 1em; }
 .status:empty { display: none; }
 .hint { color: var(--muted); margin: 4px 0 0; font-size: 13px; }
