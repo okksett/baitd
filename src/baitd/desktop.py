@@ -29,8 +29,6 @@ def run_window(url: str, storage: Path) -> bool:
     """Show `url` in a native window and block until the user closes it (main thread only).
     `storage` keeps the page's localStorage between runs. False when no window can be made here."""
     global _window
-    # debug=True below is only for the right-click menu (Copiar/Pegar in the link field); keep
-    # pywebview's own log at warnings, which debug would otherwise raise to every detail
     os.environ.setdefault("PYWEBVIEW_LOG", "WARNING")
     try:
         import webview
@@ -42,16 +40,14 @@ def run_window(url: str, storage: Path) -> bool:
         return False
     webview.settings["ALLOW_DOWNLOADS"] = True
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
-    webview.settings["OPEN_DEVTOOLS_IN_DEBUG"] = False  # debug only to keep the right-click menu
     try:
         window = webview.create_window(TITLE, url, width=SIZE[0], height=SIZE[1], min_size=MIN_SIZE,
                                        background_color=BACKGROUND, text_select=True)
         with _lock:
             _window = window
         storage.mkdir(parents=True, exist_ok=True)
-        # pywebview turns the right-click menu off unless debug: without it nobody could right-click
-        # → Pegar a link. Devtools stay closed (OPEN_DEVTOOLS_IN_DEBUG) and only "Inspeccionar" shows.
-        webview.start(debug=True, private_mode=False, storage_path=str(storage))
+        # no debug: it would also put "Inspeccionar" (devtools) one right-click away; Ctrl+C/Ctrl+V still work
+        webview.start(debug=False, private_mode=False, storage_path=str(storage))
     except Exception as e:  # e.g. Linux without GTK or Qt
         log.warning("No se pudo abrir la ventana de Baitd (%s); se usa el navegador", e)
         return False
