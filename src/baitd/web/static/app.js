@@ -819,21 +819,88 @@
       state.clip.settingsBad = false;
       showError($("#clip-error"), null);
     }
+    syncPills();
     renderClipDerived();
   }
 
   function renderClipDerived() {
     const p = state.current;
     if (!p) return;
-    const c = p.clipping;
-    $("#c-model").disabled = c.transcriber !== "local";
+    $("#c-model").disabled = p.clipping.transcriber !== "local";
     $("#c-fps-hint").hidden = p.fps !== 60;
-    $("#sum-trans").textContent = c.transcriber === "local"
-      ? `${tr("transcriber.local")} · ${c.whisper_model}` : tr("transcriber.openai");
-    $("#sum-framing").textContent = tr(`framing.${c.framing}`);
-    $("#sum-csubs").textContent = `${tr(`preset.${p.subtitle.preset}`)} · ${tr(`pos.${p.subtitle.position}`)}`;
-    const on = [c.hook_title && tr("extras.hook"), c.credit && tr("extras.credit"), c.music && tr("extras.music")];
-    $("#sum-extras").textContent = on.filter(Boolean).join(" · ") || tr("extras.none");
+  }
+
+  // A row of aria-pressed buttons, one per <option>, shown instead of the (hidden) list.
+  function pillFor(select) {
+    const group = document.createElement("div");
+    group.className = "pills";
+    group.setAttribute("role", "group");
+    const lbl = select.labels[0];
+    if (lbl) {
+      lbl.id = lbl.id || `${select.id}-label`;
+      group.setAttribute("aria-labelledby", lbl.id);
+    }
+    for (const o of select.options) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pill";
+      b.dataset.value = o.value;
+      b.dataset.i18n = o.dataset.i18n;
+      b.textContent = o.textContent;
+      b.addEventListener("click", () => {
+        select.value = o.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      group.append(b);
+    }
+    select.hidden = true;
+    select.after(group);
+    return group;
+  }
+
+  // The pill groups follow their list; the duration and count pills show the profile's values.
+  function syncPills() {
+    $$(".pills[role=group]").forEach((g) => {
+      const v = g.previousElementSibling.value;
+      $$("button", g).forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.value === v)));
+    });
+    const c = state.current && state.current.clipping;
+    if (!c) return;
+    $("#c-len-text").textContent = tr("clip.len_pill", { min: c.min_s, max: c.max_s });
+    $("#c-count-text").textContent = c.count === 0 ? tr("clip.count_all")
+      : c.count === 1 ? tr("clip.count_pill_one") : tr("clip.count_pill", { n: c.count });
+  }
+
+  // Duration and count pills: a small panel under the pill; Esc or a click outside closes it.
+  function togglePop(pill, open) {
+    pill.setAttribute("aria-expanded", String(open));
+    document.getElementById(pill.getAttribute("aria-controls")).hidden = !open;
+  }
+
+  function bindPops() {
+    const pills = [$("#c-len-pill"), $("#c-count-pill")];
+    pills.forEach((p) => p.addEventListener("click", () => {
+      const open = p.getAttribute("aria-expanded") !== "true";
+      pills.forEach((q) => togglePop(q, false));
+      togglePop(p, open);
+    }));
+    document.addEventListener("click", (e) => {
+      pills.forEach((p) => { if (!p.parentElement.contains(e.target)) togglePop(p, false); });
+    });
+    pills.forEach((p) => p.parentElement.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || p.getAttribute("aria-expanded") !== "true") return;
+      e.preventDefault();
+      togglePop(p, false);
+      p.focus();
+    }));
+  }
+
+  function openOptions() {
+    $("#c-options").showModal();
+  }
+
+  function closeOptions() {
+    $("#c-options").close();
   }
 
   // Reads the Clipping controls into the profile. Out-of-range numbers are not applied; returns the
@@ -873,6 +940,7 @@
     else if (state.clip.settingsBad) showError($("#clip-error"), null);
     state.clip.settingsBad = Boolean(problem);
     fillForm(); // the Crear short tab shows the same format, fps and subtitles
+    syncPills();
     renderClipDerived();
     if (state.current.language) scheduleSave(); // the profile only ever holds valid numbers
   }
@@ -2624,6 +2692,13 @@
     const clipPanel = $(".form-clip");
     clipPanel.addEventListener("input", onClipInput);
     clipPanel.addEventListener("change", onClipInput);
+    pillFor($("#c-kind"));
+    pillFor($("#c-framing"));
+    bindPops();
+    $("#c-more").addEventListener("click", openOptions);
+    $("#c-options-close").addEventListener("click", closeOptions);
+    $("#c-options").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeOptions(); }); // the backdrop
+    $("#c-options").addEventListener("close", () => $("#c-more").focus());
     $("#c-file-btn").addEventListener("click", () => $("#c-file").click());
     $("#c-file").addEventListener("change", (e) => {
       const file = e.target.files[0];

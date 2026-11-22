@@ -207,25 +207,56 @@ body.quit-done { display: grid; place-items: center; min-height: 100vh; padding:
 
 /* ---------- clipping ---------- */
 
-.drop {
-  border: 1.5px dashed var(--line); border-radius: 14px; padding: 14px; background: var(--panel);
-  transition: border-color .15s, background-color .15s;
+.lead { color: var(--muted); font-size: 15px; margin: -8px 0 16px; }
+.drop { padding: 18px; transition: border-color .15s, background-color .15s; }
+.drop.over { border-color: var(--b1); background-color: rgba(255, 255, 255, .12); }
+.drop-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.drop-row .input { flex: 1 1 240px; min-width: 0; }
+.drop-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+.drop-foot .btns { margin-top: 0; }
+.drop-foot .b1, .drop-foot .b2 { flex: none; padding: 11px 20px; }
+.b2 svg, .pill svg, .more-btn svg { flex: none; vertical-align: middle; }
+#clip-create { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.pills { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pills .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.pills .pill[aria-pressed="true"] { background: var(--cta); color: var(--ctatext); border-color: var(--cta); }
+.pills select.pill { max-width: none; }
+.more-btn { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); text-decoration: none; font-size: 14px; padding: 7px 6px; }
+.more-btn:hover { color: var(--text); }
+.pop-wrap { position: relative; }
+.pop {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 5; width: 270px; padding: 4px 14px 14px;
+  background: var(--dialog); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 30px rgba(0, 0, 0, .35);
 }
-.drop.over { border-color: var(--b1); background-color: rgba(61, 123, 255, .12); }
-.drop-title { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
-.drop-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-.drop-row .hint { margin: 0; }
+.pop .input[type="number"] { width: 5.5em; }
+.gear { display: inline-flex; padding: 6px; border: 0; border-radius: 50%; background: none; color: var(--muted); }
+.gear:hover { color: var(--text); background: var(--glass); }
+
+/* Más opciones: a sheet on the right edge */
+dialog.sheet {
+  margin: 0 0 0 auto; width: min(440px, 100%); height: 100%; max-height: 100%;
+  border-width: 0 0 0 1px; border-radius: var(--radius) 0 0 var(--radius);
+  animation: sheet-in .2s ease-out;
+}
+.sheet .dlg { min-height: 100%; }
+.sheet .pills { margin-top: 2px; }
+.sheet .check { margin-top: 8px; }
+.sheet-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+.sheet-grid .wide { grid-column: 1 / -1; }
+.sheet-chat { margin-top: 18px; }
+.sheet .acc { margin-top: 18px; }
+.sheet .acc summary { align-items: center; }
+.sheet .acc[open] summary svg { transform: rotate(180deg); }
+@keyframes sheet-in { from { transform: translateX(40px); opacity: 0; } }
 .upload { margin-top: 12px; }
 .upload .step { margin: 0 0 8px; }
 .upload .step b { overflow-wrap: anywhere; }
 .upload .link-btn { margin-top: 6px; }
 .source-chip { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
 .source-chip span { overflow-wrap: anywhere; font-weight: 500; }
-.clip-row .lbl { margin-top: 4px; }
 .row .input[type="number"] { padding-right: 8px; }
-.clip-row .num { flex: 0 1 5.5em; }
 .range { display: flex; align-items: center; gap: 6px; }
-.range .range-lbl { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+.range-lbl { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
 .lbl-row { display: flex; align-items: center; gap: 6px; }
 .help {
   flex: none; width: 20px; height: 20px; padding: 0; margin-top: 4px; border-radius: 50%;
@@ -465,5 +496,5 @@ dialog:has(.dlg.small) { width: min(420px, calc(100% - 32px)); }
   .mark-btn { font-size: 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; }
+  *, *::before, *::after { transition: none !important; animation: none !important; }
 }

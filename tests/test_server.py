@@ -547,7 +547,7 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert 'id="panel-video"' in html and 'id="panel-live"' in html and "subtab-" not in html
     assert es["nav.clips"] in html and es["nav.live"] in html and es["nav.short"] in html
     # the drop zone: link input, file button, drag-and-drop area and the upload progress/cancel
-    assert 'id="drop"' in html and es["clip.drop"] in html
+    assert 'id="drop"' in html and es["clip.url_placeholder"] in html
     assert 'id="c-url"' in html and 'id="c-file"' in html and 'id="c-file-btn"' in html
     assert 'id="upload-cancel"' in html and 'id="upload-pct"' in html
     for field in ("c-count", "c-min", "c-max", "c-kind", "c-aspect", "c-fps", "c-transcriber", "c-model",
@@ -566,6 +566,17 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert "64 * 1024 * 1024" in up and 'xhr.open("PUT"' in up and "BOOT.upload_exts" in up
     assert 'api("DELETE", `/api/uploads/' in up and "/finish`" in up
     assert "/api/clips" in js and "/export" in js and "/api/ytdlp/update" in js
+
+
+def test_clips_screen_shows_three_choices_and_hides_the_rest(client):
+    html = client.get("/").text
+    main, sheet = html.split('id="c-options"')[0], html.split('id="c-options"')[1].split("</dialog>")[0]
+    for vis in ("c-url", "c-file-btn", "c-aspect", "c-len-pill", "c-count-pill", "c-more", "clip-find", "clip-create"):
+        assert f'id="{vis}"' in main.split('id="panel-video"')[1], vis
+    for hidden in ("c-kind", "c-framing", "c-preset", "c-hook", "c-credit", "c-music", "c-chat-btn", "c-language",
+                   "c-transcriber", "c-model", "c-fps"):
+        assert f'id="{hidden}"' in sheet, hidden
+    assert 'id="sum-trans"' not in html and 'id="acc-trans"' not in html
 
 
 def test_clipping_ui_lifecycle_seams():
