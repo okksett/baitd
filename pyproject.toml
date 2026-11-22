@@ -24,6 +24,9 @@ dependencies = [
     "faster-whisper>=1.2,<2",
     "opencv-python-headless>=5,<6",
     "numpy>=2,<3",
+    # faster-whisper's onnxruntime: 1.23.x is the last with Intel Mac wheels (the hashed lock must hold one)
+    "onnxruntime<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 48.x: last Intel Mac wheels
     "cryptography>=44,<51",   # Ed25519: the updater checks the release signature before installing
     "keyring>=25.6,<26",      # API keys in the OS credential store (Credential Manager, Keychain)
     "pynput>=1.7.6,<2; sys_platform != 'win32'",  # the global hotkey on macOS and Linux (Windows uses user32)
