@@ -92,12 +92,6 @@ def _load_i18n() -> dict[str, dict[str, str]]:
     return {lang: json.loads((I18N_DIR / f"{lang}.json").read_text(encoding="utf-8")) for lang in UI_LANGS}
 
 
-def _stored_theme() -> str:
-    """The saved theme, or "" when the user never chose one (the page then follows the OS)."""
-    theme = config.raw_settings().get("theme")
-    return theme if theme in THEMES else ""
-
-
 def _cache_gb(value) -> float:
     """The clip-cache cap in GB: a positive number (or numeric string)."""
     try:
@@ -404,7 +398,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         boot = {"version": __version__, "lang": lang, "total_steps": len(STEPS), "clip_steps": len(clip_pipeline.CLIP_STEPS),
                 "presets": {k: v.to_dict() for k, v in captions.PRESETS.items()},
                 "upload_exts": list(clip_sources.UPLOAD_EXTS)}
-        return render_template("index.html", t=t, lang=lang, theme=_stored_theme(), boot=boot)
+        return render_template("index.html", t=t, lang=lang, boot=boot)
 
     @app.get("/fonts/<path:name>")
     def fonts(name: str):

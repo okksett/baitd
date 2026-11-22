@@ -125,6 +125,8 @@ def build_prompt(lines: str, opts: ClipProfile, language: str, ideas: int = 3) -
         "- the clip is understandable without any context from the rest of the video;",
         "- it ends on the payoff (the punchline or the conclusion);",
         f"- its length fits {opts.min_s}-{opts.max_s} seconds.",
+        "Each clip is as long as its own story needs: vary the lengths across the range and never "
+        "stretch a moment to reach the maximum.",
         "start is the mark of the FIRST line included in the clip; end is the mark of the LAST line "
         "included in the clip (that line's own mark, not the time after it). Copy the marks exactly.",
         f"kind is one of: {', '.join(kinds)}.",

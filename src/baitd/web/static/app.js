@@ -57,12 +57,13 @@
       upload: null, // upload in flight: {id, xhr, cancelled}
       watch: new Set(), // clip_analyze jobs started from this page: their review opens when done
       review: null, // {analysisId, profileId, source, moments: [{...moment, orig, pick, raw}]}
+      editing: null, // the moment card whose editor is open in #moment-editor
       settingsBad: false, // a typed clip number is out of range (shown in #clip-error, not applied)
       saveFailed: false, // a profile save failed while this tab was shown (also in #clip-error)
     },
     live: {
       ready: false, // strings loaded: before that nothing in the panel is drawn
-      sub: "video", // the Clipping sub-tab: "video" or "live"
+      sub: "video", // which view of #panel-clip: "video" (Clips) or "live" (En vivo)
       shown: false, // the En directo panel is on screen (tab, sub-tab and window visible)
       channels: [],
       channelsTimer: null,
@@ -141,30 +142,6 @@
     const msg = err ? (err.message || String(err)) : "";
     el.textContent = msg;
     el.hidden = !msg;
-  }
-
-  // ---------- theme ----------
-
-  const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
-
-  function effectiveTheme() {
-    return document.documentElement.dataset.theme || (lightQuery.matches ? "light" : "dark");
-  }
-
-  function renderTheme() {
-    const t = effectiveTheme();
-    $$("[data-theme-set]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeSet === t)));
-  }
-
-  async function setTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    renderTheme();
-    try {
-      await api("POST", "/api/settings", { theme });
-      showError($("#top-error"), null);
-    } catch (e) {
-      showError($("#top-error"), e);
-    }
   }
 
   // ---------- profiles ----------
@@ -594,7 +571,7 @@
     $("#c-file-btn").disabled = busy;
     $("#c-chat-btn").disabled = busy;
     $("#clip-discard").disabled = busy;
-    $$("#moment-list .m-remove").forEach((b) => { b.disabled = busy; });
+    $$(".moment-editor .m-remove").forEach((b) => { b.disabled = busy; });
     renderExportState();
     $("#profile").disabled = busy; // a batch must be submitted under the profile that wrote it
     $("#profile-menu-btn").disabled = busy;
@@ -759,53 +736,62 @@
     }
   }
 
-  // ---------- tabs ----------
+  // ---------- side menu ----------
 
-  function setTab(tab, focus = false) {
-    state.tab = tab === "clip" ? "clip" : "short";
-    $$('.tabs [role="tab"]').forEach((b) => {
-      const on = b.dataset.tab === state.tab;
+  // One menu, three views: Clips and En vivo share #panel-clip; Short con IA has #panel-short.
+  // state.tab ("short"/"clip") and state.live.sub ("video"/"live") keep their meaning for the rest of the app.
+  function setView(view, focus = false) {
+    if (view !== "live" && view !== "short") view = "clips";
+    // a modal left open in a panel that gets hidden would sit at 0x0 and make the whole page inert
+    if ($("#c-options").open) closeOptions();
+    closeMomentEditor();
+    state.tab = view === "short" ? "short" : "clip";
+    state.live.sub = view === "live" ? "live" : "video";
+    $$('.navtabs [role="tab"]').forEach((b) => {
+      const on = b.dataset.view === view;
       b.setAttribute("aria-selected", String(on));
       b.tabIndex = on ? 0 : -1;
       if (on && focus) b.focus();
     });
-    $("#panel-short").hidden = state.tab !== "short";
-    $("#panel-clip").hidden = state.tab !== "clip";
-    $(".skip").setAttribute("href", state.tab === "clip" ? "#clip-head" : "#head");
-    remember("tab", state.tab);
+    $("#panel-short").hidden = view !== "short";
+    $("#panel-clip").hidden = view === "short";
+    $("#panel-clip").setAttribute("aria-labelledby", `nav-${view === "live" ? "live" : "clips"}`);
+    $("#side").hidden = view !== "short";
+    $("#panel-video").hidden = view !== "clips";
+    $("#panel-live").hidden = view !== "live";
+    syncSkip();
+    remember("view", view);
     syncLiveShown();
   }
 
-  // The Clipping panel's own sub-tabs: Video (a link or a file) and En directo.
-  function setSubTab(sub, focus = false) {
-    state.live.sub = sub === "live" ? "live" : "video";
-    $$('.subtabs [role="tab"]').forEach((b) => {
-      const on = b.dataset.subtab === state.live.sub;
-      b.setAttribute("aria-selected", String(on));
-      b.tabIndex = on ? 0 : -1;
-      if (on && focus) b.focus();
-    });
-    $("#panel-video").hidden = state.live.sub !== "video";
-    $("#panel-live").hidden = state.live.sub !== "live";
-    remember("subtab", state.live.sub);
-    syncLiveShown();
+  // The skip link goes to the visible title: while choosing moments "Haz clips." is hidden.
+  function syncSkip() {
+    const target = state.tab === "short" ? "#head" : state.clip.review && state.live.sub === "video" ? "#clip-review-title" : "#clip-head";
+    $(".skip").setAttribute("href", target);
   }
 
-  // Arrow keys, Home and End move between the tabs of the tablist that has focus (tabs or sub-tabs).
+  // Saved view, or the one implied by the old tab/subtab values.
+  function savedView() {
+    const v = remembered("view");
+    if (v === "clips" || v === "live" || v === "short") return v;
+    if (remembered("tab") === "short") return "short";
+    return remembered("tab") === "clip" && remembered("subtab") === "live" ? "live" : "clips";
+  }
+
+  // Arrow up/down, Home and End move between the menu buttons.
   function onTabKey(e) {
     const tabs = $$('[role="tab"]', e.currentTarget);
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     const next = {
-      ArrowRight: tabs[(i + 1) % tabs.length],
-      ArrowLeft: tabs[(i - 1 + tabs.length) % tabs.length],
+      ArrowDown: tabs[(i + 1) % tabs.length],
+      ArrowUp: tabs[(i - 1 + tabs.length) % tabs.length],
       Home: tabs[0],
       End: tabs[tabs.length - 1],
     }[e.key];
     if (!next) return;
     e.preventDefault();
-    if (next.dataset.subtab) setSubTab(next.dataset.subtab, true);
-    else setTab(next.dataset.tab, true);
+    setView(next.dataset.view, true);
   }
 
   // ---------- clipping: settings (profile.clipping, plus the shared aspect, fps and subtitle) ----------
@@ -816,7 +802,9 @@
     const p = state.current;
     if (!p) return;
     const c = p.clipping;
-    $("#c-count").value = String(c.count);
+    $("#c-count").value = String(c.count || MAX_EXPORT);
+    $("#c-count-all").checked = c.count === 0;
+    $("#c-count").disabled = c.count === 0;
     $("#c-min").value = String(c.min_s);
     $("#c-max").value = String(c.max_s);
     $("#c-kind").value = c.kind;
@@ -842,21 +830,93 @@
       state.clip.settingsBad = false;
       showError($("#clip-error"), null);
     }
+    syncPills();
     renderClipDerived();
   }
 
   function renderClipDerived() {
     const p = state.current;
     if (!p) return;
-    const c = p.clipping;
-    $("#c-model").disabled = c.transcriber !== "local";
+    $("#c-model").disabled = p.clipping.transcriber !== "local";
     $("#c-fps-hint").hidden = p.fps !== 60;
-    $("#sum-trans").textContent = c.transcriber === "local"
-      ? `${tr("transcriber.local")} · ${c.whisper_model}` : tr("transcriber.openai");
-    $("#sum-framing").textContent = tr(`framing.${c.framing}`);
-    $("#sum-csubs").textContent = `${tr(`preset.${p.subtitle.preset}`)} · ${tr(`pos.${p.subtitle.position}`)}`;
-    const on = [c.hook_title && tr("extras.hook"), c.credit && tr("extras.credit"), c.music && tr("extras.music")];
-    $("#sum-extras").textContent = on.filter(Boolean).join(" · ") || tr("extras.none");
+  }
+
+  // A row of aria-pressed buttons, one per <option>, shown instead of the (hidden) list.
+  function pillFor(select) {
+    const group = document.createElement("div");
+    group.className = "pills";
+    group.setAttribute("role", "group");
+    const lbl = select.labels[0];
+    if (lbl) {
+      lbl.id = lbl.id || `${select.id}-label`;
+      group.setAttribute("aria-labelledby", lbl.id);
+    }
+    const hint = select.getAttribute("aria-describedby");
+    if (hint) group.setAttribute("aria-describedby", hint);
+    for (const o of select.options) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pill";
+      b.dataset.value = o.value;
+      b.dataset.i18n = o.dataset.i18n;
+      b.textContent = o.textContent;
+      b.addEventListener("click", () => {
+        select.value = o.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      group.append(b);
+    }
+    select.hidden = true;
+    select.after(group);
+    return group;
+  }
+
+  // The pill groups follow their list; the duration and count pills show the profile's values.
+  function syncPills() {
+    $$(".pills[role=group]").forEach((g) => {
+      const v = g.previousElementSibling.value;
+      $$("button", g).forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.value === v)));
+    });
+    const c = state.current && state.current.clipping;
+    if (!c) return;
+    $("#c-len-text").textContent = tr("clip.len_pill", { min: c.min_s, max: c.max_s });
+    $("#c-count-text").textContent = c.count === 0 ? tr("clip.count_all")
+      : c.count === 1 ? tr("clip.count_pill_one") : tr("clip.count_pill", { n: c.count });
+  }
+
+  // Duration and count pills: a small panel under the pill; Esc or a click outside closes it.
+  function togglePop(pill, open) {
+    pill.setAttribute("aria-expanded", String(open));
+    document.getElementById(pill.getAttribute("aria-controls")).hidden = !open;
+  }
+
+  function bindPops() {
+    const pills = [$("#c-len-pill"), $("#c-count-pill")];
+    pills.forEach((p) => p.addEventListener("click", () => {
+      const open = p.getAttribute("aria-expanded") !== "true";
+      pills.forEach((q) => togglePop(q, false));
+      togglePop(p, open);
+    }));
+    document.addEventListener("click", (e) => {
+      pills.forEach((p) => { if (!p.parentElement.contains(e.target)) togglePop(p, false); });
+    });
+    pills.forEach((p) => p.parentElement.addEventListener("focusout", (e) => {
+      if (!p.parentElement.contains(e.relatedTarget)) togglePop(p, false);
+    }));
+    pills.forEach((p) => p.parentElement.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || p.getAttribute("aria-expanded") !== "true") return;
+      e.preventDefault();
+      togglePop(p, false);
+      p.focus();
+    }));
+  }
+
+  function openOptions() {
+    $("#c-options").showModal();
+  }
+
+  function closeOptions() {
+    $("#c-options").close();
   }
 
   // Reads the Clipping controls into the profile. Out-of-range numbers are not applied; returns the
@@ -876,10 +936,12 @@
     c.credit = $("#c-credit").checked;
     c.music = $("#c-music").checked;
     const int = (sel) => (/^\d+$/.test($(sel).value.trim()) ? Number($(sel).value) : NaN);
-    const count = int("#c-count");
+    const all = $("#c-count-all").checked; // every good moment found, up to MAX_EXPORT
+    $("#c-count").disabled = all;
+    const count = all ? 0 : int("#c-count");
     const min = int("#c-min");
     const max = int("#c-max");
-    if (!(count >= 1 && count <= MAX_EXPORT)) return tr("err.clip_count");
+    if (!all && !(count >= 1 && count <= MAX_EXPORT)) return tr("err.clip_count");
     if (!(min >= MIN_CLIP_S && max <= MAX_CLIP_S && min <= max)) return tr("err.clip_len");
     Object.assign(c, { count, min_s: min, max_s: max });
     return "";
@@ -888,12 +950,13 @@
   function onClipInput(e) {
     if (!state.current) return;
     const t = e.target;
-    if (!t.closest || !t.closest("#clip-settings") || !t.matches("select, input")) return;
+    if (!t.closest || !t.closest("#clip-settings, #c-options") || !t.matches("select, input")) return;
     const problem = readClip(t);
     if (problem) showError($("#clip-error"), new Error(problem));
     else if (state.clip.settingsBad) showError($("#clip-error"), null);
     state.clip.settingsBad = Boolean(problem);
     fillForm(); // the Crear short tab shows the same format, fps and subtitles
+    syncPills();
     renderClipDerived();
     if (state.current.language) scheduleSave(); // the profile only ever holds valid numbers
   }
@@ -1132,8 +1195,8 @@
       const problem = readClip(null);
       state.clip.settingsBad = Boolean(problem);
       if (problem) throw new Error(problem);
-      if (state.clip.source) body.source_id = state.clip.source.source_id;
       if (state.clip.chat) body.chat_id = state.clip.chat.chat_id;
+      if (state.clip.source) body.source_id = state.clip.source.source_id;
       else if (!url) throw new Error(tr("err.clip_source"));
       else body.url = url; // the server fixes "youtu.be/x" or "Mira este video https://…" and says if it is no link
       body.overrides = { ...state.current.clipping }; // what the screen shows, even if the save lags or failed
@@ -1173,7 +1236,7 @@
   // `job` is a queue item with an analysis_id, or {analysis_id, live} for a moment of the En directo list
   // (`live` is its list entry: the card then shows its reason instead of a score).
   async function openReview(job, userAsked) {
-    const errBox = userAsked ? (job.live ? $("#live-moments-error") : $("#queue-error")) : $("#clip-error");
+    const errBox = userAsked ? (job.live ? $("#live-moments-error") : $("#clip-jobs-error")) : $("#clip-error");
     const open = state.clip.review;
     if (!open || open.analysisId !== job.analysis_id) {
       if (open && userAsked && reviewEdited(open)) {
@@ -1205,8 +1268,7 @@
       renderClipReview();
     }
     if (userAsked) {
-      setTab("clip");
-      setSubTab("video"); // the review card lives in the Video sub-tab
+      setView("clips"); // the review card lives in the Clips view
       $("#clip-review-title").focus();
     }
   }
@@ -1314,21 +1376,32 @@
     const why = exportProblem();
     $("#clip-why").textContent = why;
     $("#clip-export").disabled = state.busy || Boolean(why);
-    $("#clip-selected").textContent = tr("clip.selected", { n: r.moments.filter((m) => m.pick).length });
+    const n = r.moments.filter((m) => m.pick).length;
+    $("#clip-selected").textContent = n === 1 ? tr("clip.selected_one") : tr("clip.selected", { n });
+    $("#clip-export span").textContent = n === 1 ? tr("clip.export_one") : tr("clip.export", { n });
   }
 
   function renderClipReview() {
     const r = state.clip.review;
+    closeMomentEditor(); // its card is about to be replaced
+    // focus in the part the review hides (the box, Tus clips or the Más opciones sheet) moves to the review title
+    const lost = document.activeElement && document.activeElement.closest("#drop, #c-options, #clip-jobs");
+    $("#panel-video").classList.toggle("reviewing", Boolean(r)); // the review takes the place of the box and Tus clips
+    syncSkip();
     if (!r) {
       $("#moment-list").replaceChildren();
       $("#clip-review").hidden = true;
       return;
     }
     $("#clip-review").hidden = false;
+    const found = r.moments.length;
+    $("#clip-review-title").textContent = found === 1 ? tr("clip.review_title_one") : tr("clip.review_title", { n: found });
     $("#clip-keep-note").hidden = state.clip.keepSources === true;
     $("#clip-review-source").textContent = `${r.source.title} · ${fmtTime(r.source.duration, false)}`;
     $("#moment-list").replaceChildren(...r.moments.map((m, i) => momentCard(m, i)));
     renderExportState();
+    if ($("#c-options").open) closeOptions(); // an analysis finished while the sheet was open: it is hidden now
+    if (lost) $("#clip-review-title").focus();
   }
 
   function momentCard(m, idx) {
@@ -1351,7 +1424,15 @@
       const name = m.title.trim() || `${fmtTime(m.start)}`;
       pick.setAttribute("aria-label", `${tr("moment.pick")}: ${name}`);
       remove.setAttribute("aria-label", `${tr("review.remove")}: ${name}`);
+      // the card face: title (or what is said), type, length and where it is in the video
+      $(".m-name", node).textContent = m.title.trim() || m.text || name;
+      const len = m.end - m.start;
+      $(".m-meta", node).textContent = [tr(`clip.kind.${m.kind}`), Number.isFinite(len) ? fmtTime(Math.max(0, len), false) : "",
+        Number.isFinite(m.start) ? fmtTime(m.start, false) : ""].filter(Boolean).join(" · ");
+      node.dataset.name = name;
+      if (state.clip.editing === node) $("#moment-editor-title").textContent = name;
     };
+    $(".m-face", node).addEventListener("click", () => openMomentEditor(node));
 
     pick.checked = m.pick;
     pick.addEventListener("change", () => { m.pick = pick.checked; renderExportState(); });
@@ -1390,18 +1471,20 @@
     };
     video.addEventListener("timeupdate", () => { if (video.currentTime >= m.end) video.pause(); });
     video.addEventListener("play", () => {
-      $$("#moment-list .m-video").forEach((v) => { if (v !== video) v.pause(); });
+      $$(".moment-editor .m-video").forEach((v) => { if (v !== video) v.pause(); });
       if (video.currentTime < m.start - 0.25 || video.currentTime >= m.end - 0.05) video.currentTime = m.start;
     });
 
+    const lenBox = $(".m-len", node); // found now: the editor leaves the card while it is open
+    const errBox = $(".m-err", node);
     const showTimes = () => {
       for (const edge of ["start", "end"]) {
         times[edge].value = Number.isFinite(m[edge]) ? fmtTime(m[edge]) : m.raw[edge] || "";
       }
       const len = m.end - m.start;
-      $(".m-len", node).textContent = Number.isFinite(len) ? tr("moment.len", { s: fmtTime(Math.max(0, len)) }) : "";
+      lenBox.textContent = Number.isFinite(len) ? tr("moment.len", { s: fmtTime(Math.max(0, len)) }) : "";
       const problem = momentProblem(m, r.source.duration);
-      showError($(".m-err", node), problem ? new Error(problem) : null);
+      showError(errBox, problem ? new Error(problem) : null);
       node.classList.toggle("bad", Boolean(problem));
     };
     const changed = () => { showTimes(); setSrc(); renderExportState(); named(); };
@@ -1429,6 +1512,32 @@
     return node;
   }
 
+  // The card's editor is moved (not copied) into the side sheet, so its listeners keep working.
+  function openMomentEditor(card) {
+    closeMomentEditor();
+    const dlg = $("#moment-editor");
+    const ed = $(".moment-editor", card);
+    state.clip.editing = card;
+    $("#moment-editor-title").textContent = card.dataset.name;
+    ed.hidden = false;
+    $(".dlg", dlg).append(ed);
+    dlg.showModal();
+  }
+
+  // Puts the editor back in its card and focuses the card (Esc, the close button, the backdrop or a re-render).
+  function closeMomentEditor() {
+    const dlg = $("#moment-editor");
+    const card = state.clip.editing;
+    state.clip.editing = null;
+    if (dlg.open) dlg.close(); // its "close" event calls back here and finds nothing left to do
+    if (!card) return;
+    const ed = $(".moment-editor", dlg);
+    $(".m-video", ed).pause();
+    ed.hidden = true;
+    card.append(ed);
+    if (card.isConnected) $(".m-face", card).focus();
+  }
+
   // Removing the last card is the same as discarding the whole analysis.
   async function removeMoment(m) {
     const r = state.clip.review;
@@ -1441,8 +1550,8 @@
     if (i < 0) return;
     r.moments.splice(i, 1);
     renderClipReview();
-    const buttons = $$("#moment-list .m-remove");
-    (buttons[Math.min(i, buttons.length - 1)] || $("#clip-discard")).focus();
+    const faces = $$("#moment-list .m-face");
+    (faces[Math.min(i, faces.length - 1)] || $("#clip-discard")).focus();
   }
 
   async function discardAnalysis() {
@@ -1505,11 +1614,13 @@
       const { jobs } = await api("GET", "/api/jobs");
       state.jobs = jobs;
       showError($("#queue-error"), null);
+      showError($("#clip-jobs-error"), null);
       renderJobs();
       checkAnalyses();
       onLiveJobs();
     } catch (e) {
       showError($("#queue-error"), e);
+      showError($("#clip-jobs-error"), e); // the Short column (and its #queue-error) is hidden in Clips and En vivo
     }
     if (state.jobs.some((j) => ACTIVE.includes(j.status))) state.pollTimer = setTimeout(refreshJobs, POLL_MS);
   }
@@ -1543,12 +1654,21 @@
   }
 
   function renderJobs() {
-    const list = $("#queue-list");
+    renderJobList($("#queue-list"), state.jobs.filter((j) => !isClipJob(j)), $("#queue-empty"), $("#clear-finished"), $("#tpl-job"));
+    const clips = state.jobs.filter(isClipJob);
+    // the queue is oldest first: running ones first in queue order (full width), then the rest, newest first
+    const sorted = [...clips.filter((j) => ACTIVE.includes(j.status)), ...clips.filter((j) => !ACTIVE.includes(j.status)).reverse()];
+    renderJobList($("#clip-jobs-list"), sorted, $("#clip-jobs-empty"), $("#clip-jobs-clear"), $("#tpl-clip-card"));
+    renderProgress();
+    renderPreview();
+  }
+
+  function renderJobList(list, jobs, empty, clear, tpl) {
     const byId = new Map($$(".job", list).map((li) => [li.dataset.id, li]));
-    const wanted = state.jobs.map((job) => {
+    const wanted = jobs.map((job) => {
       let li = byId.get(job.id);
       if (!li) {
-        li = $("#tpl-job").content.firstElementChild.cloneNode(true);
+        li = tpl.content.firstElementChild.cloneNode(true);
         li.dataset.id = job.id;
         applyI18n(li);
       }
@@ -1556,12 +1676,10 @@
       return li;
     });
     // keep existing nodes (and keyboard focus) in place; only add, remove or reorder
-    byId.forEach((li, id) => { if (!state.jobs.some((j) => j.id === id)) li.remove(); });
+    byId.forEach((li, id) => { if (!jobs.some((j) => j.id === id)) li.remove(); });
     wanted.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
-    $("#queue-empty").hidden = state.jobs.length > 0;
-    $("#clear-finished").hidden = !state.jobs.some((j) => FINISHED.includes(j.status));
-    renderProgress();
-    renderPreview();
+    empty.hidden = jobs.length > 0;
+    clear.hidden = !jobs.some((j) => FINISHED.includes(j.status));
   }
 
   function updateJob(li, job) {
@@ -1580,17 +1698,33 @@
     bar.hidden = !running;
     $("i", bar).style.width = `${job.percent}%`;
     showError($(".job-err", li), job.error ? new Error(job.error) : null);
-    // a finished analysis has no folder: it opens its review list instead
-    $('[data-job-act="review"]', li).hidden = !(job.kind === "clip_analyze" && job.status === "done" && job.analysis_id);
-    $('[data-job-act="clips"]', li).hidden = !(job.status === "done" && job.output);
-    $('[data-job-act="open"]', li).hidden = !(job.status === "done" && job.output);
-    $('[data-job-act="retry"]', li).hidden = !RETRYABLE.includes(job.status);
-    $('[data-job-act="cancel"]', li).hidden = !ACTIVE.includes(job.status);
-    $('[data-job-act="remove"]', li).hidden = !FINISHED.includes(job.status);
+    const viewable = Boolean(job.status === "done" && job.output);
+    // a Tus clips card: its face is the "clips" button while there are clips to see, plain text otherwise
+    const face = $(".clip-face", li);
+    if (face && (face.tagName === "BUTTON") !== viewable) {
+      const next = document.createElement(viewable ? "button" : "div");
+      next.className = face.className;
+      if (viewable) {
+        next.type = "button";
+        next.dataset.jobAct = "clips";
+      }
+      next.append(...face.childNodes);
+      face.replaceWith(next);
+    }
+    const show = {
+      review: job.kind === "clip_analyze" && job.status === "done" && job.analysis_id, // an analysis has no folder
+      clips: viewable,
+      open: viewable,
+      retry: RETRYABLE.includes(job.status),
+      cancel: ACTIVE.includes(job.status),
+      remove: FINISHED.includes(job.status),
+    };
+    $$("[data-job-act]", li).forEach((b) => { b.hidden = !show[b.dataset.jobAct]; });
   }
 
   function renderProgress() {
-    const job = state.jobs.find((j) => j.status === "running") || state.jobs.find((j) => j.status === "pending");
+    const shorts = state.jobs.filter((j) => !isClipJob(j));
+    const job = shorts.find((j) => j.status === "running") || shorts.find((j) => j.status === "pending");
     const box = $("#progress");
     box.hidden = !job;
     if (!job) return;
@@ -1602,7 +1736,7 @@
   }
 
   function renderPreview() {
-    const latest = [...state.jobs].reverse().find((j) => j.status === "done" && j.has_video);
+    const latest = state.jobs.filter((j) => !isClipJob(j)).reverse().find((j) => j.status === "done" && j.has_video);
     const video = $("#preview");
     const id = latest ? latest.id : null;
     if (id === state.previewId) return;
@@ -1671,6 +1805,8 @@
     if (!btn) return;
     const id = btn.closest(".job").dataset.id;
     const act = btn.dataset.jobAct;
+    const inClips = Boolean(btn.closest("#clip-jobs"));
+    const errBox = $(inClips ? "#clip-jobs-error" : "#queue-error");
     if (act === "review") {
       const job = state.jobs.find((j) => j.id === id);
       if (job) await openReview(job, true);
@@ -1688,19 +1824,19 @@
     }[act];
     try {
       await api(url[1], url[0], {});
-      showError($("#queue-error"), null);
+      showError(errBox, null);
     } catch (err) {
-      showError($("#queue-error"), err);
+      showError(errBox, err);
     }
     if (act !== "open") {
       await refreshJobs();
-      if (!document.contains(btn) || btn.hidden) $("#queue-title").focus(); // keep keyboard focus in the queue
+      if (!document.contains(btn) || btn.hidden) $(inClips ? "#clip-jobs-title" : "#queue-title").focus(); // keep keyboard focus in its list
     }
   }
 
   // ---------- en directo: panel lifetime ----------
 
-  // The panel is "shown" while the Clipping tab, its En directo sub-tab and the window are all visible:
+  // The panel is "shown" while the En vivo view and the window are both visible:
   // opening it re-checks the channels and reloads the moments; the channel list refreshes every minute.
   function syncLiveShown() {
     const L = state.live;
@@ -2008,7 +2144,7 @@
   }
 
   // A hotkey press with no capture, or a hotkey the system refused, is explained on every tab (spec §6.1):
-  // in the app-wide line under the header instead of the panel's notices.
+  // in the app-wide line above the main area instead of the panel's notices.
   let appAlertTimer = null;
   let appAlertNow = ""; // the passing notice (a press without a capture, a refusal as it happens)
   let hotkeyAlert = ""; // the standing one: the system refused the hotkey, so it stays until it works
@@ -2130,7 +2266,7 @@
     byId.forEach((n, id) => { if (!L.moments.some((m) => m.analysis_id === id)) n.remove(); });
     wanted.forEach((n, i) => { if (list.children[i] !== n) list.insertBefore(n, list.children[i] || null); });
     $("#live-moments-empty").hidden = L.moments.length > 0;
-    $("#live-selected").textContent = L.moments.length ? tr("clip.selected", { n: L.picked.size }) : "";
+    $("#live-selected").textContent = !L.moments.length ? "" : L.picked.size === 1 ? tr("clip.selected_one") : tr("clip.selected", { n: L.picked.size });
     $("#live-export").disabled = L.exporting || !L.picked.size;
   }
 
@@ -2363,8 +2499,6 @@
       $("#s-check_updates").checked = s.check_updates !== false;
       $("#ytdlp-status").textContent = "";
       showError($("#ytdlp-error"), null);
-      $("#s-theme").value = effectiveTheme();
-      dlg.dataset.themeShown = effectiveTheme();
       $$(".show-btn", dlg).forEach((b) => setShown(b, false));
     } catch (e) {
       showError($("#top-error"), e);
@@ -2523,8 +2657,6 @@
     $$("[data-setting]", dlg).forEach((el) => { body[el.dataset.setting] = el.value; });
     body.keep_sources = $("#s-keep_sources").checked;
     body.check_updates = $("#s-check_updates").checked;
-    // saving a key must not pin the theme: unless it was changed here, the page keeps following the OS
-    if (body.theme === dlg.dataset.themeShown) delete body.theme;
     const langChanged = body.ui_lang !== BOOT.lang;
     stopHotkeyRecord(false);
     let saved;
@@ -2538,10 +2670,6 @@
     if (saved && saved.live_hotkey) { // in its canonical form ("ctrl+f9" comes back as "Ctrl+F9")
       state.live.hotkey = saved.live_hotkey;
       renderCapture();
-    }
-    if (body.theme) {
-      document.documentElement.dataset.theme = body.theme;
-      renderTheme();
     }
     if (langChanged) {
       BOOT.lang = body.ui_lang;
@@ -2577,6 +2705,7 @@
     renderMusicSelect();
     renderDerived();
     renderClipDerived();
+    syncPills(); // the duration and count pills are written by script, not by data-i18n
     renderClipReview();
     renderReview();
     $$("#live-channels .channel, #live-moments .lm").forEach((n) => applyI18n(n));
@@ -2585,7 +2714,7 @@
     renderNotices();
     renderMoments();
     setHotkeyHint(state.live.rec ? "live.hotkey_recording_hint" : "live.hotkey_hint");
-    $$("#queue-list .job").forEach((li) => {
+    $$("#queue-list .job, #clip-jobs-list .job").forEach((li) => {
       applyI18n(li);
       const job = state.jobs.find((j) => j.id === li.dataset.id);
       if (job) updateJob(li, job);
@@ -2597,8 +2726,6 @@
 
   function bind() {
     bindHelpToggles();
-    $$("[data-theme-set]").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themeSet)));
-    lightQuery.addEventListener("change", renderTheme);
 
     $("#profile").addEventListener("change", (e) => switchProfile(e.target.value));
     $("#profile-menu-btn").addEventListener("click", () => {
@@ -2634,16 +2761,11 @@
       $("#write-script").focus();
     });
 
-    $(".tabs").addEventListener("click", (e) => {
+    $(".navtabs").addEventListener("click", (e) => {
       const b = e.target.closest('[role="tab"]');
-      if (b) setTab(b.dataset.tab);
+      if (b) setView(b.dataset.view);
     });
-    $(".tabs").addEventListener("keydown", onTabKey);
-    $(".subtabs").addEventListener("click", (e) => {
-      const b = e.target.closest('[role="tab"]');
-      if (b) setSubTab(b.dataset.subtab);
-    });
-    $(".subtabs").addEventListener("keydown", onTabKey);
+    $(".navtabs").addEventListener("keydown", onTabKey);
     document.addEventListener("visibilitychange", syncLiveShown);
 
     $("#live-add").addEventListener("click", addChannel);
@@ -2661,6 +2783,17 @@
     const clipPanel = $(".form-clip");
     clipPanel.addEventListener("input", onClipInput);
     clipPanel.addEventListener("change", onClipInput);
+    pillFor($("#c-kind"));
+    pillFor($("#c-framing"));
+    bindPops();
+    $("#c-more").addEventListener("click", openOptions);
+    $("#c-options-close").addEventListener("click", closeOptions);
+    $("#c-options").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeOptions(); }); // the backdrop
+    $("#c-options").addEventListener("close", () => $("#c-more").focus());
+    $("#moment-editor-close").addEventListener("click", closeMomentEditor);
+    $("#moment-editor").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeMomentEditor(); }); // the backdrop
+    // Esc; a late event after a re-render must not close an editor opened since
+    $("#moment-editor").addEventListener("close", () => { if (!$("#moment-editor").open) closeMomentEditor(); });
     $("#c-file-btn").addEventListener("click", () => $("#c-file").click());
     $("#c-file").addEventListener("change", (e) => {
       const file = e.target.files[0];
@@ -2684,6 +2817,7 @@
     $("#clip-discard").addEventListener("click", discardAnalysis);
 
     $("#queue-list").addEventListener("click", onJobAction);
+    $("#clip-jobs-list").addEventListener("click", onJobAction);
     $("#clips-close").addEventListener("click", closeClips);
     for (const ev of ["cancel", "close"]) { // Esc fires both; the close button runs closeClips
       $("#clips-view").addEventListener(ev, unloadClips);
@@ -2696,11 +2830,18 @@
         showError($("#clips-error"), err);
       }
     });
-    $("#clear-finished").addEventListener("click", async () => {
-      try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($("#queue-error"), e); }
-      await refreshJobs();
-      $("#queue-title").focus();
-    });
+    // each button removes only the finished jobs of its own list (/api/jobs/clear would take every kind)
+    for (const [btn, err, title, clips] of [["#clear-finished", "#queue-error", "#queue-title", false], ["#clip-jobs-clear", "#clip-jobs-error", "#clip-jobs-title", true]]) {
+      $(btn).addEventListener("click", async () => {
+        const done = state.jobs.filter((j) => isClipJob(j) === clips && FINISHED.includes(j.status));
+        try {
+          await Promise.all(done.map((j) => api("DELETE", `/api/jobs/${encodeURIComponent(j.id)}`, {})));
+          showError($(err), null);
+        } catch (e) { showError($(err), e); }
+        await refreshJobs();
+        $(title).focus();
+      });
+    }
 
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
@@ -2735,9 +2876,7 @@
 
   async function init() {
     bind();
-    renderTheme();
-    setTab(remembered("tab") || "short");
-    setSubTab(remembered("subtab") || "video");
+    setView(savedView());
     try {
       await loadStrings(BOOT.lang);
       renderVersion();

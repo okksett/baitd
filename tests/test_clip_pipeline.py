@@ -1067,3 +1067,18 @@ def test_ordinary_export_keeps_normal_priority_and_default_threads(
                                                    "moments": pipeline.load_analysis(path.stem)["moments"]}),
                              _settings(tmp_path), threading.Event(), lambda *a: None, providers)
     assert priority_log["log"] == [] and "cpu_threads" not in providers.seen["calls"][0]
+
+
+@pytest.mark.parametrize("count, auto, review", [(3, 3, 6), (0, 20, 40)])
+def test_all_asks_for_every_good_moment_up_to_twenty(tmp_data, tmp_path, providers, monkeypatch, count, auto, review):
+    seen = []
+
+    def stop(src, profile, opts, settings, cancel, steps, providers, want, chat=None):
+        seen.append(want)
+        raise UserError("stop", "stop")
+
+    monkeypatch.setattr(pipeline, "_understand", stop)
+    for kind, run in (("clip_auto", pipeline.run_clip_auto), ("clip_analyze", pipeline.run_clip_analyze)):
+        with pytest.raises(UserError):
+            run(_item(kind, count=count), _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert seen == [auto, review]

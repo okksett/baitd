@@ -120,7 +120,7 @@ def test_hook_title_and_credit_events_in_ass(tmp_path):
     ass = tmp_path / "x.ass"
     style = captions.PRESETS["poster"]
     captions.write_clip_ass([_w("hola", 0.5, 1.0)], style, 1080, 1920, ass, captions.FONTS_DIR,
-                            top_text="Lo que {\\b1}nadie\ndice", top_until=3.0, credit="Fuente: @canal")
+                            top_text="Lo que {\\b1}nadie\ndice", top_until=3.0, credit="@canal")
     text = ass.read_text(encoding="utf-8")
     hook = [ln for ln in text.splitlines() if ln.startswith("Dialogue") and ",Hook," in ln]
     cred = [ln for ln in text.splitlines() if ln.startswith("Dialogue") and ",Credit," in ln]
@@ -128,7 +128,7 @@ def test_hook_title_and_credit_events_in_ass(tmp_path):
     assert hook[0].split(",")[1:3] == ["0:00:00.00", "0:00:03.00"]
     assert "LO QUE" in hook[0]  # poster preset is uppercase
     assert "\\b1" not in hook[0] and "{{" not in hook[0]
-    assert "Fuente: @canal" in cred[0] and "\\an1" in cred[0]
+    assert "@canal" in cred[0] and "\\an1" in cred[0]
     assert "Style: Hook," in text and "Style: Credit," in text
     # off by default
     captions.write_clip_ass([_w("hola", 0.5, 1.0)], style, 1080, 1920, ass, captions.FONTS_DIR)
@@ -147,7 +147,7 @@ def test_title_and_credit_follow_profile_flags(make_mp4_with_speech, tmp_path, m
     monkeypatch.setattr(captions, "write_clip_ass", spy)
     plan = CropPlan("centro", 100, 178, [(0.0, 110)], False)
     _render(make_mp4_with_speech, tmp_path, plan)
-    assert seen == {"top": "Un titulo", "credit": "Fuente: Canal"}
+    assert seen == {"top": "Un titulo", "credit": "Canal"}
     _render(make_mp4_with_speech, tmp_path, plan, profile=_profile(hook_title=False, credit=False))
     assert seen == {"top": "", "credit": ""}
 
@@ -259,3 +259,17 @@ def test_render_partido_dimensions(make_mp4_with_speech, make_mp4, tmp_path):
                       tmp_path / "w", tmp_path / "o.mp4", threading.Event(), lambda f: None)
     info = ffmpeg.probe(out)
     assert (info["width"], info["height"]) == (1080, 1920)
+
+
+def _hook_y(tmp_path, w, h, credit):
+    ass = tmp_path / "t.ass"
+    captions.write_clip_ass([_w("hola", 0.5, 1.0)], captions.PRESETS["poster"], w, h, ass, captions.FONTS_DIR,
+                            top_text="The truth about trading psychology and greed", credit=credit)
+    line = next(ln for ln in ass.read_text(encoding="utf-8").splitlines() if ",Hook," in ln)
+    return int(line.split("\pos(")[1].split(",")[1].split(")")[0])
+
+
+@pytest.mark.parametrize("w, h, moves", [(1080, 1920, False), (1080, 1080, True), (1920, 1080, True)])
+def test_the_title_stays_below_the_credit_at_the_top(tmp_path, w, h, moves):
+    alone, with_credit = _hook_y(tmp_path, w, h, ""), _hook_y(tmp_path, w, h, "@canal")
+    assert (with_credit > alone) == moves  # in 9:16 the credit fits above the title band

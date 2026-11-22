@@ -434,6 +434,11 @@ def _understand_chat(src: SourceInfo, profile: Profile, opts: ClipProfile, setti
             sorted(moments, key=lambda m: -m.score))
 
 
+def _want(opts: ClipProfile) -> int:
+    """How many clips a run makes: the count, or for "Todos" (0) every good moment found up to _MAX_EXPORT."""
+    return opts.count or _MAX_EXPORT
+
+
 def _understand(src: SourceInfo, profile: Profile, opts: ClipProfile, settings: dict, cancel: threading.Event,
                 steps: _Steps, providers: ClipProviders, want: int,
                 chat: list[tuple[float, str]] | None = None) -> tuple[Transcript, list[Moment]]:
@@ -678,7 +683,7 @@ def run_clip_auto(item: dict, settings: dict, cancel: threading.Event, progress:
             on_title(src.title)
         steps.end(1)
         folder = _open_output(settings, src.title, on_output)
-        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, opts.count,
+        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, _want(opts),
                                          _chat_of(item, src))
         _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
         _write_texts(folder, moments)
@@ -710,7 +715,7 @@ def run_clip_analyze(item: dict, settings: dict, cancel: threading.Event, progre
         if on_title is not None:
             on_title(src.title)
         steps.end(1)
-        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, 2 * opts.count,
+        transcript, moments = _understand(src, profile, opts, settings, cancel, steps, providers, 2 * _want(opts),
                                          _chat_of(item, src))
         path = analyses_dir() / f"{secrets.token_hex(6)}.json"
         config._write_json(path, {

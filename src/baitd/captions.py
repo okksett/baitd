@@ -317,8 +317,9 @@ def _mark(text: str, style: SubtitleStyle) -> str:
 
 _TITLE_SCALE = 1.1
 _CREDIT_SCALE = 0.45
-_CREDIT_ALPHA = 0x4D  # 70 % opaque
-_CREDIT_BASELINE = {"portrait": 0.78, "landscape": 0.93}  # bottom of the credit text, inside the safe zone
+_CREDIT_ALPHA = 0x80  # half transparent
+_CREDIT_BASELINE = {"portrait": 0.075, "landscape": 0.075}  # bottom of the credit text: above the title band
+_TITLE_MIN_TOP = 0.03  # without a credit, the title box keeps this share of the height free above it
 _FOREVER = 36000.0  # the credit lasts the whole clip; ffmpeg ends the stream
 
 
@@ -385,7 +386,7 @@ def write_clip_ass(
     top_text: str = "", top_until: float = 3.0, credit: str = "", credit_badge: str = "",
 ) -> None:
     """Captions as in write_ass (no hook scaling) plus an optional title in the top band
-    (0..top_until, boxed, 1.1x the caption size) and an optional credit (bottom-left, 0.45x, 70 %
+    (0..top_until, boxed, 1.1x the caption size) and an optional credit (top-left, 0.45x, half
     opaque, whole clip) that may carry a platform logo (`credit_badge`, one of _BADGE_SHAPES) at its
     left edge. Titles and credits may come from users or an LLM, so ASS-significant
     characters are stripped."""
@@ -403,6 +404,10 @@ def write_clip_ass(
         return (style.font if latin else FALLBACK_FONT), latin
 
     top_text = _clean(top_text).strip()
+    credit = _clean(credit).strip()
+    credit_y = round(height * _CREDIT_BASELINE[key])
+    # the title box never reaches above the credit line (or off the frame in a short format)
+    title_top = credit_y + _BOX_PAD if credit else round(height * _TITLE_MIN_TOP)
     if top_text:
         font, latin = font_for(top_text)
         if latin and style.preset in _UPPERCASE_PRESETS:
@@ -415,16 +420,17 @@ def write_clip_ass(
         text, em = _fit_lines(top_text, face, em, avail, 2 * _BOX_PAD)
         styles.append(_style_line("Hook", font, face, box_style, height, baseline, "caja_box"))
         y = round(baseline + face.descent / face.upm * em)
+        block = (text.count("\\N") + 1) * face.cell * em + _BOX_PAD  # anchored at its bottom: lines stack up
+        y = max(y, round(title_top + block))
         size_tag = f"\\fs{face.ass_size(em)}" if em != box_style.size else ""
         events.append(_dialogue(0.0, top_until, "Hook", f"{{\\an2\\pos({width // 2},{y}){size_tag}}}{text}"))
 
-    credit = _clean(credit).strip()
     if credit:
         font, latin = font_for(credit)
         face = faces[font]
         small = replace(style, size=max(1, round(style.size * _CREDIT_SCALE)), outline=min(style.outline, 2))
         styles.append(_style_line("Credit", font, face, small, height, 0))
-        y = round(height * _CREDIT_BASELINE[key])
+        y = credit_y
         alpha = f"\\alpha&H{_CREDIT_ALPHA:02X}&"
         x = _SAFE_MARGIN
         if credit_badge in _BADGE_SHAPES:

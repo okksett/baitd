@@ -469,8 +469,8 @@ class _CopyChecker(HTMLParser):
 
     def handle_data(self, data):
         text = data.strip()
-        if not text or not any(ch.isalpha() for ch in text):
-            return
+        if not text or not any(ch.isalpha() for ch in text) or re.fullmatch(r'\{\{ icon\("\w+"\) \}\}', text):
+            return  # icons are SVG, not copy
         tag, attrs = self.stack[-1] if self.stack else ("", {})
         if tag in ("script", "style"):
             return
@@ -529,28 +529,25 @@ def test_index_renders_offline_and_translated(client):
         assert r.json == json.loads(EN.read_text("utf-8"))
 
 
-def test_index_uses_saved_language_and_theme(client):
+def test_index_is_dark_only(client):
     client.post("/api/settings", json={"ui_lang": "en", "theme": "light"})
     html = client.get("/").text
-    en = json.loads(EN.read_text("utf-8"))
-    assert 'lang="en"' in html and 'data-theme="light"' in html and en["create"] in html
-
-
-def test_index_theme_unset_on_first_run(client):
-    assert 'data-theme=""' in client.get("/").text  # CSS follows prefers-color-scheme
+    assert 'lang="en"' in html and 'data-theme="dark"' in html
+    assert "data-theme-set" not in html and 'id="s-theme"' not in html
+    css = CSS.read_text(encoding="utf-8")
+    assert 'data-theme="light"' not in css and "prefers-color-scheme: light" not in css
 
 
 def test_index_has_clipping_tab_and_drop_zone(client):
     html = client.get("/").text
     es = json.loads(ES.read_text("utf-8"))
-    # two keyboard-usable tabs next to the logo, each with its own left panel
-    assert 'role="tablist"' in html
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-short"[^>]*aria-selected="true"', html)
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="tab-clip"[^>]*aria-selected="false"', html)
-    assert 'id="panel-short" role="tabpanel"' in html and 'id="panel-clip" role="tabpanel"' in html
-    assert es["tab.short"] in html and es["tab.clip"] in html
+    assert re.search(r'<nav[^>]*role="tablist"[^>]*aria-orientation="vertical"', html)
+    for view, panel in (("clips", "panel-clip"), ("live", "panel-clip"), ("short", "panel-short")):
+        assert re.search(rf'<button[^>]*role="tab"[^>]*id="nav-{view}"[^>]*aria-controls="{panel}"', html), view
+    assert 'id="panel-video"' in html and 'id="panel-live"' in html and "subtab-" not in html
+    assert es["nav.clips"] in html and es["nav.live"] in html and es["nav.short"] in html
     # the drop zone: link input, file button, drag-and-drop area and the upload progress/cancel
-    assert 'id="drop"' in html and es["clip.drop"] in html
+    assert 'id="drop"' in html and es["clip.url_placeholder"] in html
     assert 'id="c-url"' in html and 'id="c-file"' in html and 'id="c-file-btn"' in html
     assert 'id="upload-cancel"' in html and 'id="upload-pct"' in html
     for field in ("c-count", "c-min", "c-max", "c-kind", "c-aspect", "c-fps", "c-transcriber", "c-model",
@@ -571,6 +568,17 @@ def test_index_has_clipping_tab_and_drop_zone(client):
     assert "/api/clips" in js and "/export" in js and "/api/ytdlp/update" in js
 
 
+def test_clips_screen_shows_three_choices_and_hides_the_rest(client):
+    html = client.get("/").text
+    main, sheet = html.split('id="c-options"')[0], html.split('id="c-options"')[1].split("</dialog>")[0]
+    for vis in ("c-url", "c-file-btn", "c-aspect", "c-len-pill", "c-count-pill", "c-more", "clip-find", "clip-create"):
+        assert f'id="{vis}"' in main.split('id="panel-video"')[1], vis
+    for hidden in ("c-kind", "c-framing", "c-preset", "c-hook", "c-credit", "c-music", "c-chat-btn", "c-language",
+                   "c-transcriber", "c-model", "c-fps"):
+        assert f'id="{hidden}"' in sheet, hidden
+    assert 'id="sum-trans"' not in html and 'id="acc-trans"' not in html
+
+
 def test_clipping_ui_lifecycle_seams():
     js = JS.read_text("utf-8")
     run = js[js.index("async function onClipRun"):js.index("// ---------- clipping: review list")]
@@ -585,10 +593,12 @@ def test_clipping_ui_lifecycle_seams():
 
 def test_index_has_live_tab(client):
     html = client.get("/").text
-    # the Clipping panel has two sub-tabs, Video (today's content) and En directo, with the tab pattern
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-video"[^>]*aria-selected="true"', html)
-    assert re.search(r'<button[^>]*role="tab"[^>]*id="subtab-live"[^>]*aria-selected="false"', html)
-    assert 'id="panel-video" role="tabpanel"' in html and 'id="panel-live" role="tabpanel"' in html
+    es = json.loads(ES.read_text("utf-8"))
+    assert re.search(r'<nav[^>]*role="tablist"[^>]*aria-orientation="vertical"', html)
+    for view, panel in (("clips", "panel-clip"), ("live", "panel-clip"), ("short", "panel-short")):
+        assert re.search(rf'<button[^>]*role="tab"[^>]*id="nav-{view}"[^>]*aria-controls="{panel}"', html), view
+    assert 'id="panel-video"' in html and 'id="panel-live"' in html and "subtab-" not in html
+    assert es["nav.clips"] in html and es["nav.live"] in html and es["nav.short"] in html
     assert 'id="tpl-channel"' in html and 'id="tpl-live-moment"' in html
     assert 'id="live-capture"' in html and 'id="live-mark"' in html and 'id="live-stop"' in html
     # the review card can frame a moment as Partido, and Ajustes has the live settings
@@ -606,8 +616,8 @@ def test_live_ui_seams():
     assert "m.cam" in sig
     export = js[js.index("async function onExport"):js.index("// ---------- queue")]
     assert "cam:" in export
-    tabs = js[js.index("function setTab"):js.index("function onTabKey")]
-    assert ".tabs [role=" in tabs  # the sub-tabs are not main tabs
+    tabs = js[js.index("function setView"):js.index("function onTabKey")]
+    assert ".navtabs [role=" in tabs  # one side menu drives every view
     # a moment already being exported (e.g. from its review card) is never queued twice and leaves the selection
     bulk = js[js.index("async function exportLiveMoments"):js.index("// ---------- en directo: the hotkey recorder")]
     assert 'momentJob(id, "clip_export")' in bulk
@@ -694,7 +704,6 @@ def test_small_ui_items_are_wired():
     es, en = json.loads(ES.read_text("utf-8")), json.loads(EN.read_text("utf-8"))
     assert es["fps.hint"] == "60 fps puede tardar más" and en["fps.hint"] == "60 fps may take longer"
     assert 'id="rate-note"' in html and '$("#f-rate").disabled = noSpeed' in js  # M6
-    assert "if (body.theme === dlg.dataset.themeShown) delete body.theme" in js  # M8
     assert '$("#profile").disabled = busy' in js and '$("#profile-menu-btn").disabled = busy' in js  # M9
     assert "const previous = state.savePromise" in js  # M9: saves are chained
 
@@ -769,7 +778,7 @@ def test_clipping_form_help_toggles_and_visible_min_max(client):
 def test_boot_carries_version_and_page_shows_it(client):
     import baitd
     html = client.get("/").text
-    assert baitd.__version__ == "0.5.2"
+    assert baitd.__version__ == "0.6.0"
     assert f'"version": "{baitd.__version__}"' in html
     assert 'id="app-version"' in html
     es = json.loads(ES.read_text("utf-8"))
@@ -910,3 +919,58 @@ def test_second_concurrent_install_gets_409(queue, monkeypatch, tmp_data):
     assert first["r"].status_code == 200 and calls == ["download", "launch"]
     assert updater.install_lock.acquire(blocking=False)  # released afterwards
     updater.install_lock.release()
+
+
+_EMOJI = re.compile("[\u2600-\u27BF\U0001F000-\U0001FAFF\u2B00-\u2BFF\u22EF\u25BE]")  # \u2192 stays: errors read "cause \u2192 fix"
+
+
+def test_no_emojis_or_symbol_icons_in_the_ui():
+    es = json.loads((WEB / "static/i18n/es.json").read_text(encoding="utf-8"))
+    en = json.loads((WEB / "static/i18n/en.json").read_text(encoding="utf-8"))
+    for name, text in (("index", INDEX.read_text(encoding="utf-8")), ("js", (WEB / "static/app.js").read_text(encoding="utf-8")),
+                       ("css", (WEB / "static/app.css").read_text(encoding="utf-8")),
+                       ("es", json.dumps(es, ensure_ascii=False)), ("en", json.dumps(en, ensure_ascii=False))):
+        assert not _EMOJI.search(text), (name, _EMOJI.search(text).group())
+    assert es["framing.partido"] == "Gameplay + cámara" and es["clip.kind.interesante"] == "Épico"
+    assert '<option value="partido" data-i18n="framing.partido">' in INDEX.read_text(encoding="utf-8").split('id="c-framing"')[1].split("</select>")[0]
+
+
+def test_clip_jobs_live_in_the_clips_screen(client):
+    html = client.get("/").text
+    video = html.split('id="panel-video"')[1].split('id="panel-live"')[0]
+    for i in ("clip-jobs", "clip-jobs-title", "clip-jobs-list", "clip-jobs-empty", "clip-jobs-clear"):
+        assert f'id="{i}"' in video, i
+    js = (WEB / "static/app.js").read_text(encoding="utf-8")
+    assert "function renderJobList(" in js and "isClipJob" in js.split("function renderProgress(")[1].split("function ")[0]
+
+
+def test_clips_screen_final_fixes(client):
+    html = client.get("/").text
+    # the sheet is outside the drop zone: hiding the box (review) or dropping a file on the sheet must not touch it
+    before = html.split('id="drop"')[1].split('<dialog id="c-options"')[0]
+    assert before.count("</div>") > before.count("<div")  # #drop is closed before the sheet starts
+    assert 'id="c-options"' in html.split('id="panel-video"')[1].split('id="panel-live"')[0]
+    js = JS.read_text("utf-8")
+    assert 'closest("#clip-settings, #c-options")' in js
+    view = js[js.index("function setView("):js.index("function savedView(")]
+    assert "closeOptions()" in view and "closeMomentEditor()" in view
+    # a colour inside background-image drops the whole declaration (no glow)
+    css = CSS.read_text("utf-8")
+    grad = re.search(r"--grad:([^;]*);", css).group(1)
+    assert grad.count("radial-gradient(") == 2 and not re.search(r",\s*#[0-9a-fA-F]+\s*$", grad)
+    # Tus clips: cards with a format-shaped block, the title and a status line
+    tpl = html.split('id="tpl-clip-card"')[1].split("</template>")[0]
+    for part in ('class="clip-face"', 'class="clip-thumb"', 'class="job-topic"', 'class="chip"', 'class="bar small"'):
+        assert part in tpl, part
+    for act in ("review", "open", "retry", "cancel", "remove"):
+        assert f'data-job-act="{act}"' in tpl, act
+    assert '$("#tpl-clip-card")' in js and "aspect-ratio: 9 / 16" in css
+
+
+def test_moment_editor_opens_in_a_side_sheet(client):
+    html = client.get("/").text
+    assert '<dialog id="moment-editor"' in html
+    tpl = html.split('id="tpl-moment"')[1].split("</template>")[0]
+    assert 'class="moment-editor"' in tpl
+    es = json.loads((WEB / "static/i18n/es.json").read_text(encoding="utf-8"))
+    assert "{n}" in es["clip.review_title"] and "{n}" in es["clip.export"]
