@@ -1,7 +1,10 @@
+import base64
 import hashlib
 
 import pytest
 import requests
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from baitd import __main__ as entry
 from baitd import updater
@@ -10,6 +13,18 @@ from baitd.models import UserError
 PFX = updater.DOWNLOAD_PREFIX
 SETUP = PFX + "v0.4.0/Baitd-Setup.exe"
 SUMS = PFX + "v0.4.0/SHA256SUMS"
+SIG = PFX + "v0.4.0/SHA256SUMS.sig"
+TEST_KEY = Ed25519PrivateKey.generate()  # stands in for the release key holder's key
+
+
+def sign(text: str, key=TEST_KEY) -> str:
+    return base64.b64encode(key.sign(text.encode("utf-8"))).decode("ascii")
+
+
+@pytest.fixture(autouse=True)
+def test_public_key(monkeypatch):
+    raw = TEST_KEY.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    monkeypatch.setattr(updater, "PUBLIC_KEY", raw)
 
 
 class Resp:
@@ -31,6 +46,10 @@ class Resp:
             raise self.payload
         return self.payload
 
+    @property
+    def content(self):
+        return self.text.encode("utf-8")
+
     def iter_content(self, n):
         for i in range(0, len(self.body), n):
             yield self.body[i:i + n]
@@ -39,7 +58,8 @@ class Resp:
 def release(tag="v0.4.0", setup=SETUP, sums=SUMS):
     return {"tag_name": tag, "html_url": f"https://github.com/okksett/baitd/releases/tag/{tag}",
             "assets": [{"name": "Baitd-Setup.exe", "browser_download_url": setup},
-                       {"name": "SHA256SUMS", "browser_download_url": sums}]}
+                       {"name": "SHA256SUMS", "browser_download_url": sums},
+                       {"name": "SHA256SUMS.sig", "browser_download_url": SIG}]}
 
 
 def test_parse_version():
@@ -59,7 +79,7 @@ def test_check_newer_sends_headers_and_timeout():
 
     latest = updater.check("0.3.0", get=get)
     assert latest == {"version": "0.4.0", "page": "https://github.com/okksett/baitd/releases/tag/v0.4.0",
-                      "setup_url": SETUP, "sums_url": SUMS}
+                      "setup_url": SETUP, "sums_url": SUMS, "sig_url": SIG}
     assert seen["url"] == updater.LATEST_API and seen["timeout"] == 5
     assert seen["headers"] == {"Accept": "application/vnd.github+json", "User-Agent": "Baitd/0.3.0"}
 
@@ -89,7 +109,7 @@ def test_check_drops_foreign_asset_urls_and_page():
 
 
 def test_can_install(monkeypatch, tmp_path):
-    latest = {"setup_url": SETUP, "sums_url": SUMS}
+    latest = {"setup_url": SETUP, "sums_url": SUMS, "sig_url": SIG}
     (tmp_path / "unins000.exe").write_bytes(b"x")  # Inno Setup's uninstaller: a real install
     monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "Baitd.exe"))
     monkeypatch.setattr(updater.sys, "platform", "win32")
@@ -97,7 +117,8 @@ def test_can_install(monkeypatch, tmp_path):
     assert updater.can_install(latest) is False  # not frozen
     monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
     assert updater.can_install(latest) is True
-    assert updater.can_install({"setup_url": "", "sums_url": SUMS}) is False
+    assert updater.can_install({"setup_url": "", "sums_url": SUMS, "sig_url": SIG}) is False
+    assert updater.can_install({"setup_url": SETUP, "sums_url": SUMS}) is False  # an unsigned release
     assert updater.can_install(None) is False
     monkeypatch.setattr(updater.sys, "platform", "linux")
     assert updater.can_install(latest) is False
@@ -111,15 +132,20 @@ def test_can_install_false_for_portable_zip(monkeypatch, tmp_path):
 
 
 INSTALLER = b"MZ-fake-installer" * 10000
-LATEST = {"version": "0.4.0", "setup_url": SETUP, "sums_url": SUMS}
+LATEST = {"version": "0.4.0", "setup_url": SETUP, "sums_url": SUMS, "sig_url": SIG}
 ZEROS = "0" * 64
 
 
-def fake_get(sums_text, body=INSTALLER, calls=None):
+def fake_get(sums_text, body=INSTALLER, calls=None, sig=None):
+    """The release as served: SHA256SUMS, its signature (by TEST_KEY unless `sig` is given), the installer."""
     def get(url, **kw):
         if calls is not None:
             calls.append(url)
-        return Resp(text=sums_text) if url == SUMS else Resp(body=body)
+        if url == SUMS:
+            return Resp(text=sums_text)
+        if url == SIG:
+            return Resp(text=sign(sums_text) if sig is None else sig)
+        return Resp(body=body)
     return get
 
 
@@ -177,8 +203,9 @@ def test_launch_installer_os_error_is_user_error(monkeypatch, tmp_path):
 
 def test_download_refuses_foreign_urls_without_fetching(tmp_path):
     calls = []
-    for bad in ({"version": "0.4.0", "setup_url": "https://evil.example/s.exe", "sums_url": SUMS},
-                {"version": "0.4.0", "setup_url": SETUP, "sums_url": "https://evil.example/SHA256SUMS"}):
+    for bad in ({**LATEST, "setup_url": "https://evil.example/s.exe"},
+                {**LATEST, "sums_url": "https://evil.example/SHA256SUMS"},
+                {**LATEST, "sig_url": "https://evil.example/SHA256SUMS.sig"}, {**LATEST, "sig_url": ""}):
         with pytest.raises(UserError):
             updater.download_and_verify(bad, tmp_path, get=fake_get("", calls=calls))
     assert calls == []
@@ -270,7 +297,7 @@ def test_dot_segment_url_is_dropped_by_check_and_refused_by_download(tmp_path):
     assert latest["setup_url"] == ""
     calls = []
     with pytest.raises(UserError):
-        updater.download_and_verify({"version": "0.4.0", "setup_url": evil, "sums_url": SUMS}, tmp_path,
+        updater.download_and_verify({**LATEST, "setup_url": evil}, tmp_path,
                                     get=fake_get("", calls=calls))
     assert calls == []
 
@@ -295,3 +322,46 @@ def test_download_keeps_files_that_are_not_installers(tmp_path):
     good = hashlib.sha256(INSTALLER).hexdigest()
     updater.download_and_verify(LATEST, tmp_path, get=fake_get(f"{good}  Baitd-Setup.exe"))
     assert sorted(p.name for p in tmp_path.iterdir()) == ["Baitd-Setup-0.4.0.exe", "mis-notas.txt"]
+
+
+@pytest.mark.parametrize("sig", ["", "not base64!", base64.b64encode(b"x" * 64).decode(), "OTHER"])
+def test_an_unsigned_or_foreign_release_is_never_installed(tmp_path, sig):
+    good = hashlib.sha256(INSTALLER).hexdigest()
+    sums = f"{good}  Baitd-Setup.exe\n"
+    if sig == "OTHER":  # a valid signature by another key (e.g. whoever took over the GitHub account)
+        sig = sign(sums, key=Ed25519PrivateKey.generate())
+    with pytest.raises(UserError):
+        updater.download_and_verify(LATEST, tmp_path, get=fake_get(sums, sig=sig))
+    assert not any(tmp_path.glob("Baitd-Setup-*.exe"))
+
+
+def test_a_changed_sums_file_breaks_the_signature(tmp_path):
+    good = hashlib.sha256(INSTALLER).hexdigest()
+    signed = f"{good}  Baitd-Setup.exe\n"
+    swapped = f"{ZEROS}  Baitd-Setup.exe\n"
+    with pytest.raises(UserError):
+        updater.download_and_verify(LATEST, tmp_path, get=fake_get(swapped, sig=sign(signed)))
+
+
+def test_the_signing_tool_signs_what_the_updater_accepts(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "sign_release", Path(__file__).resolve().parents[1] / "tools" / "sign_release.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    key_path = tmp_path / "k.pem"
+    monkeypatch.setattr(updater, "PUBLIC_KEY", bytes.fromhex(tool.keygen(key_path)))
+    sums = tmp_path / "SHA256SUMS"
+    sums.write_text("abc  Baitd-Setup.exe\n", encoding="utf-8")
+    sig = tool.sign(sums, key_path)
+    assert updater.signed_by_us(sums.read_bytes(), sig.read_text(encoding="ascii"))
+    with pytest.raises(SystemExit):
+        tool.keygen(key_path)  # never overwrites a key
+
+
+def test_the_shipped_public_key_is_32_bytes():
+    import inspect
+    import re
+    m = re.search(r'PUBLIC_KEY = bytes.fromhex\("([0-9a-f]+)"\)', inspect.getsource(updater))
+    assert m and len(bytes.fromhex(m.group(1))) == 32

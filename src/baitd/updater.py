@@ -1,9 +1,13 @@
 """Update notice and one-click update (Windows installer only).
 
-Only URLs under DOWNLOAD_PREFIX are ever downloaded, the installer is checked against the release's
-SHA256SUMS, and it runs only after that check passes."""
+Only URLs under DOWNLOAD_PREFIX are ever downloaded. The release's SHA256SUMS must carry a valid
+Ed25519 signature (SHA256SUMS.sig) from the key holder's key, whose public half is PUBLIC_KEY; the
+installer must match that SHA256SUMS; and it runs only after both checks pass. Publishing a release
+on GitHub is therefore not enough to push code to installed copies (tools/sign_release.py)."""
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import logging
 import os
@@ -15,6 +19,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .models import UserError
 
@@ -26,6 +32,9 @@ DOWNLOAD_PREFIX = f"https://github.com/{REPO}/releases/download/"
 PAGE_PREFIX = f"https://github.com/{REPO}/"
 SETUP_NAME = "Baitd-Setup.exe"
 SUMS_NAME = "SHA256SUMS"
+SIG_NAME = "SHA256SUMS.sig"
+# the release signing key's public half (tools/sign_release.py keygen); the private key never leaves its holder
+PUBLIC_KEY = bytes.fromhex("1ae8ef226889745986a2c6693bee11d6c38c39539592a2794a11a80779df1c4c")
 _CHUNK = 64 * 1024
 
 state: dict = {"latest": None}
@@ -35,11 +44,11 @@ INSTALLER_UNINSTALLER = "unins000.exe"  # Inno Setup's uninstaller: present only
 _SAVE_FAILED = UserError("No se pudo guardar la actualización",
                          "Libera espacio en el disco o descárgala desde la página de Baitd")
 
-_ASSET_PATH = re.compile(rf"/{re.escape(REPO)}/releases/download/([^/%]+)/(?:{re.escape(SETUP_NAME)}|{re.escape(SUMS_NAME)})")
+_ASSET_PATH = re.compile(rf"/{re.escape(REPO)}/releases/download/([^/%]+)/(?:{re.escape(SETUP_NAME)}|{re.escape(SUMS_NAME)}|{re.escape(SIG_NAME)})")
 
 
 def is_release_asset_url(url) -> bool:
-    """True only for https://github.com/okksett/baitd/releases/download/<tag>/<Baitd-Setup.exe|SHA256SUMS>.
+    """True only for https://github.com/okksett/baitd/releases/download/<tag>/<Baitd-Setup.exe|SHA256SUMS|.sig>.
     A plain startswith() would accept dot segments that resolve to another repository."""
     if not isinstance(url, str):
         return False
@@ -89,7 +98,8 @@ def check(current: str, get=requests.get) -> dict | None:
             page = f"{PAGE_PREFIX}releases/latest"
         assets = data.get("assets")
         return {"version": ".".join(map(str, latest)), "page": page,
-                "setup_url": _asset_url(assets, SETUP_NAME), "sums_url": _asset_url(assets, SUMS_NAME)}
+                "setup_url": _asset_url(assets, SETUP_NAME), "sums_url": _asset_url(assets, SUMS_NAME),
+                "sig_url": _asset_url(assets, SIG_NAME)}
     except Exception:  # offline, rate limited, odd JSON: the notice is optional
         log.debug("update check failed", exc_info=True)
         return None
@@ -107,7 +117,7 @@ def start_background_check(current: str) -> threading.Thread:
 def can_install(latest: dict | None) -> bool:
     """True only for the installed app: the portable zip has no uninstaller and cannot be updated in place."""
     return bool(latest and sys.platform == "win32" and getattr(sys, "frozen", False)
-                and latest.get("setup_url") and latest.get("sums_url")
+                and latest.get("setup_url") and latest.get("sums_url") and latest.get("sig_url")
                 and (Path(sys.executable).parent / INSTALLER_UNINSTALLER).is_file())
 
 
@@ -117,6 +127,16 @@ def _expected_hash(sums: str, name: str) -> str | None:
         if len(parts) == 2 and parts[1].lstrip("*") == name:
             return parts[0].lower()
     return None
+
+
+def signed_by_us(sums: bytes, sig_text: str) -> bool:
+    """True when `sig_text` (base64) is PUBLIC_KEY's Ed25519 signature of exactly these SHA256SUMS bytes."""
+    try:
+        sig = base64.b64decode(sig_text.strip(), validate=True)
+        Ed25519PublicKey.from_public_bytes(PUBLIC_KEY).verify(sig, sums)
+        return True
+    except (InvalidSignature, binascii.Error, ValueError):
+        return False
 
 
 def _file_digest(path: Path) -> str:
@@ -140,7 +160,8 @@ def download_and_verify(latest: dict, dest_dir: Path, get=requests.get) -> Path:
 def _download_and_verify(latest: dict, dest_dir: Path, get) -> Path:
     bad_verify = UserError("No se pudo verificar la actualización", "Descárgala desde la página de Baitd")
     setup_url, sums_url = latest.get("setup_url") or "", latest.get("sums_url") or ""
-    if not (is_release_asset_url(setup_url) and is_release_asset_url(sums_url)):
+    sig_url = latest.get("sig_url") or ""
+    if not (is_release_asset_url(setup_url) and is_release_asset_url(sums_url) and is_release_asset_url(sig_url)):
         raise bad_verify
     version = ".".join(map(str, parse_version(str(latest.get("version", ""))))) or "nueva"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +174,13 @@ def _download_and_verify(latest: dict, dest_dir: Path, get) -> Path:
         try:
             with get(sums_url, timeout=(10, 30)) as r:
                 r.raise_for_status()
-                expected = _expected_hash(r.text, SETUP_NAME)
+                sums = r.content
+            with get(sig_url, timeout=(10, 30)) as r:
+                r.raise_for_status()
+                sig_text = r.text
+            if not signed_by_us(sums, sig_text):  # a release we did not sign is never installed
+                raise bad_verify
+            expected = _expected_hash(sums.decode("utf-8", errors="replace"), SETUP_NAME)
             if not expected:
                 raise bad_verify
             digest = hashlib.sha256()
