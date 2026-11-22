@@ -180,3 +180,21 @@ def test_posix_low_priority_uses_setpriority_after_start_not_preexec_fn(monkeypa
         raise PermissionError
     monkeypatch.setattr(os, "setpriority", boom, raising=False)
     run(["-version"], low_priority=True)
+
+
+def test_local_file_inputs_may_only_read_local_files(tmp_path):
+    from baitd.ffmpeg import _local_inputs_only
+    f = tmp_path / "in.mp4"
+    f.write_bytes(b"x")
+    args = ["-f", "lavfi", "-i", "color=c=black", "-i", str(f), "-i", "https://example.com/x.m3u8", "out.mp4"]
+    out = _local_inputs_only(args)
+    assert out == ["-f", "lavfi", "-i", "color=c=black", "-protocol_whitelist", "file,pipe", "-i", str(f),
+                   "-i", "https://example.com/x.m3u8", "out.mp4"]
+    assert _local_inputs_only(out) == out  # never added twice
+
+
+def test_a_playlist_disguised_as_a_video_cannot_reach_the_network(tmp_path):
+    fake = tmp_path / "video.mp4"
+    fake.write_text("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://127.0.0.1:9/seg.ts\n#EXT-X-ENDLIST\n")
+    with pytest.raises(RuntimeError):
+        run(["-i", str(fake), "-f", "null", "-"])

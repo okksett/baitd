@@ -332,7 +332,7 @@
   "browser.safari": "Safari",
   "settings.yt_file": "Archivo cookies.txt",
   "settings.yt_file_placeholder": "Vacío = no usar · C:\\Users\\tú\\Downloads\\cookies.txt",
-  "settings.yt_file_hint": "Abre youtube.com con tu sesión iniciada, exporta las cookies con la extensión «Get cookies.txt LOCALLY» y pega aquí la ruta del archivo. Si hay archivo, se usa en lugar del navegador. Las cookies no salen de tu ordenador.",
+  "settings.yt_file_hint": "Abre youtube.com con tu sesión iniciada, exporta las cookies con la extensión «Get cookies.txt LOCALLY» y pega aquí la ruta del archivo. Si hay archivo, se usa en lugar del navegador. Las cookies no salen de tu ordenador. Ese archivo es como tu sesión iniciada de YouTube: no lo compartas ni lo guardes en una carpeta sincronizada.",
   "settings.ytdlp": "Actualizar yt-dlp",
   "settings.ytdlp_hint": "Si los enlaces dejan de funcionar, actualízalo. La versión nueva se usa al reiniciar Baitd.",
   "settings.ytdlp_running": "Actualizando yt-dlp…",

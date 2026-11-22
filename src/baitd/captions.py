@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 import unicodedata
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -184,8 +185,11 @@ def _ass_time(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{c:02d}"
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")  # libass also breaks lines on \r
+
+
 def _clean(text: str) -> str:
-    return text.replace("\\", "").replace("{", "").replace("}", "").replace("\n", " ")
+    return _CONTROL.sub(" ", text).replace("\\", "").replace("{", "").replace("}", "")
 
 
 def _style_line(name: str, font: str, face: _Face | None, style: SubtitleStyle, height: int,

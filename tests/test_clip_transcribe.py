@@ -305,3 +305,18 @@ def test_models_are_cached_by_name_and_threads(monkeypatch, tmp_data):
     transcribe._load_model("medium", 2)
     assert made == [("small", 2), ("small", None), ("small", None), ("medium", 2)]
     assert set(transcribe._MODELS) == {("small", 2), ("medium", 2)}
+
+
+def test_local_models_are_pinned_to_a_commit(monkeypatch):
+    import sys
+    import types
+    seen = {}
+
+    class Fake:
+        def __init__(self, model, **kw):
+            seen.update(kw, model=model)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Fake))
+    for model in ("small", "medium", "large-v3"):
+        transcribe._new_model(model, None)
+        assert len(seen["revision"]) == 40 and seen["model"] == model

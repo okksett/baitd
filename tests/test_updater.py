@@ -287,3 +287,11 @@ def test_part_altered_on_disk_is_rejected_and_deleted(tmp_path, monkeypatch):
     with pytest.raises(UserError):
         updater.download_and_verify(LATEST, tmp_path, get=fake_get(f"{good}  Baitd-Setup.exe"))
     assert list(tmp_path.iterdir()) == []
+
+
+def test_download_keeps_files_that_are_not_installers(tmp_path):
+    (tmp_path / "Baitd-Setup-0.3.5.exe").write_bytes(b"old")
+    (tmp_path / "mis-notas.txt").write_text("del usuario")
+    good = hashlib.sha256(INSTALLER).hexdigest()
+    updater.download_and_verify(LATEST, tmp_path, get=fake_get(f"{good}  Baitd-Setup.exe"))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Baitd-Setup-0.4.0.exe", "mis-notas.txt"]

@@ -332,7 +332,7 @@
   "browser.safari": "Safari",
   "settings.yt_file": "cookies.txt file",
   "settings.yt_file_placeholder": "Empty = don't use · C:\\Users\\you\\Downloads\\cookies.txt",
-  "settings.yt_file_hint": "Open youtube.com signed in, export the cookies with the «Get cookies.txt LOCALLY» extension and paste the file's path here. A file is used instead of the browser. Cookies never leave your computer.",
+  "settings.yt_file_hint": "Open youtube.com signed in, export the cookies with the «Get cookies.txt LOCALLY» extension and paste the file's path here. A file is used instead of the browser. Cookies never leave your computer. That file is your signed-in YouTube session: never share it or keep it in a synced folder.",
   "settings.ytdlp": "Update yt-dlp",
   "settings.ytdlp_hint": "If links stop working, update it. The new version is used after restarting Baitd.",
   "settings.ytdlp_running": "Updating yt-dlp…",

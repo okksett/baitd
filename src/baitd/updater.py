@@ -144,7 +144,7 @@ def _download_and_verify(latest: dict, dest_dir: Path, get) -> Path:
         raise bad_verify
     version = ".".join(map(str, parse_version(str(latest.get("version", ""))))) or "nueva"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    for old in dest_dir.iterdir():  # old installers would pile up (about 200 MB each)
+    for old in dest_dir.glob("Baitd-Setup-*.exe*"):  # old installers would pile up (about 200 MB each)
         if old.is_file():
             old.unlink(missing_ok=True)
     part = dest_dir / f"Baitd-Setup-{version}.exe.part"

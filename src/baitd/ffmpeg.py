@@ -64,6 +64,18 @@ def _set_nice(pid: int) -> None:
         pass
 
 
+def _local_inputs_only(args: list[str]) -> list[str]:
+    """An input that is a local file may only read local files: a crafted playlist or concat file inside an
+    uploaded or downloaded video cannot reach the network or other protocols."""
+    out: list[str] = []
+    for i, a in enumerate(args):
+        if (a == "-i" and i + 1 < len(args) and "-protocol_whitelist" not in args[max(0, i - 2):i]
+                and Path(args[i + 1]).is_file()):
+            out += ["-protocol_whitelist", "file,pipe"]
+        out.append(a)
+    return out
+
+
 def run(
     args: list[str],
     cwd: Path | None = None,
@@ -76,7 +88,7 @@ def run(
     `low_priority` runs it below normal priority so it does not disturb a live stream on the same PC; None
     follows the thread's low_priority() scope.
     """
-    cmd = [ffmpeg_exe(), "-hide_banner", "-y", *args]
+    cmd = [ffmpeg_exe(), "-hide_banner", "-y", *_local_inputs_only(args)]
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -147,7 +159,7 @@ def probe(path: Path) -> dict:
     Cover art (an `(attached pic)` stream, e.g. in an MP3) is not video: a file with only that
     has width/height/fps None."""
     proc = subprocess.run(
-        [ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+        [ffmpeg_exe(), "-hide_banner", *_local_inputs_only(["-i", str(path)])],
         capture_output=True,
         text=True,
         encoding="utf-8",

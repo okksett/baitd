@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import re
 import shutil
 import signal
 import socket
@@ -155,8 +156,18 @@ def _ask_to_focus(url: str) -> bool:
         return False
 
 
+class _OneLine(logging.Formatter):
+    """Untrusted text (video titles, chat, errors) cannot forge log lines: control characters in the
+    message become spaces; a traceback keeps its own lines."""
+    _CTRL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        record.message = self._CTRL.sub(" ", record.message)
+        return super().formatMessage(record)
+
+
 def _setup_logging() -> list[logging.Handler]:
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    fmt = _OneLine("%(asctime)s %(levelname)s %(name)s: %(message)s")
     file_handler = logging.handlers.RotatingFileHandler(
         config.data_dir() / "baitd.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     handlers: list[logging.Handler] = [file_handler]
