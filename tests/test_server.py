@@ -933,3 +933,12 @@ def test_no_emojis_or_symbol_icons_in_the_ui():
         assert not _EMOJI.search(text), (name, _EMOJI.search(text).group())
     assert es["framing.partido"] == "Gameplay + cámara" and es["clip.kind.interesante"] == "Épico"
     assert '<option value="partido" data-i18n="framing.partido">' in INDEX.read_text(encoding="utf-8").split('id="c-framing"')[1].split("</select>")[0]
+
+
+def test_clip_jobs_live_in_the_clips_screen(client):
+    html = client.get("/").text
+    video = html.split('id="panel-video"')[1].split('id="panel-live"')[0]
+    for i in ("clip-jobs", "clip-jobs-title", "clip-jobs-list", "clip-jobs-empty", "clip-jobs-clear"):
+        assert f'id="{i}"' in video, i
+    js = (WEB / "static/app.js").read_text(encoding="utf-8")
+    assert "function renderJobList(" in js and "isClipJob" in js.split("function renderProgress(")[1].split("function ")[0]

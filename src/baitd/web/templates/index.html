@@ -403,6 +403,16 @@
     <p id="clip-error" class="err" role="alert" hidden></p>
     <p id="clip-status" class="status" role="status"></p>
 
+    <section id="clip-jobs" class="clip-jobs" aria-labelledby="clip-jobs-title">
+      <div class="queue-head">
+        <h3 id="clip-jobs-title" tabindex="-1" data-i18n="queue.title">{{ t("queue.title") }}</h3>
+        <button type="button" class="link-btn" id="clip-jobs-clear" data-i18n="queue.clear">{{ t("queue.clear") }}</button>
+      </div>
+      <p id="clip-jobs-error" class="err" role="alert" hidden></p>
+      <p id="clip-jobs-empty" class="hint" data-i18n="clips.empty_list">{{ t("clips.empty_list") }}</p>
+      <ul id="clip-jobs-list" class="jobs"></ul>
+    </section>
+
     <section id="clip-review" class="review" aria-labelledby="clip-review-title" hidden>
       <div class="review-head">
         <h3 id="clip-review-title" tabindex="-1" data-i18n="clip.review_title">{{ t("clip.review_title") }}</h3>
@@ -481,7 +491,7 @@
     </div>
   </section>
 
-  <section class="side">
+  <section class="side" id="side">
     <div class="phone" id="phone" data-aspect="9:16">
       <span class="tag" data-i18n="preview.label">{{ t("preview.label") }}</span>
       <div class="sub" id="sample-sub" aria-hidden="true">

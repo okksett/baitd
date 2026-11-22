@@ -437,6 +437,13 @@ dialog.sheet {
 .job-actions .pill { padding: 5px 12px; font-size: 13px; }
 .job-actions:not(:has(button:not([hidden]))) { display: none; }
 
+/* Tus clips: grid of glass cards; a running job takes the full row */
+.clip-jobs { margin-top: 28px; }
+.clip-jobs h3 { font: 400 20px/1.1 Anton, sans-serif; text-transform: uppercase; letter-spacing: .3px; }
+#clip-jobs-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+#clip-jobs-list .job { background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(14px); border-radius: var(--radius); padding: 14px 16px; }
+#clip-jobs-list .job:has(.chip[data-status="pending"], .chip[data-status="running"]) { grid-column: 1 / -1; }
+
 /* ---------- dialogs ---------- */
 
 dialog {

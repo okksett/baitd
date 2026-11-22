@@ -156,6 +156,7 @@
   "queue.view": "View videos",
   "clips.title": "Finished videos",
   "clips.empty": "There are no videos to show.",
+  "clips.empty_list": "Your clips show up here.",
   "queue.open": "Open folder",
   "queue.cancel": "Cancel",
   "queue.remove": "Remove",

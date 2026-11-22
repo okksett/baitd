@@ -752,6 +752,7 @@
     $("#panel-short").hidden = view !== "short";
     $("#panel-clip").hidden = view === "short";
     $("#panel-clip").setAttribute("aria-labelledby", `nav-${view === "live" ? "live" : "clips"}`);
+    $("#side").hidden = view !== "short";
     $("#panel-video").hidden = view !== "clips";
     $("#panel-live").hidden = view !== "live";
     $(".skip").setAttribute("href", view === "short" ? "#head" : "#clip-head");
@@ -1589,9 +1590,18 @@
   }
 
   function renderJobs() {
-    const list = $("#queue-list");
+    renderJobList($("#queue-list"), state.jobs.filter((j) => !isClipJob(j)), $("#queue-empty"), $("#clear-finished"));
+    const clips = state.jobs.filter(isClipJob);
+    // running ones first (full width), then the rest, newest first
+    const sorted = [...clips.filter((j) => ACTIVE.includes(j.status)), ...clips.filter((j) => !ACTIVE.includes(j.status))];
+    renderJobList($("#clip-jobs-list"), sorted, $("#clip-jobs-empty"), $("#clip-jobs-clear"));
+    renderProgress();
+    renderPreview();
+  }
+
+  function renderJobList(list, jobs, empty, clear) {
     const byId = new Map($$(".job", list).map((li) => [li.dataset.id, li]));
-    const wanted = state.jobs.map((job) => {
+    const wanted = jobs.map((job) => {
       let li = byId.get(job.id);
       if (!li) {
         li = $("#tpl-job").content.firstElementChild.cloneNode(true);
@@ -1602,12 +1612,10 @@
       return li;
     });
     // keep existing nodes (and keyboard focus) in place; only add, remove or reorder
-    byId.forEach((li, id) => { if (!state.jobs.some((j) => j.id === id)) li.remove(); });
+    byId.forEach((li, id) => { if (!jobs.some((j) => j.id === id)) li.remove(); });
     wanted.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
-    $("#queue-empty").hidden = state.jobs.length > 0;
-    $("#clear-finished").hidden = !state.jobs.some((j) => FINISHED.includes(j.status));
-    renderProgress();
-    renderPreview();
+    empty.hidden = jobs.length > 0;
+    clear.hidden = !jobs.some((j) => FINISHED.includes(j.status));
   }
 
   function updateJob(li, job) {
@@ -1636,7 +1644,8 @@
   }
 
   function renderProgress() {
-    const job = state.jobs.find((j) => j.status === "running") || state.jobs.find((j) => j.status === "pending");
+    const shorts = state.jobs.filter((j) => !isClipJob(j));
+    const job = shorts.find((j) => j.status === "running") || shorts.find((j) => j.status === "pending");
     const box = $("#progress");
     box.hidden = !job;
     if (!job) return;
@@ -1648,7 +1657,7 @@
   }
 
   function renderPreview() {
-    const latest = [...state.jobs].reverse().find((j) => j.status === "done" && j.has_video);
+    const latest = state.jobs.filter((j) => !isClipJob(j)).reverse().find((j) => j.status === "done" && j.has_video);
     const video = $("#preview");
     const id = latest ? latest.id : null;
     if (id === state.previewId) return;
@@ -1717,6 +1726,8 @@
     if (!btn) return;
     const id = btn.closest(".job").dataset.id;
     const act = btn.dataset.jobAct;
+    const inClips = Boolean(btn.closest("#clip-jobs"));
+    const errBox = $(inClips ? "#clip-jobs-error" : "#queue-error");
     if (act === "review") {
       const job = state.jobs.find((j) => j.id === id);
       if (job) await openReview(job, true);
@@ -1734,13 +1745,13 @@
     }[act];
     try {
       await api(url[1], url[0], {});
-      showError($("#queue-error"), null);
+      showError(errBox, null);
     } catch (err) {
-      showError($("#queue-error"), err);
+      showError(errBox, err);
     }
     if (act !== "open") {
       await refreshJobs();
-      if (!document.contains(btn) || btn.hidden) $("#queue-title").focus(); // keep keyboard focus in the queue
+      if (!document.contains(btn) || btn.hidden) $(inClips ? "#clip-jobs-title" : "#queue-title").focus(); // keep keyboard focus in its list
     }
   }
 
@@ -2623,7 +2634,7 @@
     renderNotices();
     renderMoments();
     setHotkeyHint(state.live.rec ? "live.hotkey_recording_hint" : "live.hotkey_hint");
-    $$("#queue-list .job").forEach((li) => {
+    $$("#queue-list .job, #clip-jobs-list .job").forEach((li) => {
       applyI18n(li);
       const job = state.jobs.find((j) => j.id === li.dataset.id);
       if (job) updateJob(li, job);
@@ -2722,6 +2733,7 @@
     $("#clip-discard").addEventListener("click", discardAnalysis);
 
     $("#queue-list").addEventListener("click", onJobAction);
+    $("#clip-jobs-list").addEventListener("click", onJobAction);
     $("#clips-close").addEventListener("click", closeClips);
     for (const ev of ["cancel", "close"]) { // Esc fires both; the close button runs closeClips
       $("#clips-view").addEventListener(ev, unloadClips);
@@ -2734,11 +2746,14 @@
         showError($("#clips-error"), err);
       }
     });
-    $("#clear-finished").addEventListener("click", async () => {
-      try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($("#queue-error"), e); }
-      await refreshJobs();
-      $("#queue-title").focus();
-    });
+    // the server clears every finished job, whatever its kind: both buttons do the same
+    for (const [btn, err, title] of [["#clear-finished", "#queue-error", "#queue-title"], ["#clip-jobs-clear", "#clip-jobs-error", "#clip-jobs-title"]]) {
+      $(btn).addEventListener("click", async () => {
+        try { await api("POST", "/api/jobs/clear", {}); } catch (e) { showError($(err), e); }
+        await refreshJobs();
+        $(title).focus();
+      });
+    }
 
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-save").addEventListener("click", saveSettings);
