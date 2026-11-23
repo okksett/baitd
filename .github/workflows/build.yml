@@ -99,7 +99,7 @@ jobs:
           echo "${{ matrix.artifact }}: $((size / 1048576)) MB"
           test "$size" -le $((450 * 1048576)) || { echo "Bundle is over 450 MB"; exit 1; }
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
@@ -131,7 +131,7 @@ jobs:
           sha256sum Baitd-Setup.exe "$(basename '${{ matrix.artifact }}')" > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: runner.os == 'Windows'
         with:
           name: Baitd-windows-setup
@@ -183,7 +183,7 @@ jobs:
             dist/Baitd-macos-x64.zip
             dist/Baitd-linux-x64.tar.gz
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Baitd-checksums
           path: dist/SHA256SUMS
