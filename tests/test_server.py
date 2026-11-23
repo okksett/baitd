@@ -96,8 +96,8 @@ def finished_job(client, queue, topic="tema"):
 def test_settings_masks_keys(client):
     client.post("/api/settings", json={"pexels_key": "abcdef1234"})
     r = client.get("/api/settings")
-    assert r.json["pexels_key"].endswith("1234") and r.json["pexels_key"].startswith("••••")
-    assert "abcdef" not in r.text
+    assert r.json["pexels_key"] == "••••"
+    assert "abcdef" not in r.text and "1234" not in r.text
 
 
 def test_masked_value_not_overwritten(client, tmp_path):
@@ -778,7 +778,7 @@ def test_clipping_form_help_toggles_and_visible_min_max(client):
 def test_boot_carries_version_and_page_shows_it(client):
     import baitd
     html = client.get("/").text
-    assert baitd.__version__ == "0.6.0"
+    assert baitd.__version__ == "0.6.1"
     assert f'"version": "{baitd.__version__}"' in html
     assert 'id="app-version"' in html
     es = json.loads(ES.read_text("utf-8"))
@@ -974,3 +974,30 @@ def test_moment_editor_opens_in_a_side_sheet(client):
     assert 'class="moment-editor"' in tpl
     es = json.loads((WEB / "static/i18n/es.json").read_text(encoding="utf-8"))
     assert "{n}" in es["clip.review_title"] and "{n}" in es["clip.export"]
+
+
+@pytest.mark.parametrize("color", ["#a\nDia", "#zzzzzz", "#12345", "#1234567"])
+def test_profile_subtitle_colours_must_be_hex(client, color):
+    profile = client.get("/api/profiles").json["profiles"][0]
+    profile["subtitle"] = dict(profile["subtitle"], color=color)
+    assert client.post("/api/profiles", json=profile).status_code == 400
+
+
+@pytest.mark.parametrize("url, ok", [
+    ("https://api.example.com/v1", True), ("http://localhost:11434", True), ("http://127.0.0.1:8000/v1", True),
+    ("http://192.168.1.20:8000", True), ("http://pc.local:8000", True),
+    ("http://api.example.com/v1", False), ("ftp://192.168.1.2", False), ("javascript:alert(1)", False),
+])
+def test_compat_url_must_be_https_or_local(client, url, ok):
+    r = client.post("/api/settings", json={"compat_base_url": url})
+    assert (r.status_code == 200) == ok
+
+
+def test_a_new_compat_url_drops_the_saved_key(client):
+    client.post("/api/settings", json={"compat_base_url": "https://a.example.com", "compat_key": "sk-old"})
+    client.post("/api/settings", json={"llm_model": "x"})  # other changes keep it
+    assert config.load_settings()["compat_key"] == "sk-old"
+    client.post("/api/settings", json={"compat_base_url": "https://b.example.com"})
+    assert config.load_settings()["compat_key"] == ""
+    client.post("/api/settings", json={"compat_base_url": "https://c.example.com", "compat_key": "sk-new"})
+    assert config.load_settings()["compat_key"] == "sk-new"

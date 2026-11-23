@@ -7,3 +7,17 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+.impeccable/
+
+# secrets and credentials that must never be committed
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+cookies*.txt
+settings.json
+profiles.json

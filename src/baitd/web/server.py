@@ -8,6 +8,7 @@ upload, as `application/octet-stream` with the header `X-Baitd-Upload: 1`.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import math
@@ -16,6 +17,7 @@ import re
 import subprocess
 import sys
 import threading
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -43,7 +45,7 @@ WEB_DIR = Path(__file__).resolve().parent
 I18N_DIR = WEB_DIR / "static" / "i18n"
 UI_LANGS = ("es", "en")
 THEMES = ("dark", "light")
-KEY_FIELDS = ("openai_key", "gemini_key", "elevenlabs_key", "pexels_key", "pixabay_key", "compat_key")
+KEY_FIELDS = config.SECRET_KEYS
 MASK = "••••"
 _MUTATING = ("POST", "PUT", "PATCH", "DELETE")
 _LOCAL_HOSTS = ("127.0.0.1", "localhost")
@@ -78,9 +80,28 @@ def _open_folder(path: Path) -> None:
 
 
 def mask_key(value: str) -> str:
-    if not value:
-        return ""
-    return MASK + value[-4:] if len(value) > 8 else MASK
+    """A saved key shows only that it is set: no part of it leaves the server."""
+    return MASK if value else ""
+
+
+def _compat_url_ok(url: str) -> bool:
+    """https anywhere; plain http only to this PC or the local network (the key would travel in clear)."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme == "https" and parts.hostname:
+        return True
+    if parts.scheme != "http" or not parts.hostname:
+        return False
+    host = parts.hostname
+    if host == "localhost" or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 def _masked_settings() -> dict:
@@ -174,7 +195,7 @@ def _parse_profile(d: dict) -> Profile:
         and p.music in _music_choices()
         and s.preset in captions.PRESETS and s.position in _POSITIONS
         and isinstance(s.size, int) and 24 <= s.size <= 200
-        and all(isinstance(c, str) and len(c) == 7 and c.startswith("#") for c in (s.color, s.highlight))
+        and all(isinstance(c, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", c) for c in (s.color, s.highlight))
         and isinstance(s.font, str) and s.font in captions.font_families()
         and type(s.outline) is int and 0 <= s.outline <= _MAX_OUTLINE
         and isinstance(s.box, bool)
@@ -455,6 +476,9 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
                 continue  # the masked placeholder came back unchanged
             if key == "llm_provider" and value not in _LLM_PROVIDERS:
                 raise UserError("Proveedor de IA no válido", "Elige Gemini, OpenAI o un servidor compatible")
+            if key == "compat_base_url" and value and not _compat_url_ok(value):
+                raise UserError("Dirección del servidor compatible no válida",
+                                "Usa https://, o http:// solo para este equipo o tu red local")
             if key == "llm_model" and len(value) > _MAX_LLM_MODEL:
                 raise UserError("El nombre del modelo es demasiado largo", f"Usa como máximo {_MAX_LLM_MODEL} caracteres")
             update[key] = value
@@ -462,6 +486,10 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
             raise UserError("Idioma de la interfaz no válido", "Elige español o inglés")
         if "theme" in update and update["theme"] not in THEMES:
             raise UserError("Tema no válido", "Elige oscuro o claro")
+        current = config.load_settings()
+        if ("compat_base_url" in update and update["compat_base_url"] != current.get("compat_base_url", "")
+                and "compat_key" not in update):
+            update["compat_key"] = ""  # the saved key belongs to the old server: never send it to a new one
         if update.get("output_dir"):  # "" = the default folder in the data dir
             check_output_dir(Path(update["output_dir"]))
         config.save_settings(update)

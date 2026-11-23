@@ -132,6 +132,11 @@ def _read_pcm16(path: Path):
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
+# Each local model is pinned to one commit of its Hugging Face repo, so a changed upload is never used silently.
+_REVISIONS = {"small": "536b0662742c02347bc0e980a01041f333bce120",
+              "medium": "08e178d48790749d25932bbc082711ddcfdfbc4f",
+              "large-v3": "edaa852ec7e145841d8ffdb056a99866b5f0a478"}
+
 _MODELS: dict[tuple[str, int], object] = {}  # the live models, kept while Baitd runs
 _MODELS_LOCK = threading.Lock()
 
@@ -139,6 +144,8 @@ _MODELS_LOCK = threading.Lock()
 def _new_model(model: str, cpu_threads: int | None):
     from faster_whisper import WhisperModel  # lazy: heavy import, optional at test time
     extra = {"cpu_threads": cpu_threads} if cpu_threads else {}
+    if model in _REVISIONS:
+        extra["revision"] = _REVISIONS[model]
     return WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir()), **extra)
 
 

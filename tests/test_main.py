@@ -328,3 +328,10 @@ def test_a_failing_live_close_does_not_skip_the_queue_stop(tmp_data, monkeypatch
         t.join(10)
     assert not t.is_alive()
     assert order[-1] == "queue" and "live" in order  # the queue stops even though live.close() raised
+
+
+def test_log_lines_cannot_be_forged_by_untrusted_text():
+    import logging
+    fmt = app_main._OneLine("%(levelname)s %(message)s")
+    rec = logging.LogRecord("x", logging.INFO, __file__, 1, "Video: %s", ("hola\r\nERROR falso",), None)
+    assert fmt.format(rec) == "INFO Video: hola  ERROR falso"

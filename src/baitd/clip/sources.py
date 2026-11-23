@@ -281,7 +281,7 @@ def _fetch_chat_replay(ytdlp, url: str, opts: dict, info: dict, folder: Path, ca
     except Exception as e:
         if cancel.is_set():
             raise JobCancelled() from e
-        log.info("No se pudo bajar el chat del directo: %s", e)
+        log.info("No se pudo bajar el chat del directo: %s", _short_reason(e, url))
         (folder / _CHAT_FILE).unlink(missing_ok=True)
 
 

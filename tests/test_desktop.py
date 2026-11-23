@@ -57,8 +57,7 @@ def test_window_shows_the_page_and_keeps_the_right_click_menu(tmp_path, monkeypa
     assert desktop.run_window(URL, tmp_path / "ventana") is True
     title, url, kw = calls["window"]
     assert (title, url) == ("Baitd", URL) and kw["min_size"] == desktop.MIN_SIZE
-    assert calls["start"]["debug"] is True  # pywebview only keeps the right-click menu with debug
-    assert sys.modules["webview"].settings["OPEN_DEVTOOLS_IN_DEBUG"] is False
+    assert calls["start"]["debug"] is False  # no devtools in the app window
     assert calls["start"]["private_mode"] is False and (tmp_path / "ventana").is_dir()  # remembers the page's state
 
 

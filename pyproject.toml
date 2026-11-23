@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68,<90"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,13 +9,13 @@ description = "Local app that turns a topic into a short video and cuts clips fr
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "flask",
+    "flask>=3.1.1,<4",
     "aiohttp>=3.9,<4",         # the live chat readers (websockets and polling)
-    "requests",
+    "requests>=2.32.4,<3",
     "edge-tts>=7.3,<8",
-    "imageio-ffmpeg>=0.8",
-    "platformdirs",
-    "fonttools",
+    "imageio-ffmpeg>=0.8,<1",
+    "platformdirs>=4,<5",
+    "fonttools>=4.60.2,<5",
     "waitress>=3,<4",
     "yt-dlp>=2026.10,<2027",
     "yt-dlp-ejs>=0.8,<0.9",   # YouTube's JS challenge solver scripts, matched to the yt-dlp above
@@ -24,11 +24,16 @@ dependencies = [
     "faster-whisper>=1.2,<2",
     "opencv-python-headless>=5,<6",
     "numpy>=2,<3",
+    # faster-whisper's onnxruntime: 1.23.x is the last with Intel Mac wheels (the hashed lock must hold one)
+    "onnxruntime<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 48.x: last Intel Mac wheels
+    "cryptography>=44,<51",   # Ed25519: the updater checks the release signature before installing
+    "keyring>=25.6,<26",      # API keys in the OS credential store (Credential Manager, Keychain)
     "pynput>=1.7.6,<2; sys_platform != 'win32'",  # the global hotkey on macOS and Linux (Windows uses user32)
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyinstaller"]
+dev = ["pytest>=8,<10", "pyinstaller>=6.10,<7"]
 
 [project.scripts]
 baitd = "baitd.__main__:main"

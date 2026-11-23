@@ -266,10 +266,21 @@ def _hook_y(tmp_path, w, h, credit):
     captions.write_clip_ass([_w("hola", 0.5, 1.0)], captions.PRESETS["poster"], w, h, ass, captions.FONTS_DIR,
                             top_text="The truth about trading psychology and greed", credit=credit)
     line = next(ln for ln in ass.read_text(encoding="utf-8").splitlines() if ",Hook," in ln)
-    return int(line.split("\pos(")[1].split(",")[1].split(")")[0])
+    return int(line.split(r"\pos(")[1].split(",")[1].split(")")[0])
 
 
 @pytest.mark.parametrize("w, h, moves", [(1080, 1920, False), (1080, 1080, True), (1920, 1080, True)])
 def test_the_title_stays_below_the_credit_at_the_top(tmp_path, w, h, moves):
     alone, with_credit = _hook_y(tmp_path, w, h, ""), _hook_y(tmp_path, w, h, "@canal")
     assert (with_credit > alone) == moves  # in 9:16 the credit fits above the title band
+
+
+def test_untrusted_credit_cannot_add_ass_lines(tmp_path):
+    ass = tmp_path / "x.ass"
+    credit = "@canal\rDialogue: 0,0:00:00.00,9:00:00.00,Credit,,0,0,0,,HOLA x"
+    captions.write_clip_ass([_w("hola", 0.5, 1.0)], captions.PRESETS["poster"], 1080, 1920, ass, captions.FONTS_DIR,
+                            credit=credit)
+    lines = ass.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    dialogues = [ln for ln in lines if ln.startswith("Dialogue")]
+    assert sum(",Credit," in ln for ln in dialogues) == 1  # the injected one stays inside the credit text
+    assert not any("\r" in ln or " " in ln for ln in lines)
