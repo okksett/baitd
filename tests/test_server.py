@@ -1019,3 +1019,15 @@ def test_clip_card_preview_wiring():
     js = JS.read_text("utf-8")
     assert "clipPreviews" in js and "#t=0.1" in js and 'removeAttribute("src")' in js
     assert "clip-thumb video" in (WEB / "static/app.css").read_text("utf-8")
+    # loaded only near the screen, and a reply for a job removed or retried meanwhile is dropped
+    assert 'new IntersectionObserver(' in js and 'rootMargin: "200px"' in js and "previewSeen.unobserve(video)" in js
+    assert "clipPreviews.get(job.id) !== loading" in js
+
+
+def test_review_sends_untouched_auto_cards_for_the_server_to_frame():
+    js = JS.read_text("utf-8")
+    # an auto card goes as its own framing, without a box; any edit to its box or framing makes it the user's
+    assert "framing: m.autoCam ? m.autoFraming : m.framing" in js and "auto_cam: Boolean(m.autoCam)" in js
+    assert "cam_resolved: true" in js and js.count("m.autoCam = false") == 3
+    # toggling "Usar este recuadro para todos los clips" counts as an edit
+    assert "JSON.stringify([r.rememberCam," in js

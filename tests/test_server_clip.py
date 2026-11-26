@@ -677,6 +677,40 @@ def test_retitle_must_be_json(client, queue, tmp_path):
     assert client.post(f"/api/jobs/{jid}/clips/clip-01.mp4/retitle", data="x").status_code == 415
 
 
+def test_retitle_asks_the_ai_outside_the_lock_and_keeps_a_save_made_meanwhile(client, queue, tmp_path, monkeypatch):
+    folder = _clip_folder(tmp_path, entries=_ENTRIES)
+    jid = _done_clip_job(queue, folder)
+
+    def complete(prompt, profile, settings, cancel=None):
+        assert not pipeline._TEXTS_LOCK.locked()  # a slow AI must not hold up the other retitles
+        saved = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+        saved[1]["title"] = "Guardado mientras"  # another retitle finishing first
+        (folder / "clips.json").write_text(json.dumps(saved), encoding="utf-8")
+        return '{"title": "Nuevo", "description": "", "hashtags": []}'
+    monkeypatch.setattr("baitd.llm.complete", complete)
+    assert _retitle(client, jid).status_code == 200
+    saved = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+    assert [c["title"] for c in saved] == ["Nuevo", "Guardado mientras"]
+    assert "Guardado mientras" in (folder / "publicacion.txt").read_text(encoding="utf-8")
+
+
+def test_retitle_says_to_close_a_file_it_cannot_replace(client, queue, tmp_path, monkeypatch):
+    folder = _clip_folder(tmp_path, entries=_ENTRIES)
+    jid = _done_clip_job(queue, folder)
+    before = (folder / "clips.json").read_text(encoding="utf-8")
+    _fake_ai(monkeypatch, '{"title": "Nuevo", "description": "", "hashtags": []}')
+
+    def locked(src, dst):
+        raise PermissionError(13, "in use", str(dst))
+    monkeypatch.setattr(pipeline.os, "replace", locked)
+    r = _retitle(client, jid)
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "No se pudo guardar el título → Cierra el archivo si está abierto e inténtalo de nuevo"
+    assert (folder / "clips.json").read_text(encoding="utf-8") == before
+    assert sorted(p.name for p in folder.iterdir()) == ["clip-01.mp4", "clip-02.mp4", "clips.json"]  # no .tmp,
+    # and no publicacion.txt ahead of clips.json
+
+
 def test_retitle_ai_errors_say_how_to_fix_them_without_secrets(client, queue, tmp_path, monkeypatch):
     import requests
     folder = _clip_folder(tmp_path, entries=_ENTRIES)
@@ -819,3 +853,36 @@ def test_export_remembers_and_forgets_the_channel_cam(client, profile_id, queue,
     r = client.post(f"/api/analyses/{plain}/export",
                     json={"moments": [ok], "profile_id": profile_id, "remember_cam": [0, 90, 160, 90]})
     assert r.status_code == 200 and json.loads((tmp_data / "camaras.json").read_text(encoding="utf-8")) == {}
+
+
+def test_export_keeps_which_moments_a_review_card_left_on_auto(client, profile_id, queue, tmp_data, make_mp4):
+    aid = _analysis(_source(make_mp4))
+    sent = {"start": 5, "end": 25, "framing": "cara", "title": "T", "credit": "", "cam": None, "orig": 0}
+
+    def payload(**kw):
+        r = client.post(f"/api/analyses/{aid}/export", json={"profile_id": profile_id, **kw})
+        assert r.status_code == 200, r.get_json()
+        return next(i for i in queue._items if i["id"] == r.get_json()["job_id"])["payload"]
+
+    p = payload(moments=[{**sent, "auto_cam": True}, {**sent, "auto_cam": "yes"}, sent], cam_resolved=True)
+    assert p["cam_resolved"] is True and [m["auto_cam"] for m in p["moments"]] == [True, False, False]
+    p = payload(moments=[{**sent, "auto_cam": True}])  # the En directo list: no review decided anything
+    assert "cam_resolved" not in p
+    assert "cam_resolved" not in payload(moments=[sent], cam_resolved=1)
+
+
+def test_export_saves_the_channel_cam_before_queueing(client, profile_id, queue, tmp_data, make_mp4, monkeypatch):
+    from baitd.clip import camaras
+    from baitd.models import UserError
+    src = sources.add_local_source(make_mp4(seconds=60, w=320, h=180, fps=15), "a", "@Rubius", "")
+    aid = _analysis(src)
+    ok = {"start": 5, "end": 25, "framing": "partido", "title": "T", "credit": "", "cam": [0, 90, 160, 90]}
+
+    def broken(*a):
+        raise UserError("No se pudo guardar", "Inténtalo de nuevo")
+    for name in ("remember", "forget"):
+        monkeypatch.setattr(camaras, name, broken)
+    for remember in ([0, 90, 160, 90], False):
+        r = client.post(f"/api/analyses/{aid}/export",
+                        json={"moments": [ok], "profile_id": profile_id, "remember_cam": remember})
+        assert r.status_code == 400 and queue._items == []  # an error, and no job queued behind it

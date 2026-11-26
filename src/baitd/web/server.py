@@ -308,7 +308,7 @@ def _export_moments(raw, analysis: dict, src) -> list[dict]:
             base = next((k for k in known if k.get("start") == start and k.get("end") == end), {})
         out.append({**base, "start": float(start), "end": float(end), "framing": framing,
                     "title": title, "credit": credit, "badge": base.get("badge", ""),
-                    "cam": _cam_box(m.get("cam"), src)})
+                    "cam": _cam_box(m.get("cam"), src), "auto_cam": m.get("auto_cam") is True})
     return out
 
 
@@ -633,8 +633,6 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
             clips = _listed_clips(folder)
         return jsonify(clips=clips, aspect=queue.aspect(job_id))
 
-    retitle_lock = threading.Lock()  # one read-ask-write of clips.json at a time: no retitle loses another's
-
     @app.post("/api/jobs/<job_id>/clips/<file>/retitle")
     def retitle_clip(job_id: str, file: str):
         _body()
@@ -642,8 +640,7 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         item = queue.item(job_id)
         if job["kind"] == "short" or item is None or not _CLIP_FILE.fullmatch(file) or not (folder / file).is_file():
             abort(404)
-        with retitle_lock:
-            new = clip_pipeline.retitle_clip(item, folder, file, config.load_settings())
+        new = clip_pipeline.retitle_clip(item, folder, file, config.load_settings())
         if new is None:
             abort(404)
         return jsonify(new)
@@ -841,12 +838,15 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         remember = data.get("remember_cam")
         box = None if remember is None or remember is False else _cam_box(remember, src)
         profile = _find_profile(data["profile_id"]) if "profile_id" in data else _profiles()[0]
-        job_id = queue.add_clip_job("clip_export", {"analysis_id": analysis_id, "moments": moments}, profile)
         channel = clip_pipeline.cam_channel(src, analysis)
-        if channel and box is not None:
+        if channel and box is not None:  # before queueing: a failure here leaves no job behind
             clip_camaras.remember(channel, box, src.width, src.height)
         elif channel and remember is False:
             clip_camaras.forget(channel)
+        payload = {"analysis_id": analysis_id, "moments": moments}
+        if data.get("cam_resolved") is True:  # from a review card: it decided each moment's framing
+            payload["cam_resolved"] = True
+        job_id = queue.add_clip_job("clip_export", payload, profile)
         return jsonify(job_id=job_id)
 
     @app.delete("/api/analyses/<analysis_id>")

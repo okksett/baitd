@@ -993,15 +993,27 @@ def test_render_all_detects_faces_and_passes_cam_for_partido(tmp_data, monkeypat
     assert seen["faces"] == 1 and calls[-1] == ("partido", [10, 20, 200, 100])
 
 
-@pytest.mark.parametrize("framing_, own_cam, want", [
-    ("cara", None, ("partido", [480, 54, 384, 216])),      # the default: framed with the remembered box
-    ("partido", None, ("partido", [480, 54, 384, 216])),
-    ("centro", None, ("centro", None)),                    # an explicit choice is respected
-    ("completo", None, ("completo", None)),
-    ("partido", [10, 20, 200, 100], ("partido", [10, 20, 200, 100])),  # a box drawn on the moment wins
-    ("cara", [10, 20, 200, 100], ("cara", [10, 20, 200, 100])),
+_WIDE, _TALL = (1920, 1080), (1080, 1920)
+
+
+@pytest.mark.parametrize("framing_, own_cam, auto, size, want", [
+    # no review (clip_auto, the En directo list): Cara and Gameplay without a box take the remembered one
+    ("cara", None, None, _WIDE, ("partido", [480, 54, 384, 216])),
+    ("partido", None, None, _WIDE, ("partido", [480, 54, 384, 216])),
+    ("centro", None, None, _WIDE, ("centro", None)),                    # an explicit choice is respected
+    ("completo", None, None, _WIDE, ("completo", None)),
+    ("partido", [10, 20, 200, 100], None, _WIDE, ("partido", [10, 20, 200, 100])),  # a box drawn on it wins
+    ("cara", [10, 20, 200, 100], None, _WIDE, ("cara", [10, 20, 200, 100])),
+    # a review card decided: only the moments it left on auto take the box
+    ("cara", None, [True], _WIDE, ("partido", [480, 54, 384, 216])),
+    ("cara", None, [False], _WIDE, ("cara", None)),                     # Cara chosen on the card
+    ("partido", None, [False], _WIDE, ("partido", None)),               # Gameplay set back to Auto
+    # a portrait source keeps Cara following the speaker; Gameplay still takes the box
+    ("cara", None, None, _TALL, ("cara", None)),
+    ("partido", None, None, _TALL, ("partido", [270, 96, 216, 384])),
 ])
-def test_render_all_uses_the_cam_remembered_for_the_channel(tmp_data, monkeypatch, framing_, own_cam, want):
+def test_render_all_uses_the_cam_remembered_for_the_channel(tmp_data, monkeypatch, framing_, own_cam, auto, size,
+                                                            want):
     from types import SimpleNamespace
     from baitd.clip import camaras
     camaras.remember("@Rubius", [640, 72, 512, 288], 2560, 1440)  # set on a 1440p capture
@@ -1013,13 +1025,39 @@ def test_render_all_uses_the_cam_remembered_for_the_channel(tmp_data, monkeypatc
 
     monkeypatch.setattr(framing, "plan_crop", fake_plan)
     monkeypatch.setattr(pipeline, "_talk_and_voices", lambda *a: (None, None))
-    src = SimpleNamespace(has_video=True, channel="rubius", width=1920, height=1080)
+    src = SimpleNamespace(has_video=True, channel="rubius", width=size[0], height=size[1])
     steps = SimpleNamespace(begin=lambda *a: None, frac=lambda *a: None, end=lambda *a: None)
     m = pipeline._moment_from_dict(_moment_dict(framing=framing_, cam=own_cam))
     with pytest.raises(pipeline.UserError):
         pipeline._render_all(src, [m], [], config.default_profile(), pipeline.ClipProfile(), Path("."),
-                             threading.Event(), steps, pipeline.ClipProviders(detect_faces=lambda *a: []))
+                             threading.Event(), steps, pipeline.ClipProviders(detect_faces=lambda *a: []),
+                             auto_cam=auto)
     assert calls == [want]
+
+
+@pytest.mark.parametrize("extra, flag, want", [
+    ({}, True, None),                           # no review card: every moment may take the remembered box
+    ({}, False, None),
+    ({"cam_resolved": True}, True, [True]),     # the review left it on auto
+    ({"cam_resolved": True}, False, [False]),   # the review decided its framing
+    ({"cam_resolved": "yes"}, False, None),
+])
+def test_export_tells_render_which_moments_the_review_left_on_auto(tmp_data, tmp_path, providers, monkeypatch,
+                                                                   extra, flag, want):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    moment = {**pipeline.load_analysis(path.stem)["moments"][0], "auto_cam": flag}
+    seen = []
+
+    def fake_render_all(*a, **k):
+        seen.append(a[10])
+        raise UserError("stop", "here")
+
+    monkeypatch.setattr(pipeline, "_render_all", fake_render_all)
+    with pytest.raises(UserError):
+        pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem, "moments": [moment], **extra}),
+                                 _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert seen == [want]
 
 
 def test_cam_channel_of_a_live_moment_is_its_handle():

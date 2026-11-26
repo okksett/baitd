@@ -541,8 +541,30 @@ def _retitle_reply(raw, old_title: str) -> dict | None:
 
 def _replace_file(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:  # on Windows a file open in another program cannot be replaced
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise UserError("No se pudo guardar el título",
+                        "Cierra el archivo si está abierto e inténtalo de nuevo") from None
+
+
+_TEXTS_LOCK = threading.Lock()  # one read-modify-write of a clips.json at a time: no retitle loses another's
+
+
+def _clip_entry(path: Path, file: str) -> tuple[list | None, dict | None]:
+    """clips.json and its entry for `file`; (None, None) when unreadable, entry None when not listed."""
+    try:
+        clips = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None, None
+    if not isinstance(clips, list):
+        return None, None
+    return clips, next((c for c in clips if isinstance(c, dict) and c.get("file") == file), None)
 
 
 def retitle_clip(item: dict, folder: Path, file: str, settings: dict,
@@ -550,12 +572,7 @@ def retitle_clip(item: dict, folder: Path, file: str, settings: dict,
     """A new title, description and hashtags for one finished clip, saved to clips.json and publicacion.txt.
     None when the clip is not in clips.json. One retry when the reply is unreadable or keeps the old title."""
     path = folder / "clips.json"
-    try:
-        clips = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        return None
-    entry = next((c for c in clips if isinstance(c, dict) and c.get("file") == file), None) \
-        if isinstance(clips, list) else None
+    _, entry = _clip_entry(path, file)
     if entry is None:
         return None
     profile, opts = _resolve(item)
@@ -569,9 +586,13 @@ def retitle_clip(item: dict, folder: Path, file: str, settings: dict,
                                       "with a title different from the current one."), old)
     if new is None:
         raise _no_title()
-    entry.update(new)
-    _replace_file(path, json.dumps(clips, ensure_ascii=False, indent=2))
-    _replace_file(folder / "publicacion.txt", _publish_text(clips))
+    with _TEXTS_LOCK:  # the AI is asked outside it: a slow reply must not hold up the other retitles
+        clips, entry = _clip_entry(path, file)  # again: another retitle may have saved meanwhile
+        if entry is None:
+            return None
+        entry.update(new)
+        _replace_file(path, json.dumps(clips, ensure_ascii=False, indent=2))
+        _replace_file(folder / "publicacion.txt", _publish_text(clips))  # only once clips.json is saved
     return new
 
 
@@ -608,9 +629,10 @@ def cam_channel(src: SourceInfo, analysis: dict | None = None) -> str:
 
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,
                 folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders,
-                channel: str | None = None) -> None:
+                channel: str | None = None, auto_cam: list[bool] | None = None) -> None:
     """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order. A cam box
-    remembered for `channel` (default: the source's) frames its "cara" and "partido" moments as "partido"."""
+    remembered for `channel` (default: the source's) frames its "partido" moments without a box, and its "cara"
+    ones on a landscape source, as "partido". `auto_cam` (default: all) says which moments it may frame."""
     width, height = ASPECTS[profile.aspect]
     n = len(moments)
     remembered = camaras.load(src.channel if channel is None else channel) if src.has_video else None
@@ -625,7 +647,8 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
         else:
             mode = m.framing if m.framing in FRAMINGS else opts.framing
             cam = m.cam
-            if cam is None and remembered is not None and mode in ("cara", "partido"):
+            if (cam is None and remembered is not None and (auto_cam is None or auto_cam[i])
+                    and (mode == "partido" or (mode == "cara" and src.width > src.height))):
                 mode, cam = "partido", camaras.scaled(remembered, src.width, src.height)
             faces = None
             if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and cam is None)):
@@ -866,6 +889,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
             moments = [_moment_from_dict(m) for m in raw]
         except ValueError:
             raise _bad_times() from None
+        # a review card decided each moment: only the ones it left on auto take the channel's remembered box
+        auto_cam = [m.get("auto_cam") is True for m in raw] if payload.get("cam_resolved") is True else None
         if any(not MIN_CLIP_S <= m.end - m.start <= MAX_CLIP_S for m in moments):
             raise _bad_times()  # browser-edited bounds: never a near-zero or hours-long clip
         if any(m.end > src.duration + 1.0 for m in moments):
@@ -887,7 +912,7 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
                         m.start, m.end = snapped
             folder = _open_output(settings, src.title, on_output)
             _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers,
-                        cam_channel(src, analysis))
+                        cam_channel(src, analysis), auto_cam)
             _write_texts(folder, moments)
     except BaseException:
         _discard(folder, None)
