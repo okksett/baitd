@@ -793,3 +793,29 @@ def test_export_validates_the_cam_box(client, profile_id, queue, tmp_data, make_
                 "1,2,3,4", {"x": 1}):
         r = post(cam=bad)
         assert r.status_code == 400 and r.get_json()["error"] == expected, bad
+
+
+def test_export_remembers_and_forgets_the_channel_cam(client, profile_id, queue, tmp_data, make_mp4):
+    from baitd.clip import camaras
+    src = sources.add_local_source(make_mp4(seconds=60, w=320, h=180, fps=15), "a", "@Rubius", "")
+    aid = _analysis(src)
+    body = client.get(f"/api/analyses/{aid}").get_json()
+    assert body["cam_channel"] == "@Rubius" and body["remembered_cam"] is None
+    ok = {"start": 5, "end": 25, "framing": "partido", "title": "T", "credit": "", "cam": [0, 90, 160, 90]}
+
+    def post(**kw):
+        return client.post(f"/api/analyses/{aid}/export", json={"moments": [ok], "profile_id": profile_id, **kw})
+
+    assert post(remember_cam=[0, 90, 160, 90]).status_code == 200
+    assert camaras.load("rubius") == [0.0, 0.5, 0.5, 0.5]
+    assert client.get(f"/api/analyses/{aid}").get_json()["remembered_cam"] == [0.0, 0.5, 0.5, 0.5]
+    assert post().status_code == 200 and camaras.load("rubius") is not None  # no field: kept as it is
+    r = post(remember_cam=[300, 90, 160, 90])  # sticks out: refused, nothing queued or saved
+    assert r.status_code == 400 and camaras.load("rubius") == [0.0, 0.5, 0.5, 0.5]
+    assert post(remember_cam=False).status_code == 200 and camaras.load("rubius") is None
+    # an upload has no channel: nothing to remember it under
+    plain = _analysis(_source(make_mp4), aid="abcdef012346")
+    assert client.get(f"/api/analyses/{plain}").get_json()["cam_channel"] == ""
+    r = client.post(f"/api/analyses/{plain}/export",
+                    json={"moments": [ok], "profile_id": profile_id, "remember_cam": [0, 90, 160, 90]})
+    assert r.status_code == 200 and json.loads((tmp_data / "camaras.json").read_text(encoding="utf-8")) == {}

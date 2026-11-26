@@ -26,6 +26,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import HTTPException
 
 from .. import __version__, audio, captions, config, llm, tts, updater
+from ..clip import camaras as clip_camaras
 from ..clip import chat_replay as clip_chat
 from ..clip import pipeline as clip_pipeline
 from ..clip import sources as clip_sources
@@ -825,8 +826,10 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
     def get_analysis(analysis_id: str):
         analysis = analysis_or_404(analysis_id)
         src = clip_sources.load_source(analysis["source_id"])
+        channel = clip_pipeline.cam_channel(src, analysis)
         return jsonify(source=_public_source(src), moments=analysis["moments"],
-                       language=analysis["transcript"]["language"])
+                       language=analysis["transcript"]["language"],
+                       cam_channel=channel, remembered_cam=clip_camaras.load(channel))
 
     @app.post("/api/analyses/<analysis_id>/export")
     def export_analysis(analysis_id: str):
@@ -834,8 +837,16 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         analysis = analysis_or_404(analysis_id)
         src = clip_sources.load_source(analysis["source_id"])
         moments = _export_moments(data.get("moments"), analysis, src)
+        # "Usar este recuadro para todos los clips de ...": a box keeps it for the channel, false forgets it
+        remember = data.get("remember_cam")
+        box = None if remember is None or remember is False else _cam_box(remember, src)
         profile = _find_profile(data["profile_id"]) if "profile_id" in data else _profiles()[0]
         job_id = queue.add_clip_job("clip_export", {"analysis_id": analysis_id, "moments": moments}, profile)
+        channel = clip_pipeline.cam_channel(src, analysis)
+        if channel and box is not None:
+            clip_camaras.remember(channel, box, src.width, src.height)
+        elif channel and remember is False:
+            clip_camaras.forget(channel)
         return jsonify(job_id=job_id)
 
     @app.delete("/api/analyses/<analysis_id>")

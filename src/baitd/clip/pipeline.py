@@ -21,7 +21,7 @@ from typing import Callable
 from .. import config, ffmpeg, llm
 from ..models import ASPECTS, JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
-from . import chat_replay, framing, sources, transcribe, voices
+from . import camaras, chat_replay, framing, sources, transcribe, voices
 from .models import BADGES, FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
 from .moments import TITLE_WORDS, _sentences, find_moments, snap_to_sentences
 from .render import clip_fps, render_clip
@@ -599,11 +599,21 @@ def _talk_and_voices(src: SourceInfo, m: Moment, words: list[Word], mode: str, c
     return talk, [labels[i] for i in inside]
 
 
+def cam_channel(src: SourceInfo, analysis: dict | None = None) -> str:
+    """The channel a remembered cam box belongs to: a live moment's handle, else the source's channel."""
+    if analysis and analysis.get("origin") == "live":  # a live source's own channel field is ""
+        return str((analysis.get("live") or {}).get("handle") or "")
+    return src.channel
+
+
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,
-                folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders) -> None:
-    """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order."""
+                folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders,
+                channel: str | None = None) -> None:
+    """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order. A cam box
+    remembered for `channel` (default: the source's) frames its "cara" and "partido" moments as "partido"."""
     width, height = ASPECTS[profile.aspect]
     n = len(moments)
+    remembered = camaras.load(src.channel if channel is None else channel) if src.has_video else None
 
     steps.begin(4)
     plans: list[framing.CropPlan | None] = []
@@ -614,13 +624,16 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
             plans.append(None)  # audio only: the renderer draws an audiogram
         else:
             mode = m.framing if m.framing in FRAMINGS else opts.framing
+            cam = m.cam
+            if cam is None and remembered is not None and mode in ("cara", "partido"):
+                mode, cam = "partido", camaras.scaled(remembered, src.width, src.height)
             faces = None
-            if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and m.cam is None)):
+            if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and cam is None)):
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
             talk, voice_labels = (None, None) if mode == "partido" else _talk_and_voices(src, m, words, mode, cancel)
             try:
                 plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces,
-                                               talk=talk, voices=voice_labels, cam=m.cam))
+                                               talk=talk, voices=voice_labels, cam=cam))
             except (JobCancelled, UserError):
                 raise
             except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip
@@ -873,7 +886,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
                     if snapped is not None:
                         m.start, m.end = snapped
             folder = _open_output(settings, src.title, on_output)
-            _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
+            _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers,
+                        cam_channel(src, analysis))
             _write_texts(folder, moments)
     except BaseException:
         _discard(folder, None)

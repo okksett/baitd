@@ -1249,10 +1249,19 @@
         const count = (profileById(profileId) || state.current).clipping.count;
         // orig: the index in the analysis, so the server keeps its texts even after the bounds are edited
         const ranked = data.moments.map((m, orig) => ({ ...m, orig })).sort((a, b) => b.score - a.score);
+        const remembered = rememberedCam(data.remembered_cam, data.source);
         state.clip.review = {
           analysisId: job.analysis_id, profileId, source: data.source, live: job.live || null,
-          moments: ranked.map((m, i) => ({ ...m, title: m.title || "", framing: m.framing || "cara",
-            credit: m.credit || "", cam: validCam(m.cam, data.source), pick: i < count, raw: {} })),
+          // the box remembered for the channel: Cara/Gameplay cards show it, as the export frames them with it
+          camChannel: data.cam_channel || "", rememberCam: Boolean(remembered), wasRemembered: Boolean(remembered),
+          rememberFrom: null,
+          moments: ranked.map((m, i) => {
+            const framing = m.framing || "cara";
+            const cam = validCam(m.cam, data.source);
+            const auto = remembered && !cam && (framing === "cara" || framing === "partido");
+            return { ...m, title: m.title || "", framing: auto ? "partido" : framing, credit: m.credit || "",
+              cam: auto ? remembered.slice() : cam, pick: i < count, raw: {} };
+          }),
         };
         state.clip.review.baseline = reviewSignature(state.clip.review);
       } catch (e) {
@@ -1280,6 +1289,13 @@
     return x >= 0 && y >= 0 && w >= 16 && h >= 16 && x + w <= src.width && y + h <= src.height ? cam.slice() : null;
   }
 
+  // A channel's remembered box ([x, y, w, h] fractions of the source) in this source's pixels, or null.
+  function rememberedCam(box, src) {
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite) || src.has_video === false
+        || !(src.width >= 64 && src.height >= 64)) return null;
+    return validCam(fitCam(src.width, src.height, box[0] * src.width, box[1] * src.height, box[2] * src.width, false), src);
+  }
+
   // The box clamped inside a W×H source with the band's aspect locked; `anchored` keeps x, y (resizing).
   function fitCam(W, H, x, y, w, anchored) {
     const minW = Math.max(Math.ceil(16 * CAM_ASPECT) + 1, Math.round(W * 0.06));
@@ -1298,6 +1314,8 @@
     const box = $(".m-cam", node);
     const bar = $(".m-cam-bar", node);
     const hint = $(".m-cam-hint", node);
+    const r = state.clip.review;
+    const remember = $(".m-remember", node);
     const usable = src.has_video !== false && W >= 64 && H >= 64;
     const start = () => fitCam(W, H, W * 0.02, H * 0.03, W * 0.28, false); // shown until the user moves it
     let view = { scale: 1, ox: 0, oy: 0 };
@@ -1315,7 +1333,21 @@
         width: `${w * scale}px`, height: `${h * scale}px` });
       box.classList.toggle("auto", !m.cam);
       hint.textContent = tr(m.cam ? "live.cam_hint_set" : "live.cam_hint_auto");
+      $(".m-remember-wrap", node).hidden = !r.camChannel;
+      $(".m-remember-label", node).textContent = tr("moment.cam_remember", { canal: r.camChannel });
+      remember.checked = r.rememberCam;
     };
+    // a box moved while "for every clip of the channel" is on is the one the export keeps
+    const moved = () => { if (r.rememberCam) r.rememberFrom = m; layout(); };
+    remember.addEventListener("change", () => {
+      r.rememberCam = remember.checked;
+      if (remember.checked) {
+        if (!m.cam) m.cam = start();
+        r.rememberFrom = m;
+      }
+      $$(".m-remember").forEach((c) => { c.checked = r.rememberCam; }); // one channel: every card agrees
+      layout();
+    });
     box.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -1332,7 +1364,7 @@
       m.cam = drag.resize
         ? fitCam(W, H, x, y, w + (Math.abs(dx) >= Math.abs(dy * CAM_ASPECT) ? dx : dy * CAM_ASPECT), true)
         : fitCam(W, H, x + dx, y + dy, w, false);
-      layout();
+      moved();
     });
     const end = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
     box.addEventListener("pointerup", end);
@@ -1345,7 +1377,7 @@
       const [x, y, w] = m.cam || start();
       m.cam = e.shiftKey ? fitCam(W, H, x, y, w + (d[0] + d[1]) * step, true)
         : fitCam(W, H, x + d[0] * step, y + d[1] * step, w, false);
-      layout();
+      moved();
     });
     $(".m-cam-auto", node).addEventListener("click", () => { m.cam = null; layout(); });
     video.addEventListener("loadedmetadata", layout);
@@ -1587,12 +1619,17 @@
     const moments = r.moments.filter((m) => m.pick).map((m) => ({
       orig: m.orig, start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim(),
       cam: m.framing === "partido" ? m.cam : null }));
+    // "Usar este recuadro para todos los clips de ...": a box keeps it for the channel, false forgets it
+    const extra = {};
+    const from = r.rememberFrom;
+    if (r.camChannel && r.rememberCam && from && from.framing === "partido" && from.cam) extra.remember_cam = from.cam;
+    else if (r.camChannel && !r.rememberCam && r.wasRemembered) extra.remember_cam = false;
     // the analysis was made with this profile; the selected one is only a fallback if it was deleted
     const profileId = profileById(r.profileId) ? r.profileId : state.current.id;
     setBusy(true);
     try {
       await flushSave(); // the export takes the hook title, credit and music switches from the saved profile
-      await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments });
+      await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments, ...extra });
       state.live.picked.delete(r.analysisId); // a live moment queued here must not go again with "Exportar seleccionados"
       state.clip.review = null;
       renderClipReview();

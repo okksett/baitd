@@ -976,6 +976,18 @@ def test_moment_editor_opens_in_a_side_sheet(client):
     assert "{n}" in es["clip.review_title"] and "{n}" in es["clip.export"]
 
 
+def test_moment_editor_offers_to_remember_the_cam_for_the_channel(client):
+    tpl = client.get("/").text.split('id="tpl-moment"')[1].split("</template>")[0]
+    # the checkbox sits inside its label (keyboard and screen readers get its text), in the Gameplay cam bar
+    bar = tpl.split('class="m-cam-bar"')[1].split("</div>")[0]
+    assert '<label class="check m-remember-wrap" hidden><input type="checkbox" class="m-remember">' in bar
+    for lang in ("es", "en"):
+        strings = json.loads((WEB / f"static/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert "{canal}" in strings["moment.cam_remember"]
+    js = (WEB / "static/app.js").read_text(encoding="utf-8")
+    assert 'tr("moment.cam_remember", { canal: r.camChannel })' in js and "remember_cam" in js
+
+
 @pytest.mark.parametrize("color", ["#a\nDia", "#zzzzzz", "#12345", "#1234567"])
 def test_profile_subtitle_colours_must_be_hex(client, color):
     profile = client.get("/api/profiles").json["profiles"][0]

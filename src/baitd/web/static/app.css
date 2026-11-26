@@ -322,6 +322,7 @@ dialog.sheet.wide { width: min(640px, 100%); }
 }
 .m-cam-bar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
 .m-cam-bar .hint { margin: 0; flex: 1 1 14em; }
+.m-cam-bar .check { margin: 0; flex-basis: 100%; }
 
 /* ---------- en directo ---------- */
 
