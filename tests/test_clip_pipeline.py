@@ -98,6 +98,7 @@ def test_auto_end_to_end_offline(tmp_data, tmp_path, providers):
     clips = json.loads((folder / "clips.json").read_text(encoding="utf-8"))  # what the app lists and plays
     assert [c["file"] for c in clips] == ["clip-01.mp4", "clip-02.mp4"]
     assert [c["title"] for c in clips] == ["Primero", "Segundo"]
+    assert clips[1].pop("text")  # what is said in it: "Otro título" gives it to the AI
     assert clips[1] == {"file": "clip-02.mp4", "title": "Segundo", "description": "Descripcion Segundo",
                         "hashtags": ["#prueba", "#clip"], "start": 20.0, "end": 34.9}
     assert {c[0] for c in calls} == set(pipeline.CLIP_STEPS)

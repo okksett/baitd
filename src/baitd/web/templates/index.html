@@ -742,6 +742,20 @@
   </div>
 </dialog>
 
+<template id="tpl-clip-tile">
+  <figure class="clip-tile">
+    <video controls preload="metadata"></video>
+    <figcaption class="clip-texts">
+      <div class="clip-text"><p class="clip-title"></p><button type="button" class="link-btn clip-copy" data-copy="title" data-i18n="clips.copy" data-i18n-aria="clips.copy_title" aria-label='{{ t("clips.copy_title") }}'>{{ t("clips.copy") }}</button></div>
+      <div class="clip-text"><p class="clip-description"></p><button type="button" class="link-btn clip-copy" data-copy="description" data-i18n="clips.copy" data-i18n-aria="clips.copy_description" aria-label='{{ t("clips.copy_description") }}'>{{ t("clips.copy") }}</button></div>
+      <div class="clip-text"><p class="clip-hashtags"></p><button type="button" class="link-btn clip-copy" data-copy="hashtags" data-i18n="clips.copy" data-i18n-aria="clips.copy_hashtags" aria-label='{{ t("clips.copy_hashtags") }}'>{{ t("clips.copy") }}</button></div>
+      <p class="hint clip-status" aria-live="polite"></p>
+      <button type="button" class="pill clip-retitle" data-i18n="clips.retitle">{{ t("clips.retitle") }}</button>
+      <p class="err clip-err" role="alert" hidden></p>
+    </figcaption>
+  </figure>
+</template>
+
 <template id="tpl-job">
   <li class="job">
     <div class="job-head"><span class="job-title"><span class="job-kind" hidden></span><span class="job-topic"></span></span><span class="chip"></span></div>

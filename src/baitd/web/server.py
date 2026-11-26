@@ -330,13 +330,15 @@ def _listed_clips(folder: Path) -> list[dict]:
         raw = None
     if raw is None:
         names = sorted(p.name for p in folder.glob("clip-*.mp4") if _CLIP_FILE.fullmatch(p.name) and p.is_file())
-        return [{"file": n, "title": ""} for n in names]
+        return [{"file": n, "title": "", "description": "", "hashtags": []} for n in names]
     clips = []
     for entry in raw:
         name = entry.get("file") if isinstance(entry, dict) else None
         if isinstance(name, str) and _CLIP_FILE.fullmatch(name) and (folder / name).is_file():
-            title = entry.get("title")
-            clips.append({"file": name, "title": title if isinstance(title, str) else ""})
+            title, desc, tags = entry.get("title"), entry.get("description"), entry.get("hashtags")
+            clips.append({"file": name, "title": title if isinstance(title, str) else "",
+                          "description": desc if isinstance(desc, str) else "",
+                          "hashtags": [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []})
     return clips
 
 
@@ -629,6 +631,21 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         else:
             clips = _listed_clips(folder)
         return jsonify(clips=clips, aspect=queue.aspect(job_id))
+
+    retitle_lock = threading.Lock()  # one read-ask-write of clips.json at a time: no retitle loses another's
+
+    @app.post("/api/jobs/<job_id>/clips/<file>/retitle")
+    def retitle_clip(job_id: str, file: str):
+        _body()
+        job, folder = finished_folder(job_id)
+        item = queue.item(job_id)
+        if job["kind"] == "short" or item is None or not _CLIP_FILE.fullmatch(file) or not (folder / file).is_file():
+            abort(404)
+        with retitle_lock:
+            new = clip_pipeline.retitle_clip(item, folder, file, config.load_settings())
+        if new is None:
+            abort(404)
+        return jsonify(new)
 
     @app.get("/api/jobs/<job_id>/files/<file>")
     def job_file(job_id: str, file: str):

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import shutil
@@ -474,15 +475,104 @@ def _hms(sec: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def _write_texts(folder: Path, moments: list[Moment]) -> None:
+def _publish_text(clips: list[dict]) -> str:
+    """publicacion.txt from the clips.json entries: per clip its file, span, title, description and hashtags.
+    The entries may come back from disk, so a field of the wrong type is left out."""
+    def text(c: dict, key: str) -> str:
+        return c[key] if isinstance(c.get(key), str) else ""
+
+    def sec(v) -> float:
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 0.0
+
     blocks = []
-    for i, m in enumerate(moments, 1):
-        tags = " ".join(t if t.startswith("#") else f"#{t}" for t in m.hashtags)
-        blocks.append(f"clip-{i:02d}.mp4 ({_hms(m.start)}–{_hms(m.end)})\n{m.title}\n\n{m.description}\n\n{tags}\n")
-    (folder / "publicacion.txt").write_text("\n".join(blocks), encoding="utf-8")
+    for c in clips:
+        if not isinstance(c, dict):
+            continue
+        tags = c.get("hashtags") if isinstance(c.get("hashtags"), list) else []
+        tags = " ".join(t if t.startswith("#") else f"#{t}" for t in tags if isinstance(t, str) and t)
+        blocks.append(f"{text(c, 'file')} ({_hms(sec(c.get('start')))}–{_hms(sec(c.get('end')))})\n"
+                      f"{text(c, 'title')}\n\n{text(c, 'description')}\n\n{tags}\n")
+    return "\n".join(blocks)
+
+
+def _write_texts(folder: Path, moments: list[Moment]) -> None:
     clips = [{"file": f"clip-{i:02d}.mp4", "title": m.title, "description": m.description,
-              "hashtags": list(m.hashtags), "start": m.start, "end": m.end} for i, m in enumerate(moments, 1)]
+              "hashtags": list(m.hashtags), "start": m.start, "end": m.end, "text": m.text}
+             for i, m in enumerate(moments, 1)]
+    (folder / "publicacion.txt").write_text(_publish_text(clips), encoding="utf-8")
     (folder / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+RETITLE_TEXT_CHARS = 4000  # enough of what is said in a clip; keeps the request small
+
+
+def _retitle_prompt(clip: dict, language: str) -> str:
+    def field(key: str) -> str:
+        return clip[key].strip() if isinstance(clip.get(key), str) else ""
+
+    said = field("text")[:RETITLE_TEXT_CHARS]
+    return "\n".join([
+        "You write the texts to post a vertical short clip (TikTok, Reels, Shorts) cut from a longer video.",
+        f"Its current title is: {field('title') or '(none)'}",
+        f"Its current description is: {field('description') or '(none)'}",
+        *([f"What is said in the clip: {said}"] if said else []),
+        f"Write a NEW title, different from the current one (at most {TITLE_WORDS} words), a description "
+        f"(one sentence) and 3 to 6 hashtags, in this language: {language}.",
+        'Reply with JSON only, no commentary: {"title":"...","description":"...","hashtags":["..."]}',
+    ])
+
+
+def _retitle_reply(raw, old_title: str) -> dict | None:
+    """The reply as {title, description, hashtags}; None when unreadable or the title did not change."""
+    from ..live.ai import _object  # live.ai imports this module
+    data = _object(raw) if isinstance(raw, str) else None
+    if data is None:
+        return None
+    title, desc, tags = data.get("title"), data.get("description", ""), data.get("hashtags", [])
+    if not isinstance(title, str) or not isinstance(desc, str) or not isinstance(tags, list):
+        return None
+    title = " ".join(title.split()[:TITLE_WORDS])
+    if not title or title.casefold() == " ".join(old_title.split()).casefold():
+        return None
+    tags = [t.strip().lstrip("#") for t in tags if isinstance(t, str)]
+    return {"title": title, "description": desc.strip(),
+            "hashtags": ["#" + re.sub(r"\s+", "", t) for t in tags if t]}
+
+
+def _replace_file(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def retitle_clip(item: dict, folder: Path, file: str, settings: dict,
+                 complete: Callable[[str], str] | None = None) -> dict | None:
+    """A new title, description and hashtags for one finished clip, saved to clips.json and publicacion.txt.
+    None when the clip is not in clips.json. One retry when the reply is unreadable or keeps the old title."""
+    path = folder / "clips.json"
+    try:
+        clips = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    entry = next((c for c in clips if isinstance(c, dict) and c.get("file") == file), None) \
+        if isinstance(clips, list) else None
+    if entry is None:
+        return None
+    profile, opts = _resolve(item)
+    complete = complete or (lambda p: llm.complete(p, profile, settings))
+    old = entry["title"] if isinstance(entry.get("title"), str) else ""
+    language = opts.language if opts.language != "auto" else "the same language as the current title"
+    prompt = _retitle_prompt(entry, language)
+    new = _retitle_reply(complete(prompt), old)
+    if new is None:
+        new = _retitle_reply(complete(f"{prompt}\n\nReturn only valid JSON matching the schema, "
+                                      "with a title different from the current one."), old)
+    if new is None:
+        raise _no_title()
+    entry.update(new)
+    _replace_file(path, json.dumps(clips, ensure_ascii=False, indent=2))
+    _replace_file(folder / "publicacion.txt", _publish_text(clips))
+    return new
 
 
 VOICE_CONTEXT_S = 90.0  # sentences this far around a clip help tell its two voices apart

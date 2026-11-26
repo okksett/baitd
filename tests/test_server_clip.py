@@ -523,6 +523,9 @@ def _done_clip_job(queue, folder, kind="clip_auto", profile=None):
     return jid
 
 
+_NO_TEXTS = {"description": "", "hashtags": []}
+
+
 def _clip_folder(tmp_path, names=("clip-01.mp4", "clip-02.mp4"), entries=None, raw=None):
     folder = tmp_path / "salida"
     folder.mkdir()
@@ -541,8 +544,9 @@ def test_clips_route_lists_clips_json_in_render_order(client, queue, tmp_path):
     jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=entries))
     r = client.get(f"/api/jobs/{jid}/clips")
     assert r.status_code == 200
-    assert r.get_json() == {"clips": [{"file": "clip-01.mp4", "title": "Primero"},
-                                      {"file": "clip-02.mp4", "title": "Segundo"}], "aspect": "9:16"}
+    assert r.get_json() == {"clips": [{"file": "clip-01.mp4", "title": "Primero", **_NO_TEXTS, "description": "d"},
+                                      {"file": "clip-02.mp4", "title": "Segundo", **_NO_TEXTS, "description": "d"}],
+                            "aspect": "9:16"}
 
 
 @pytest.mark.parametrize("aspect", ["16:9", "4:5", "1:1"])
@@ -557,7 +561,7 @@ def test_clips_route_without_clips_json_lists_the_files_sorted(client, queue, tm
     folder = _clip_folder(tmp_path, names=("clip-02.mp4", "clip-01.mp4", "clip-1.mp4", "clipx.mp4", "otro.mp4"))
     jid = _done_clip_job(queue, folder)
     assert client.get(f"/api/jobs/{jid}/clips").get_json()["clips"] == [
-        {"file": "clip-01.mp4", "title": ""}, {"file": "clip-02.mp4", "title": ""}]
+        {"file": "clip-01.mp4", "title": "", **_NO_TEXTS}, {"file": "clip-02.mp4", "title": "", **_NO_TEXTS}]
 
 
 @pytest.mark.parametrize("raw", ["{not json", "{}", '"x"', "[1, null]", "\x00", "[" * 100000])
@@ -568,7 +572,8 @@ def test_clips_route_survives_a_corrupt_clips_json(client, queue, tmp_path, raw)
         assert r.status_code == 200 and r.get_json()["clips"] == []
     else:
         assert r.status_code == 200
-        assert r.get_json()["clips"] == [{"file": "clip-01.mp4", "title": ""}, {"file": "clip-02.mp4", "title": ""}]
+        assert r.get_json()["clips"] == [{"file": "clip-01.mp4", "title": "", **_NO_TEXTS},
+                                         {"file": "clip-02.mp4", "title": "", **_NO_TEXTS}]
 
 
 def test_clips_route_only_lists_safe_files_that_exist(client, queue, tmp_path):
@@ -577,8 +582,120 @@ def test_clips_route_only_lists_safe_files_that_exist(client, queue, tmp_path):
                {"file": "clip-01.mp4", "title": "ok"}]
     jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=entries))
     assert client.get(f"/api/jobs/{jid}/clips").get_json()["clips"] == [
-        {"file": "clip-02.mp4", "title": ""}, {"file": "clip-01.mp4", "title": "ok"}]
+        {"file": "clip-02.mp4", "title": "", **_NO_TEXTS}, {"file": "clip-01.mp4", "title": "ok", **_NO_TEXTS}]
 
+
+def test_clips_route_returns_the_texts_to_post_and_drops_wrong_types(client, queue, tmp_path):
+    entries = [{"file": "clip-01.mp4", "title": "T", "description": "Una frase.", "hashtags": ["#a", 3, "#b", None]},
+               {"file": "clip-02.mp4", "title": "U", "description": ["x"], "hashtags": "#a #b"}]
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=entries))
+    assert client.get(f"/api/jobs/{jid}/clips").get_json()["clips"] == [
+        {"file": "clip-01.mp4", "title": "T", "description": "Una frase.", "hashtags": ["#a", "#b"]},
+        {"file": "clip-02.mp4", "title": "U", "description": "", "hashtags": []}]
+
+
+
+# ---- "Otro título": new texts for one finished clip ----
+
+_ENTRIES = [{"file": "clip-01.mp4", "title": "Rubius · 20:10", "description": "", "hashtags": [], "start": 0,
+             "end": 14.5, "text": "y entonces se cae de la silla"},
+            {"file": "clip-02.mp4", "title": "Segundo", "description": "Otra.", "hashtags": ["#b"], "start": 20,
+             "end": 30}]
+
+
+def _fake_ai(monkeypatch, *replies):
+    prompts, left = [], list(replies)
+
+    def complete(prompt, profile, settings, cancel=None):
+        prompts.append(prompt)
+        return left.pop(0)
+    monkeypatch.setattr("baitd.llm.complete", complete)
+    return prompts
+
+
+def _retitle(client, jid, file="clip-01.mp4"):
+    return client.post(f"/api/jobs/{jid}/clips/{file}/retitle", json={})
+
+
+def test_retitle_saves_the_new_texts(client, queue, tmp_path, monkeypatch):
+    folder = _clip_folder(tmp_path, entries=_ENTRIES)
+    jid = _done_clip_job(queue, folder)
+    prompts = _fake_ai(monkeypatch, '```json\n{"title": "Se cae de la silla en directo y nadie lo esperaba",'
+                                    ' "description": "Una caída.", "hashtags": ["humor", "#rubius", "en directo", 4]}```')
+    r = _retitle(client, jid)
+    assert r.status_code == 200
+    new = {"title": "Se cae de la silla en directo y", "description": "Una caída.",
+           "hashtags": ["#humor", "#rubius", "#endirecto"]}
+    assert r.get_json() == new
+    assert "Rubius · 20:10" in prompts[0] and "se cae de la silla" in prompts[0]
+    saved = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+    assert saved == [{**_ENTRIES[0], **new}, _ENTRIES[1]]
+    text = (folder / "publicacion.txt").read_text(encoding="utf-8")
+    assert text == ("clip-01.mp4 (00:00:00–00:00:14)\nSe cae de la silla en directo y\n\nUna caída.\n\n"
+                    "#humor #rubius #endirecto\n\nclip-02.mp4 (00:00:20–00:00:30)\nSegundo\n\nOtra.\n\n#b\n")
+    assert sorted(p.name for p in folder.iterdir()) == ["clip-01.mp4", "clip-02.mp4", "clips.json", "publicacion.txt"]
+    assert client.get(f"/api/jobs/{jid}/clips").get_json()["clips"][0] == {"file": "clip-01.mp4", **new}
+
+
+def test_retitle_asks_again_when_the_reply_is_unreadable_or_the_same(client, queue, tmp_path, monkeypatch):
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=_ENTRIES))
+    prompts = _fake_ai(monkeypatch, '{"title": "rubius  · 20:10"}', '{"title": "Otro", "hashtags": []}')
+    r = _retitle(client, jid)
+    assert r.status_code == 200 and r.get_json() == {"title": "Otro", "description": "", "hashtags": []}
+    assert len(prompts) == 2
+    _fake_ai(monkeypatch, "no es json", '{"title": 5}')
+    r = _retitle(client, jid)
+    assert r.status_code == 400 and "→" in r.get_json()["error"]
+    assert json.loads((tmp_path / "salida" / "clips.json").read_text(encoding="utf-8"))[0]["title"] == "Otro"
+
+
+@pytest.mark.parametrize("name", ["../x.mp4", "clip-1.mp4", "clip-03.mp4", "clip-01.MP4", "clips.json",
+                                  "clip-01.mp4%0A", "video.mp4"])
+def test_retitle_404s_for_anything_but_a_listed_clip(client, queue, tmp_path, monkeypatch, name):
+    folder = _clip_folder(tmp_path, names=("clip-01.mp4", "clip-02.mp4", "video.mp4"), entries=_ENTRIES)
+    jid = _done_clip_job(queue, folder)
+    prompts = _fake_ai(monkeypatch)
+    assert _retitle(client, jid, name).status_code == 404
+    assert prompts == []
+
+
+def test_retitle_404s_unless_the_clip_job_is_done(client, queue, tmp_path, monkeypatch):
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=_ENTRIES))
+    _fake_ai(monkeypatch)
+    with queue._lock:
+        queue._find(jid)["status"] = "running"
+    assert _retitle(client, jid).status_code == 404
+    assert _retitle(client, "nope").status_code == 404
+    with queue._lock:
+        queue._find(jid)["status"] = "done"
+    (tmp_path / "salida" / "clips.json").write_text("{roto", encoding="utf-8")
+    assert _retitle(client, jid).status_code == 404
+
+
+def test_retitle_must_be_json(client, queue, tmp_path):
+    jid = _done_clip_job(queue, _clip_folder(tmp_path, entries=_ENTRIES))
+    assert client.post(f"/api/jobs/{jid}/clips/clip-01.mp4/retitle", data="x").status_code == 415
+
+
+def test_retitle_ai_errors_say_how_to_fix_them_without_secrets(client, queue, tmp_path, monkeypatch):
+    import requests
+    folder = _clip_folder(tmp_path, entries=_ENTRIES)
+    jid = _done_clip_job(queue, folder)
+    before = (folder / "clips.json").read_text(encoding="utf-8")
+    settings = {"llm_provider": "compat", "compat_base_url": "http://127.0.0.1:9/v1", "compat_key": "sk-secreto-123"}
+    monkeypatch.setattr(server.config, "load_settings", lambda: settings)
+
+    def refused(*a, **kw):
+        raise requests.ConnectionError("http://127.0.0.1:9/v1 sk-secreto-123")
+    monkeypatch.setattr(requests, "post", refused)
+    r = _retitle(client, jid)
+    msg = r.get_json()["error"]
+    assert r.status_code == 400 and "→" in msg and "servidor" in msg
+    assert "sk-secreto" not in msg and "127.0.0.1" not in msg
+    settings.update(llm_provider="gemini", gemini_key="")
+    r = _retitle(client, jid)
+    assert r.status_code == 400 and r.get_json()["error"] == "Falta la clave de Gemini → Añádela en Ajustes"
+    assert (folder / "clips.json").read_text(encoding="utf-8") == before
 
 def test_clips_route_for_a_short_job_is_the_single_video(client, queue):
     from test_server import finished_job

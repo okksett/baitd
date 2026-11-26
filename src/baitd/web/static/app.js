@@ -1802,6 +1802,64 @@
   // The finished videos of a job, playable inside the app.
   let clipsSeq = 0; // two quick "Ver videos" clicks (or a close meanwhile): only the latest call adds tiles
 
+  // One finished clip: the video, then its texts to post (each with Copiar) and "Otro título".
+  function clipTile(id, c, short) {
+    const tile = $("#tpl-clip-tile").content.firstElementChild.cloneNode(true);
+    applyI18n(tile);
+    const video = $("video", tile);
+    video.src = `/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(c.file)}`;
+    const status = $(".clip-status", tile);
+    const err = $(".clip-err", tile);
+    let statusTimer = 0;
+    const say = (msg) => {
+      status.textContent = msg;
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => { status.textContent = ""; }, 2500);
+    };
+    const fill = (texts) => {
+      const values = { title: texts.title || c.file, description: texts.description || "",
+                       hashtags: (texts.hashtags || []).join(" ") };
+      for (const [key, value] of Object.entries(values)) {
+        const p = $(`.clip-${key}`, tile);
+        p.textContent = value;
+        p.parentElement.hidden = !value;
+      }
+      video.setAttribute("aria-label", values.title);
+    };
+    fill(c);
+    tile.addEventListener("click", async (e) => {
+      const copy = e.target.closest(".clip-copy");
+      if (copy) {
+        const p = $(`.clip-${copy.dataset.copy}`, tile);
+        try {
+          await navigator.clipboard.writeText(p.textContent);
+          say(tr("clips.copied"));
+        } catch (_) { // no clipboard permission: the text is selected for Ctrl+C
+          getSelection().selectAllChildren(p);
+          say(tr("clips.copy_manual"));
+        }
+        return;
+      }
+      const btn = e.target.closest(".clip-retitle");
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      btn.textContent = tr("clips.retitling");
+      showError(err, null);
+      try {
+        fill(await api("POST", `/api/jobs/${encodeURIComponent(id)}/clips/${encodeURIComponent(c.file)}/retitle`, {}));
+      } catch (error) {
+        showError(err, error);
+      } finally {
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+        btn.textContent = tr("clips.retitle");
+      }
+    });
+    $(".clip-retitle", tile).hidden = short; // a short's title is its topic, not an AI text
+    return tile;
+  }
+
   async function openClips(id) {
     const seq = ++clipsSeq;
     const dlg = $("#clips-view");
@@ -1815,18 +1873,8 @@
       if (seq !== clipsSeq) return;
       grid.classList.toggle("wide", r.aspect === "16:9");
       grid.style.setProperty("--clip-ar", r.aspect.replace(":", " / "));
-      for (const c of r.clips) {
-        const tile = document.createElement("figure");
-        tile.className = "clip-tile";
-        const video = document.createElement("video");
-        video.controls = true;
-        video.preload = "metadata";
-        video.src = `/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(c.file)}`;
-        const cap = document.createElement("figcaption");
-        cap.textContent = c.title || c.file;
-        tile.append(video, cap);
-        grid.append(tile);
-      }
+      const short = (state.jobs.find((j) => j.id === id) || {}).kind === "short";
+      for (const c of r.clips) grid.append(clipTile(id, c, short));
       $("#clips-empty").hidden = r.clips.length > 0;
     } catch (err) {
       if (seq !== clipsSeq) return;
