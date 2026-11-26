@@ -1001,3 +1001,9 @@ def test_a_new_compat_url_drops_the_saved_key(client):
     assert config.load_settings()["compat_key"] == ""
     client.post("/api/settings", json={"compat_base_url": "https://c.example.com", "compat_key": "sk-new"})
     assert config.load_settings()["compat_key"] == "sk-new"
+
+
+def test_clip_card_preview_wiring():
+    js = JS.read_text("utf-8")
+    assert "clipPreviews" in js and "#t=0.1" in js and 'removeAttribute("src")' in js
+    assert "clip-thumb video" in (WEB / "static/app.css").read_text("utf-8")

@@ -470,7 +470,8 @@ dialog.sheet.wide { width: min(640px, 100%); }
 }
 #clip-jobs-list .job:has(.chip[data-status="pending"], .chip[data-status="running"]) .clip-thumb { display: none; }
 .clip-face { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; }
-.clip-thumb { display: block; aspect-ratio: 9 / 16; border-radius: 14px; background: var(--thumb); border: 1px solid var(--glass-line); transition: filter .15s; }
+.clip-thumb video { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.clip-thumb { display: block; overflow: hidden; aspect-ratio: 9 / 16; border-radius: 14px; background: var(--thumb); border: 1px solid var(--glass-line); transition: filter .15s; }
 button.clip-face:hover .clip-thumb { filter: brightness(1.25); }
 button.clip-face:focus-visible { outline: 0; }
 button.clip-face:focus-visible .clip-thumb { outline: 2px solid var(--focus); outline-offset: 2px; }

@@ -1676,7 +1676,12 @@
       return li;
     });
     // keep existing nodes (and keyboard focus) in place; only add, remove or reorder
-    byId.forEach((li, id) => { if (!jobs.some((j) => j.id === id)) li.remove(); });
+    byId.forEach((li, id) => {
+      if (jobs.some((j) => j.id === id)) return;
+      dropPreview(li);
+      clipPreviews.delete(id);
+      li.remove();
+    });
     wanted.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
     empty.hidden = jobs.length > 0;
     clear.hidden = !jobs.some((j) => FINISHED.includes(j.status));
@@ -1720,6 +1725,47 @@
       remove: FINISHED.includes(job.status),
     };
     $$("[data-job-act]", li).forEach((b) => { b.hidden = !show[b.dataset.jobAct]; });
+    updatePreview(li, job, viewable);
+  }
+
+  // First frame of a finished job's first clip, in the clip's own shape. id -> {file, aspect} | null (loading) | false (none)
+  const clipPreviews = new Map();
+
+  function dropPreview(li) {
+    const video = $(".clip-thumb video", li);
+    if (!video) return;
+    video.removeAttribute("src"); // stop the download
+    video.load();
+    video.remove();
+  }
+
+  function updatePreview(li, job, viewable) {
+    const thumb = $(".clip-thumb", li);
+    if (!thumb) return;
+    if (!viewable) {
+      dropPreview(li);
+      thumb.style.aspectRatio = "";
+      clipPreviews.delete(job.id); // a retry makes new files
+      return;
+    }
+    const known = clipPreviews.get(job.id);
+    if (known === undefined) {
+      clipPreviews.set(job.id, null);
+      api("GET", `/api/jobs/${encodeURIComponent(job.id)}/clips`).then((r) => {
+        clipPreviews.set(job.id, r.clips.length ? { file: r.clips[0].file, aspect: r.aspect } : false);
+        if (li.isConnected) updatePreview(li, job, true);
+      }, () => clipPreviews.set(job.id, false)); // no preview: the flat block stays
+    }
+    if (!known || $("video", thumb)) return;
+    thumb.style.aspectRatio = known.aspect.replace(":", " / ");
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "metadata";
+    video.tabIndex = -1;
+    video.disablePictureInPicture = true;
+    video.setAttribute("aria-hidden", "true");
+    video.src = `/api/jobs/${encodeURIComponent(job.id)}/files/${encodeURIComponent(known.file)}#t=0.1`;
+    thumb.append(video);
   }
 
   function renderProgress() {
