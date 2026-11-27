@@ -98,6 +98,7 @@ def test_auto_end_to_end_offline(tmp_data, tmp_path, providers):
     clips = json.loads((folder / "clips.json").read_text(encoding="utf-8"))  # what the app lists and plays
     assert [c["file"] for c in clips] == ["clip-01.mp4", "clip-02.mp4"]
     assert [c["title"] for c in clips] == ["Primero", "Segundo"]
+    assert clips[1].pop("text")  # what is said in it: "Otro título" gives it to the AI
     assert clips[1] == {"file": "clip-02.mp4", "title": "Segundo", "description": "Descripcion Segundo",
                         "hashtags": ["#prueba", "#clip"], "start": 20.0, "end": 34.9}
     assert {c[0] for c in calls} == set(pipeline.CLIP_STEPS)
@@ -962,7 +963,7 @@ def test_ordinary_export_runs_ffmpeg_at_normal_priority(tmp_data, tmp_path, prov
     assert seen and not any(seen)
 
 
-def test_render_all_detects_faces_and_passes_cam_for_partido(monkeypatch):
+def test_render_all_detects_faces_and_passes_cam_for_partido(tmp_data, monkeypatch):
     from types import SimpleNamespace
     seen = {"faces": 0}
     calls = []
@@ -977,7 +978,7 @@ def test_render_all_detects_faces_and_passes_cam_for_partido(monkeypatch):
 
     monkeypatch.setattr(framing, "plan_crop", fake_plan)
     monkeypatch.setattr(pipeline, "_talk_and_voices", lambda *a: (_ for _ in ()).throw(AssertionError("no talk")))
-    src = SimpleNamespace(has_video=True)
+    src = SimpleNamespace(has_video=True, channel="")
     steps = SimpleNamespace(begin=lambda *a: None, frac=lambda *a: None, end=lambda *a: None)
 
     def run(**kw):
@@ -990,6 +991,81 @@ def test_render_all_detects_faces_and_passes_cam_for_partido(monkeypatch):
     assert seen["faces"] == 1 and calls[-1] == ("partido", None)
     run(cam=[10, 20, 200, 100])  # the user marked it: nothing to detect
     assert seen["faces"] == 1 and calls[-1] == ("partido", [10, 20, 200, 100])
+
+
+_WIDE, _TALL = (1920, 1080), (1080, 1920)
+
+
+@pytest.mark.parametrize("framing_, own_cam, auto, size, want", [
+    # no review (clip_auto, the En directo list): Cara and Gameplay without a box take the remembered one
+    ("cara", None, None, _WIDE, ("partido", [480, 54, 384, 216])),
+    ("partido", None, None, _WIDE, ("partido", [480, 54, 384, 216])),
+    ("centro", None, None, _WIDE, ("centro", None)),                    # an explicit choice is respected
+    ("completo", None, None, _WIDE, ("completo", None)),
+    ("partido", [10, 20, 200, 100], None, _WIDE, ("partido", [10, 20, 200, 100])),  # a box drawn on it wins
+    ("cara", [10, 20, 200, 100], None, _WIDE, ("cara", [10, 20, 200, 100])),
+    # a review card decided: only the moments it left on auto take the box
+    ("cara", None, [True], _WIDE, ("partido", [480, 54, 384, 216])),
+    ("cara", None, [False], _WIDE, ("cara", None)),                     # Cara chosen on the card
+    ("partido", None, [False], _WIDE, ("partido", None)),               # Gameplay set back to Auto
+    # a portrait source keeps Cara following the speaker; Gameplay still takes the box
+    ("cara", None, None, _TALL, ("cara", None)),
+    ("partido", None, None, _TALL, ("partido", [270, 96, 216, 384])),
+])
+def test_render_all_uses_the_cam_remembered_for_the_channel(tmp_data, monkeypatch, framing_, own_cam, auto, size,
+                                                            want):
+    from types import SimpleNamespace
+    from baitd.clip import camaras
+    camaras.remember("@Rubius", [640, 72, 512, 288], 2560, 1440)  # set on a 1440p capture
+    calls = []
+
+    def fake_plan(src, start, end, w, h, mode, cancel, faces=None, cuts=None, talk=None, voices=None, cam=None):
+        calls.append((mode, cam))
+        raise pipeline.UserError("stop", "here")
+
+    monkeypatch.setattr(framing, "plan_crop", fake_plan)
+    monkeypatch.setattr(pipeline, "_talk_and_voices", lambda *a: (None, None))
+    src = SimpleNamespace(has_video=True, channel="rubius", width=size[0], height=size[1])
+    steps = SimpleNamespace(begin=lambda *a: None, frac=lambda *a: None, end=lambda *a: None)
+    m = pipeline._moment_from_dict(_moment_dict(framing=framing_, cam=own_cam))
+    with pytest.raises(pipeline.UserError):
+        pipeline._render_all(src, [m], [], config.default_profile(), pipeline.ClipProfile(), Path("."),
+                             threading.Event(), steps, pipeline.ClipProviders(detect_faces=lambda *a: []),
+                             auto_cam=auto)
+    assert calls == [want]
+
+
+@pytest.mark.parametrize("extra, flag, want", [
+    ({}, True, None),                           # no review card: every moment may take the remembered box
+    ({}, False, None),
+    ({"cam_resolved": True}, True, [True]),     # the review left it on auto
+    ({"cam_resolved": True}, False, [False]),   # the review decided its framing
+    ({"cam_resolved": "yes"}, False, None),
+])
+def test_export_tells_render_which_moments_the_review_left_on_auto(tmp_data, tmp_path, providers, monkeypatch,
+                                                                   extra, flag, want):
+    path = pipeline.run_clip_analyze(_item("clip_analyze", count=1), _settings(tmp_path, keep_sources=True),
+                                     threading.Event(), lambda *a: None, providers)
+    moment = {**pipeline.load_analysis(path.stem)["moments"][0], "auto_cam": flag}
+    seen = []
+
+    def fake_render_all(*a, **k):
+        seen.append(a[10])
+        raise UserError("stop", "here")
+
+    monkeypatch.setattr(pipeline, "_render_all", fake_render_all)
+    with pytest.raises(UserError):
+        pipeline.run_clip_export(_item("clip_export", {"analysis_id": path.stem, "moments": [moment], **extra}),
+                                 _settings(tmp_path), threading.Event(), lambda *a: None, providers)
+    assert seen == [want]
+
+
+def test_cam_channel_of_a_live_moment_is_its_handle():
+    from types import SimpleNamespace
+    src = SimpleNamespace(channel="")
+    assert pipeline.cam_channel(src, {"origin": "live", "live": {"handle": "rubius"}}) == "rubius"
+    assert pipeline.cam_channel(SimpleNamespace(channel="@x"), {"moments": []}) == "@x"
+    assert pipeline.cam_channel(SimpleNamespace(channel="@x")) == "@x"
 
 
 # ---- live moments: the export-time profile, and a light touch on the streaming PC ----

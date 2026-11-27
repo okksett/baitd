@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import shutil
@@ -20,7 +21,7 @@ from typing import Callable
 from .. import config, ffmpeg, llm
 from ..models import ASPECTS, JobCancelled, Profile, ProgressFn, RenderOptions, UserError, Word
 from ..pipeline import _create_output_dir
-from . import chat_replay, framing, sources, transcribe, voices
+from . import camaras, chat_replay, framing, sources, transcribe, voices
 from .models import BADGES, FRAMINGS, ClipProfile, Moment, SourceInfo, Transcript
 from .moments import TITLE_WORDS, _sentences, find_moments, snap_to_sentences
 from .render import clip_fps, render_clip
@@ -474,15 +475,125 @@ def _hms(sec: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def _write_texts(folder: Path, moments: list[Moment]) -> None:
+def _publish_text(clips: list[dict]) -> str:
+    """publicacion.txt from the clips.json entries: per clip its file, span, title, description and hashtags.
+    The entries may come back from disk, so a field of the wrong type is left out."""
+    def text(c: dict, key: str) -> str:
+        return c[key] if isinstance(c.get(key), str) else ""
+
+    def sec(v) -> float:
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 0.0
+
     blocks = []
-    for i, m in enumerate(moments, 1):
-        tags = " ".join(t if t.startswith("#") else f"#{t}" for t in m.hashtags)
-        blocks.append(f"clip-{i:02d}.mp4 ({_hms(m.start)}–{_hms(m.end)})\n{m.title}\n\n{m.description}\n\n{tags}\n")
-    (folder / "publicacion.txt").write_text("\n".join(blocks), encoding="utf-8")
+    for c in clips:
+        if not isinstance(c, dict):
+            continue
+        tags = c.get("hashtags") if isinstance(c.get("hashtags"), list) else []
+        tags = " ".join(t if t.startswith("#") else f"#{t}" for t in tags if isinstance(t, str) and t)
+        blocks.append(f"{text(c, 'file')} ({_hms(sec(c.get('start')))}–{_hms(sec(c.get('end')))})\n"
+                      f"{text(c, 'title')}\n\n{text(c, 'description')}\n\n{tags}\n")
+    return "\n".join(blocks)
+
+
+def _write_texts(folder: Path, moments: list[Moment]) -> None:
     clips = [{"file": f"clip-{i:02d}.mp4", "title": m.title, "description": m.description,
-              "hashtags": list(m.hashtags), "start": m.start, "end": m.end} for i, m in enumerate(moments, 1)]
+              "hashtags": list(m.hashtags), "start": m.start, "end": m.end, "text": m.text}
+             for i, m in enumerate(moments, 1)]
+    (folder / "publicacion.txt").write_text(_publish_text(clips), encoding="utf-8")
     (folder / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+RETITLE_TEXT_CHARS = 4000  # enough of what is said in a clip; keeps the request small
+
+
+def _retitle_prompt(clip: dict, language: str) -> str:
+    def field(key: str) -> str:
+        return clip[key].strip() if isinstance(clip.get(key), str) else ""
+
+    said = field("text")[:RETITLE_TEXT_CHARS]
+    return "\n".join([
+        "You write the texts to post a vertical short clip (TikTok, Reels, Shorts) cut from a longer video.",
+        f"Its current title is: {field('title') or '(none)'}",
+        f"Its current description is: {field('description') or '(none)'}",
+        *([f"What is said in the clip: {said}"] if said else []),
+        f"Write a NEW title, different from the current one (at most {TITLE_WORDS} words), a description "
+        f"(one sentence) and 3 to 6 hashtags, in this language: {language}.",
+        'Reply with JSON only, no commentary: {"title":"...","description":"...","hashtags":["..."]}',
+    ])
+
+
+def _retitle_reply(raw, old_title: str) -> dict | None:
+    """The reply as {title, description, hashtags}; None when unreadable or the title did not change."""
+    from ..live.ai import _object  # live.ai imports this module
+    data = _object(raw) if isinstance(raw, str) else None
+    if data is None:
+        return None
+    title, desc, tags = data.get("title"), data.get("description", ""), data.get("hashtags", [])
+    if not isinstance(title, str) or not isinstance(desc, str) or not isinstance(tags, list):
+        return None
+    title = " ".join(title.split()[:TITLE_WORDS])
+    if not title or title.casefold() == " ".join(old_title.split()).casefold():
+        return None
+    tags = [t.strip().lstrip("#") for t in tags if isinstance(t, str)]
+    return {"title": title, "description": desc.strip(),
+            "hashtags": ["#" + re.sub(r"\s+", "", t) for t in tags if t]}
+
+
+def _replace_file(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:  # on Windows a file open in another program cannot be replaced
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise UserError("No se pudo guardar el título",
+                        "Cierra el archivo si está abierto e inténtalo de nuevo") from None
+
+
+_TEXTS_LOCK = threading.Lock()  # one read-modify-write of a clips.json at a time: no retitle loses another's
+
+
+def _clip_entry(path: Path, file: str) -> tuple[list | None, dict | None]:
+    """clips.json and its entry for `file`; (None, None) when unreadable, entry None when not listed."""
+    try:
+        clips = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None, None
+    if not isinstance(clips, list):
+        return None, None
+    return clips, next((c for c in clips if isinstance(c, dict) and c.get("file") == file), None)
+
+
+def retitle_clip(item: dict, folder: Path, file: str, settings: dict,
+                 complete: Callable[[str], str] | None = None) -> dict | None:
+    """A new title, description and hashtags for one finished clip, saved to clips.json and publicacion.txt.
+    None when the clip is not in clips.json. One retry when the reply is unreadable or keeps the old title."""
+    path = folder / "clips.json"
+    _, entry = _clip_entry(path, file)
+    if entry is None:
+        return None
+    profile, opts = _resolve(item)
+    complete = complete or (lambda p: llm.complete(p, profile, settings))
+    old = entry["title"] if isinstance(entry.get("title"), str) else ""
+    language = opts.language if opts.language != "auto" else "the same language as the current title"
+    prompt = _retitle_prompt(entry, language)
+    new = _retitle_reply(complete(prompt), old)
+    if new is None:
+        new = _retitle_reply(complete(f"{prompt}\n\nReturn only valid JSON matching the schema, "
+                                      "with a title different from the current one."), old)
+    if new is None:
+        raise _no_title()
+    with _TEXTS_LOCK:  # the AI is asked outside it: a slow reply must not hold up the other retitles
+        clips, entry = _clip_entry(path, file)  # again: another retitle may have saved meanwhile
+        if entry is None:
+            return None
+        entry.update(new)
+        _replace_file(path, json.dumps(clips, ensure_ascii=False, indent=2))
+        _replace_file(folder / "publicacion.txt", _publish_text(clips))  # only once clips.json is saved
+    return new
 
 
 VOICE_CONTEXT_S = 90.0  # sentences this far around a clip help tell its two voices apart
@@ -509,11 +620,22 @@ def _talk_and_voices(src: SourceInfo, m: Moment, words: list[Word], mode: str, c
     return talk, [labels[i] for i in inside]
 
 
+def cam_channel(src: SourceInfo, analysis: dict | None = None) -> str:
+    """The channel a remembered cam box belongs to: a live moment's handle, else the source's channel."""
+    if analysis and analysis.get("origin") == "live":  # a live source's own channel field is ""
+        return str((analysis.get("live") or {}).get("handle") or "")
+    return src.channel
+
+
 def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profile: Profile, opts: ClipProfile,
-                folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders) -> None:
-    """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order."""
+                folder: Path, cancel: threading.Event, steps: _Steps, providers: ClipProviders,
+                channel: str | None = None, auto_cam: list[bool] | None = None) -> None:
+    """Steps 4 and 5: a crop plan for every moment, then one rendered clip each, in rank order. A cam box
+    remembered for `channel` (default: the source's) frames its "partido" moments without a box, and its "cara"
+    ones on a landscape source, as "partido". `auto_cam` (default: all) says which moments it may frame."""
     width, height = ASPECTS[profile.aspect]
     n = len(moments)
+    remembered = camaras.load(src.channel if channel is None else channel) if src.has_video else None
 
     steps.begin(4)
     plans: list[framing.CropPlan | None] = []
@@ -524,13 +646,17 @@ def _render_all(src: SourceInfo, moments: list[Moment], words: list[Word], profi
             plans.append(None)  # audio only: the renderer draws an audiogram
         else:
             mode = m.framing if m.framing in FRAMINGS else opts.framing
+            cam = m.cam
+            if (cam is None and remembered is not None and (auto_cam is None or auto_cam[i])
+                    and (mode == "partido" or (mode == "cara" and src.width > src.height))):
+                mode, cam = "partido", camaras.scaled(remembered, src.width, src.height)
             faces = None
-            if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and m.cam is None)):
+            if providers.detect_faces is not None and (mode == "cara" or (mode == "partido" and cam is None)):
                 faces = providers.detect_faces(src, m.start, m.end, framing.SAMPLE_FPS, cancel)
             talk, voice_labels = (None, None) if mode == "partido" else _talk_and_voices(src, m, words, mode, cancel)
             try:
                 plans.append(framing.plan_crop(src, m.start, m.end, width, height, mode, cancel, faces=faces,
-                                               talk=talk, voices=voice_labels, cam=m.cam))
+                                               talk=talk, voices=voice_labels, cam=cam))
             except (JobCancelled, UserError):
                 raise
             except Exception:  # scene or face analysis failed: a centred crop still makes a usable clip
@@ -763,6 +889,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
             moments = [_moment_from_dict(m) for m in raw]
         except ValueError:
             raise _bad_times() from None
+        # a review card decided each moment: only the ones it left on auto take the channel's remembered box
+        auto_cam = [m.get("auto_cam") is True for m in raw] if payload.get("cam_resolved") is True else None
         if any(not MIN_CLIP_S <= m.end - m.start <= MAX_CLIP_S for m in moments):
             raise _bad_times()  # browser-edited bounds: never a near-zero or hours-long clip
         if any(m.end > src.duration + 1.0 for m in moments):
@@ -783,7 +911,8 @@ def run_clip_export(item: dict, settings: dict, cancel: threading.Event, progres
                     if snapped is not None:
                         m.start, m.end = snapped
             folder = _open_output(settings, src.title, on_output)
-            _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers)
+            _render_all(src, moments, transcript.words, profile, opts, folder, cancel, steps, providers,
+                        cam_channel(src, analysis), auto_cam)
             _write_texts(folder, moments)
     except BaseException:
         _discard(folder, None)

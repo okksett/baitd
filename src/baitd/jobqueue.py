@@ -177,6 +177,12 @@ class JobQueue:
         with self._lock:
             return [{k: i[k] for k in _PUBLIC} for i in self._items]
 
+    def item(self, id: str) -> dict | None:
+        """A copy of the whole queue item (profile snapshot and payload included)."""
+        with self._lock:
+            item = self._find(id)
+            return copy.deepcopy(item) if item else None
+
     def aspect(self, id: str) -> str:
         """The profile aspect the job was made with ("9:16" when unknown)."""
         with self._lock:

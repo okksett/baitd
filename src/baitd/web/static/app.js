@@ -1230,7 +1230,8 @@
     });
   }
 
-  const reviewSignature = (r) => JSON.stringify(r.moments.map((m) => [m.orig, m.pick, m.title, m.start, m.end, m.framing, m.credit, m.cam]));
+  const reviewSignature = (r) => JSON.stringify([r.rememberCam,
+    r.moments.map((m) => [m.orig, m.pick, m.title, m.start, m.end, m.framing, m.credit, m.cam])]);
   const reviewEdited = (r) => reviewSignature(r) !== r.baseline;
 
   // `job` is a queue item with an analysis_id, or {analysis_id, live} for a moment of the En directo list
@@ -1249,10 +1250,21 @@
         const count = (profileById(profileId) || state.current).clipping.count;
         // orig: the index in the analysis, so the server keeps its texts even after the bounds are edited
         const ranked = data.moments.map((m, orig) => ({ ...m, orig })).sort((a, b) => b.score - a.score);
+        const remembered = rememberedCam(data.remembered_cam, data.source);
         state.clip.review = {
           analysisId: job.analysis_id, profileId, source: data.source, live: job.live || null,
-          moments: ranked.map((m, i) => ({ ...m, title: m.title || "", framing: m.framing || "cara",
-            credit: m.credit || "", cam: validCam(m.cam, data.source), pick: i < count, raw: {} })),
+          // the box remembered for the channel: Cara/Gameplay cards show it, as the export frames them with it
+          camChannel: data.cam_channel || "", rememberCam: Boolean(remembered), wasRemembered: Boolean(remembered),
+          rememberFrom: null,
+          moments: ranked.map((m, i) => {
+            const framing = m.framing || "cara";
+            const cam = validCam(m.cam, data.source);
+            const auto = Boolean(remembered && !cam && (framing === "cara" || framing === "partido"));
+            // autoCam: shown with the remembered box, but exported as its own framing for the server to frame
+            // with the channel's box at render time (so a box moved or forgotten on another card reaches it)
+            return { ...m, title: m.title || "", framing: auto ? "partido" : framing, credit: m.credit || "",
+              cam: auto ? remembered.slice() : cam, autoCam: auto, autoFraming: framing, pick: i < count, raw: {} };
+          }),
         };
         state.clip.review.baseline = reviewSignature(state.clip.review);
       } catch (e) {
@@ -1280,6 +1292,13 @@
     return x >= 0 && y >= 0 && w >= 16 && h >= 16 && x + w <= src.width && y + h <= src.height ? cam.slice() : null;
   }
 
+  // A channel's remembered box ([x, y, w, h] fractions of the source) in this source's pixels, or null.
+  function rememberedCam(box, src) {
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite) || src.has_video === false
+        || !(src.width >= 64 && src.height >= 64)) return null;
+    return validCam(fitCam(src.width, src.height, box[0] * src.width, box[1] * src.height, box[2] * src.width, false), src);
+  }
+
   // The box clamped inside a W×H source with the band's aspect locked; `anchored` keeps x, y (resizing).
   function fitCam(W, H, x, y, w, anchored) {
     const minW = Math.max(Math.ceil(16 * CAM_ASPECT) + 1, Math.round(W * 0.06));
@@ -1298,6 +1317,8 @@
     const box = $(".m-cam", node);
     const bar = $(".m-cam-bar", node);
     const hint = $(".m-cam-hint", node);
+    const r = state.clip.review;
+    const remember = $(".m-remember", node);
     const usable = src.has_video !== false && W >= 64 && H >= 64;
     const start = () => fitCam(W, H, W * 0.02, H * 0.03, W * 0.28, false); // shown until the user moves it
     let view = { scale: 1, ox: 0, oy: 0 };
@@ -1315,7 +1336,25 @@
         width: `${w * scale}px`, height: `${h * scale}px` });
       box.classList.toggle("auto", !m.cam);
       hint.textContent = tr(m.cam ? "live.cam_hint_set" : "live.cam_hint_auto");
+      $(".m-remember-wrap", node).hidden = !r.camChannel;
+      $(".m-remember-label", node).textContent = tr("moment.cam_remember", { canal: r.camChannel });
+      remember.checked = r.rememberCam;
     };
+    // a box moved while "for every clip of the channel" is on is the one the export keeps
+    const moved = () => {
+      m.autoCam = false; // the user's own box now
+      if (r.rememberCam) r.rememberFrom = m;
+      layout();
+    };
+    remember.addEventListener("change", () => {
+      r.rememberCam = remember.checked;
+      if (remember.checked) {
+        if (!m.cam) m.cam = start();
+        r.rememberFrom = m;
+      }
+      $$(".m-remember").forEach((c) => { c.checked = r.rememberCam; }); // one channel: every card agrees
+      layout();
+    });
     box.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -1332,7 +1371,7 @@
       m.cam = drag.resize
         ? fitCam(W, H, x, y, w + (Math.abs(dx) >= Math.abs(dy * CAM_ASPECT) ? dx : dy * CAM_ASPECT), true)
         : fitCam(W, H, x + dx, y + dy, w, false);
-      layout();
+      moved();
     });
     const end = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
     box.addEventListener("pointerup", end);
@@ -1345,9 +1384,9 @@
       const [x, y, w] = m.cam || start();
       m.cam = e.shiftKey ? fitCam(W, H, x, y, w + (d[0] + d[1]) * step, true)
         : fitCam(W, H, x + d[0] * step, y + d[1] * step, w, false);
-      layout();
+      moved();
     });
-    $(".m-cam-auto", node).addEventListener("click", () => { m.cam = null; layout(); });
+    $(".m-cam-auto", node).addEventListener("click", () => { m.cam = null; m.autoCam = false; layout(); });
     video.addEventListener("loadedmetadata", layout);
     if (window.ResizeObserver) new ResizeObserver(layout).observe(video);
     return layout;
@@ -1445,7 +1484,7 @@
     title.addEventListener("input", () => { m.title = title.value; named(); });
     framing.value = m.framing;
     const layoutCam = bindCamEditor(node, m, r.source);
-    framing.addEventListener("change", () => { m.framing = framing.value; layoutCam(); });
+    framing.addEventListener("change", () => { m.framing = framing.value; m.autoCam = false; layoutCam(); });
     credit.value = m.credit;
     credit.addEventListener("input", () => { m.credit = credit.value; });
 
@@ -1584,15 +1623,22 @@
     if (exportProblem()) return;
     showError($("#clip-review-error"), null);
     // the cam box only means something for Partido (the server refuses one it cannot place)
+    // an untouched auto card goes as its own framing, without a box: the server frames it with the channel's
     const moments = r.moments.filter((m) => m.pick).map((m) => ({
-      orig: m.orig, start: m.start, end: m.end, framing: m.framing, title: m.title.trim(), credit: m.credit.trim(),
-      cam: m.framing === "partido" ? m.cam : null }));
+      orig: m.orig, start: m.start, end: m.end, framing: m.autoCam ? m.autoFraming : m.framing, title: m.title.trim(),
+      credit: m.credit.trim(), cam: !m.autoCam && m.framing === "partido" ? m.cam : null, auto_cam: Boolean(m.autoCam) }));
+    // "Usar este recuadro para todos los clips de ...": a box keeps it for the channel, false forgets it
+    const extra = {};
+    const from = r.rememberFrom;
+    if (r.camChannel && r.rememberCam && from && from.framing === "partido" && from.cam) extra.remember_cam = from.cam;
+    else if (r.camChannel && !r.rememberCam && r.wasRemembered) extra.remember_cam = false;
     // the analysis was made with this profile; the selected one is only a fallback if it was deleted
     const profileId = profileById(r.profileId) ? r.profileId : state.current.id;
     setBusy(true);
     try {
       await flushSave(); // the export takes the hook title, credit and music switches from the saved profile
-      await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments });
+      await api("POST", `/api/analyses/${encodeURIComponent(r.analysisId)}/export`, { profile_id: profileId, moments,
+        cam_resolved: true, ...extra });
       state.live.picked.delete(r.analysisId); // a live moment queued here must not go again with "Exportar seleccionados"
       state.clip.review = null;
       renderClipReview();
@@ -1676,7 +1722,12 @@
       return li;
     });
     // keep existing nodes (and keyboard focus) in place; only add, remove or reorder
-    byId.forEach((li, id) => { if (!jobs.some((j) => j.id === id)) li.remove(); });
+    byId.forEach((li, id) => {
+      if (jobs.some((j) => j.id === id)) return;
+      dropPreview(li);
+      clipPreviews.delete(id);
+      li.remove();
+    });
     wanted.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
     empty.hidden = jobs.length > 0;
     clear.hidden = !jobs.some((j) => FINISHED.includes(j.status));
@@ -1720,6 +1771,58 @@
       remove: FINISHED.includes(job.status),
     };
     $$("[data-job-act]", li).forEach((b) => { b.hidden = !show[b.dataset.jobAct]; });
+    updatePreview(li, job, viewable);
+  }
+
+  // First frame of a finished job's first clip, in the clip's own shape. id -> {file, aspect} | {} (loading) | false (none)
+  const clipPreviews = new Map();
+  // a card's preview loads only once it is near the screen: many finished jobs must not open many downloads at once
+  const previewSeen = window.IntersectionObserver ? new IntersectionObserver((entries) => entries.forEach((e) => {
+    if (!e.isIntersecting) return;
+    previewSeen.unobserve(e.target);
+    e.target.src = e.target.dataset.src;
+  }), { rootMargin: "200px" }) : null;
+
+  function dropPreview(li) {
+    const video = $(".clip-thumb video", li);
+    if (!video) return;
+    if (previewSeen) previewSeen.unobserve(video);
+    video.removeAttribute("src"); // stop the download
+    video.load();
+    video.remove();
+  }
+
+  function updatePreview(li, job, viewable) {
+    const thumb = $(".clip-thumb", li);
+    if (!thumb) return;
+    if (!viewable) {
+      dropPreview(li);
+      thumb.style.aspectRatio = "";
+      clipPreviews.delete(job.id); // a retry makes new files
+      return;
+    }
+    const known = clipPreviews.get(job.id);
+    if (known === undefined) {
+      const loading = {}; // this request's mark: a job removed or retried meanwhile drops or replaces it
+      clipPreviews.set(job.id, loading);
+      api("GET", `/api/jobs/${encodeURIComponent(job.id)}/clips`).then((r) => {
+        if (clipPreviews.get(job.id) !== loading) return;
+        clipPreviews.set(job.id, r.clips.length ? { file: r.clips[0].file, aspect: r.aspect } : false);
+        if (li.isConnected) updatePreview(li, job, true);
+      }, () => { if (clipPreviews.get(job.id) === loading) clipPreviews.set(job.id, false); }); // the flat block stays
+    }
+    if (!known || !known.file || $("video", thumb)) return;
+    thumb.style.aspectRatio = known.aspect.replace(":", " / ");
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "metadata";
+    video.tabIndex = -1;
+    video.disablePictureInPicture = true;
+    video.setAttribute("aria-hidden", "true");
+    video.dataset.src = `/api/jobs/${encodeURIComponent(job.id)}/files/${encodeURIComponent(known.file)}#t=0.1`;
+    thumb.append(video);
+    if (previewSeen) previewSeen.observe(video);
+    else video.src = video.dataset.src;
   }
 
   function renderProgress() {
@@ -1756,6 +1859,64 @@
   // The finished videos of a job, playable inside the app.
   let clipsSeq = 0; // two quick "Ver videos" clicks (or a close meanwhile): only the latest call adds tiles
 
+  // One finished clip: the video, then its texts to post (each with Copiar) and "Otro título".
+  function clipTile(id, c, short) {
+    const tile = $("#tpl-clip-tile").content.firstElementChild.cloneNode(true);
+    applyI18n(tile);
+    const video = $("video", tile);
+    video.src = `/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(c.file)}`;
+    const status = $(".clip-status", tile);
+    const err = $(".clip-err", tile);
+    let statusTimer = 0;
+    const say = (msg) => {
+      status.textContent = msg;
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => { status.textContent = ""; }, 2500);
+    };
+    const fill = (texts) => {
+      const values = { title: texts.title || c.file, description: texts.description || "",
+                       hashtags: (texts.hashtags || []).join(" ") };
+      for (const [key, value] of Object.entries(values)) {
+        const p = $(`.clip-${key}`, tile);
+        p.textContent = value;
+        p.parentElement.hidden = !value;
+      }
+      video.setAttribute("aria-label", values.title);
+    };
+    fill(c);
+    tile.addEventListener("click", async (e) => {
+      const copy = e.target.closest(".clip-copy");
+      if (copy) {
+        const p = $(`.clip-${copy.dataset.copy}`, tile);
+        try {
+          await navigator.clipboard.writeText(p.textContent);
+          say(tr("clips.copied"));
+        } catch (_) { // no clipboard permission: the text is selected for Ctrl+C
+          getSelection().selectAllChildren(p);
+          say(tr("clips.copy_manual"));
+        }
+        return;
+      }
+      const btn = e.target.closest(".clip-retitle");
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      btn.textContent = tr("clips.retitling");
+      showError(err, null);
+      try {
+        fill(await api("POST", `/api/jobs/${encodeURIComponent(id)}/clips/${encodeURIComponent(c.file)}/retitle`, {}));
+      } catch (error) {
+        showError(err, error);
+      } finally {
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+        btn.textContent = tr("clips.retitle");
+      }
+    });
+    $(".clip-retitle", tile).hidden = short; // a short's title is its topic, not an AI text
+    return tile;
+  }
+
   async function openClips(id) {
     const seq = ++clipsSeq;
     const dlg = $("#clips-view");
@@ -1769,18 +1930,8 @@
       if (seq !== clipsSeq) return;
       grid.classList.toggle("wide", r.aspect === "16:9");
       grid.style.setProperty("--clip-ar", r.aspect.replace(":", " / "));
-      for (const c of r.clips) {
-        const tile = document.createElement("figure");
-        tile.className = "clip-tile";
-        const video = document.createElement("video");
-        video.controls = true;
-        video.preload = "metadata";
-        video.src = `/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(c.file)}`;
-        const cap = document.createElement("figcaption");
-        cap.textContent = c.title || c.file;
-        tile.append(video, cap);
-        grid.append(tile);
-      }
+      const short = (state.jobs.find((j) => j.id === id) || {}).kind === "short";
+      for (const c of r.clips) grid.append(clipTile(id, c, short));
       $("#clips-empty").hidden = r.clips.length > 0;
     } catch (err) {
       if (seq !== clipsSeq) return;

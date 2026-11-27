@@ -505,10 +505,9 @@ def plan_crop(src: SourceInfo, start: float, end: float, out_w: int, out_h: int,
         cuts = scene_cuts(src, start, end, cancel)
     if faces is None:
         faces = detect_faces(src, start, end, SAMPLE_FPS, cancel)
-    if any(fs for _, fs in faces):
-        keys = _plan_keys(faces, cuts, end - start, src.width, crop_w, talk, voices)
-    else:
-        keys = [(0.0, centre)]
+    if not any(fs for _, fs in faces):  # nobody to follow (a game, an avatar): show the whole frame
+        return CropPlan("completo", src.width, src.height, [(0.0, 0)], False)
+    keys = _plan_keys(faces, cuts, end - start, src.width, crop_w, talk, voices)
     return CropPlan("cara", crop_w, crop_h, keys, sharpen)
 
 

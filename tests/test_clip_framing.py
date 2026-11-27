@@ -55,12 +55,12 @@ def test_1080p_cara_sharpens_and_stays_in_frame():
     assert xs[-1] > xs[0] and xs[-1] > 1000  # it follows the face
 
 
-def test_no_faces_falls_back_to_center():
-    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=_samples(40, lambda i: []), cuts=[])
-    assert plan.mode == "cara"
-    assert plan.keys == [(0.0, (1920 - CW) // 2)]
-    plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=[], cuts=[])
-    assert plan.keys == [(0.0, (1920 - CW) // 2)]
+def test_no_faces_shows_the_whole_frame():
+    # a game with an avatar and no real face: the centre crop hid most of the game, "completo" shows it all
+    for faces in (_samples(40, lambda i: []), []):
+        plan = plan_crop(_src(), 0, 10, 1080, 1920, "cara", None, faces=faces, cuts=[])
+        assert plan.mode == "completo" and (plan.crop_w, plan.crop_h) == (1920, 1080)
+        assert plan.cam is None and plan.sharpen is False
 
 
 def test_centro_is_a_single_center_key_without_detection(monkeypatch):
@@ -379,7 +379,7 @@ def test_plan_partido_without_cam_falls_back_to_cara():
     plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, faces=faces, cuts=[])
     assert plan.mode == "cara" and plan.cam is None and plan.game is None
     plan = plan_crop(_src(), 0, 10, 1080, 1920, "partido", None, faces=_samples(40, lambda i: []), cuts=[])
-    assert plan.mode == "cara"
+    assert plan.mode == "completo"  # no cam and no face at all
 
 
 def test_plan_partido_portrait_source_goes_down_the_cara_path():

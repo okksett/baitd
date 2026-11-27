@@ -778,7 +778,7 @@ def test_clipping_form_help_toggles_and_visible_min_max(client):
 def test_boot_carries_version_and_page_shows_it(client):
     import baitd
     html = client.get("/").text
-    assert baitd.__version__ == "0.6.1"
+    assert baitd.__version__ == "0.6.2"
     assert f'"version": "{baitd.__version__}"' in html
     assert 'id="app-version"' in html
     es = json.loads(ES.read_text("utf-8"))
@@ -976,6 +976,18 @@ def test_moment_editor_opens_in_a_side_sheet(client):
     assert "{n}" in es["clip.review_title"] and "{n}" in es["clip.export"]
 
 
+def test_moment_editor_offers_to_remember_the_cam_for_the_channel(client):
+    tpl = client.get("/").text.split('id="tpl-moment"')[1].split("</template>")[0]
+    # the checkbox sits inside its label (keyboard and screen readers get its text), in the Gameplay cam bar
+    bar = tpl.split('class="m-cam-bar"')[1].split("</div>")[0]
+    assert '<label class="check m-remember-wrap" hidden><input type="checkbox" class="m-remember">' in bar
+    for lang in ("es", "en"):
+        strings = json.loads((WEB / f"static/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert "{canal}" in strings["moment.cam_remember"]
+    js = (WEB / "static/app.js").read_text(encoding="utf-8")
+    assert 'tr("moment.cam_remember", { canal: r.camChannel })' in js and "remember_cam" in js
+
+
 @pytest.mark.parametrize("color", ["#a\nDia", "#zzzzzz", "#12345", "#1234567"])
 def test_profile_subtitle_colours_must_be_hex(client, color):
     profile = client.get("/api/profiles").json["profiles"][0]
@@ -1001,3 +1013,21 @@ def test_a_new_compat_url_drops_the_saved_key(client):
     assert config.load_settings()["compat_key"] == ""
     client.post("/api/settings", json={"compat_base_url": "https://c.example.com", "compat_key": "sk-new"})
     assert config.load_settings()["compat_key"] == "sk-new"
+
+
+def test_clip_card_preview_wiring():
+    js = JS.read_text("utf-8")
+    assert "clipPreviews" in js and "#t=0.1" in js and 'removeAttribute("src")' in js
+    assert "clip-thumb video" in (WEB / "static/app.css").read_text("utf-8")
+    # loaded only near the screen, and a reply for a job removed or retried meanwhile is dropped
+    assert 'new IntersectionObserver(' in js and 'rootMargin: "200px"' in js and "previewSeen.unobserve(video)" in js
+    assert "clipPreviews.get(job.id) !== loading" in js
+
+
+def test_review_sends_untouched_auto_cards_for_the_server_to_frame():
+    js = JS.read_text("utf-8")
+    # an auto card goes as its own framing, without a box; any edit to its box or framing makes it the user's
+    assert "framing: m.autoCam ? m.autoFraming : m.framing" in js and "auto_cam: Boolean(m.autoCam)" in js
+    assert "cam_resolved: true" in js and js.count("m.autoCam = false") == 3
+    # toggling "Usar este recuadro para todos los clips" counts as an edit
+    assert "JSON.stringify([r.rememberCam," in js

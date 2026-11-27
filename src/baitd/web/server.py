@@ -26,6 +26,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import HTTPException
 
 from .. import __version__, audio, captions, config, llm, tts, updater
+from ..clip import camaras as clip_camaras
 from ..clip import chat_replay as clip_chat
 from ..clip import pipeline as clip_pipeline
 from ..clip import sources as clip_sources
@@ -307,7 +308,7 @@ def _export_moments(raw, analysis: dict, src) -> list[dict]:
             base = next((k for k in known if k.get("start") == start and k.get("end") == end), {})
         out.append({**base, "start": float(start), "end": float(end), "framing": framing,
                     "title": title, "credit": credit, "badge": base.get("badge", ""),
-                    "cam": _cam_box(m.get("cam"), src)})
+                    "cam": _cam_box(m.get("cam"), src), "auto_cam": m.get("auto_cam") is True})
     return out
 
 
@@ -330,13 +331,15 @@ def _listed_clips(folder: Path) -> list[dict]:
         raw = None
     if raw is None:
         names = sorted(p.name for p in folder.glob("clip-*.mp4") if _CLIP_FILE.fullmatch(p.name) and p.is_file())
-        return [{"file": n, "title": ""} for n in names]
+        return [{"file": n, "title": "", "description": "", "hashtags": []} for n in names]
     clips = []
     for entry in raw:
         name = entry.get("file") if isinstance(entry, dict) else None
         if isinstance(name, str) and _CLIP_FILE.fullmatch(name) and (folder / name).is_file():
-            title = entry.get("title")
-            clips.append({"file": name, "title": title if isinstance(title, str) else ""})
+            title, desc, tags = entry.get("title"), entry.get("description"), entry.get("hashtags")
+            clips.append({"file": name, "title": title if isinstance(title, str) else "",
+                          "description": desc if isinstance(desc, str) else "",
+                          "hashtags": [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []})
     return clips
 
 
@@ -630,6 +633,18 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
             clips = _listed_clips(folder)
         return jsonify(clips=clips, aspect=queue.aspect(job_id))
 
+    @app.post("/api/jobs/<job_id>/clips/<file>/retitle")
+    def retitle_clip(job_id: str, file: str):
+        _body()
+        job, folder = finished_folder(job_id)
+        item = queue.item(job_id)
+        if job["kind"] == "short" or item is None or not _CLIP_FILE.fullmatch(file) or not (folder / file).is_file():
+            abort(404)
+        new = clip_pipeline.retitle_clip(item, folder, file, config.load_settings())
+        if new is None:
+            abort(404)
+        return jsonify(new)
+
     @app.get("/api/jobs/<job_id>/files/<file>")
     def job_file(job_id: str, file: str):
         if request.headers.get("Sec-Fetch-Site") == "cross-site":  # no embedding from other sites
@@ -808,8 +823,10 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
     def get_analysis(analysis_id: str):
         analysis = analysis_or_404(analysis_id)
         src = clip_sources.load_source(analysis["source_id"])
+        channel = clip_pipeline.cam_channel(src, analysis)
         return jsonify(source=_public_source(src), moments=analysis["moments"],
-                       language=analysis["transcript"]["language"])
+                       language=analysis["transcript"]["language"],
+                       cam_channel=channel, remembered_cam=clip_camaras.load(channel))
 
     @app.post("/api/analyses/<analysis_id>/export")
     def export_analysis(analysis_id: str):
@@ -817,8 +834,19 @@ def create_app(queue: JobQueue, shutdown: Callable[[], None] | None = None,
         analysis = analysis_or_404(analysis_id)
         src = clip_sources.load_source(analysis["source_id"])
         moments = _export_moments(data.get("moments"), analysis, src)
+        # "Usar este recuadro para todos los clips de ...": a box keeps it for the channel, false forgets it
+        remember = data.get("remember_cam")
+        box = None if remember is None or remember is False else _cam_box(remember, src)
         profile = _find_profile(data["profile_id"]) if "profile_id" in data else _profiles()[0]
-        job_id = queue.add_clip_job("clip_export", {"analysis_id": analysis_id, "moments": moments}, profile)
+        channel = clip_pipeline.cam_channel(src, analysis)
+        if channel and box is not None:  # before queueing: a failure here leaves no job behind
+            clip_camaras.remember(channel, box, src.width, src.height)
+        elif channel and remember is False:
+            clip_camaras.forget(channel)
+        payload = {"analysis_id": analysis_id, "moments": moments}
+        if data.get("cam_resolved") is True:  # from a review card: it decided each moment's framing
+            payload["cam_resolved"] = True
+        job_id = queue.add_clip_job("clip_export", payload, profile)
         return jsonify(job_id=job_id)
 
     @app.delete("/api/analyses/<analysis_id>")
